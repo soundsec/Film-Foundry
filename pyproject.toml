@@ -7,10 +7,17 @@ name = "film-foundry"
 version = "0.1.0"
 description = "Physics-inspired film and electronic negative material factory."
 requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
 dependencies = [
   "numpy>=1.24",
   "opencv-python>=4.8",
   "Pillow>=10.0",
+]
+classifiers = [
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Graphics",
+  "Topic :: Scientific/Engineering :: Image Processing",
 ]
 
 [project.optional-dependencies]

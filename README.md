@@ -1,6 +1,6 @@
 # Film Foundry / Electronic Negative Factory
 
-Film Foundry 是一个物理启发式胶片成像与电子负片生成项目，目前正处于早期阶段。它不是传统 LUT 滤镜软件，也不是严格的胶片化学仿真器。当前目标是建立一条可解释、可调试、适合单张图像处理的流程：既能生成最终正像，也能输出可复用的“电子负片”。
+Film Foundry 是一个早期阶段的物理启发式胶片成像与电子负片生成项目。它不是传统 LUT 滤镜软件，也不是严格的胶片化学仿真器。当前目标是建立一条可解释、可调试、适合单张图像处理的流程：既能生成最终正像，也能输出可复用的“电子负片”材料。
 
 Film Foundry is an early-stage, physics-inspired film imaging prototype. It is not a LUT filter app and not a strict chemical simulator. The current focus is a practical single-image pipeline that can generate both final rendered images and reusable electronic negative materials.
 
@@ -15,7 +15,7 @@ input image
 -> final sRGB output
 ```
 
-普通 JPG / PNG / TIFF 输入图像通常已经经过相机 ISP、tone mapping、锐化、降噪和压缩。这里的 sRGB-to-linear 只表示“近似线性工作空间”，不是还原真实场景辐照度。目前没对RAW格式的支持。
+普通 JPG / PNG / TIFF 输入图像通常已经经过相机 ISP、tone mapping、锐化、降噪和压缩。这里的 sRGB-to-linear 只表示“近似线性工作空间”，不是还原真实场景辐照度。
 
 Typical JPG / PNG / TIFF images are display-referred and often already processed by camera ISP pipelines. The sRGB-to-linear conversion here only creates an approximate linear working space, not real scene radiance.
 
@@ -26,7 +26,7 @@ Typical JPG / PNG / TIFF images are display-referred and often already processed
 - **冲洗 / Develop**：从输入图像生成电子负片。
 - **扫描 / Scan**：把已有电子负片解释成正像输出。
 
-因此，你可以先冲洗一次得到 `.npz` 或 scanner raw TIFF，再用不同扫描 preset 扫描同一张底片，也可以跳过扫描步骤使用负片校色。
+因此，你可以先冲洗一次得到 `.npz` 或 scanner raw TIFF，再用不同扫描 preset 扫描同一张底片。
 
 This repository is an alpha prototype. The useful parts are already separated into two stages:
 
@@ -195,34 +195,6 @@ image.scanner_raw.tiff.json
 
 这些输出适合导入 Photoshop、Krita、Affinity、Procreate 等软件，也可以用于海报、分色、丝网、半色调和后续接触印相类实验。
 
-## 正冲 / 反转 / Reversal
-
-中文里“正冲”常被用来指反转冲洗：最终直接在胶片上得到正像，而不是得到负片再扫描反相。
-
-黑白反转的典型流程是：
-
-```text
-第一次显影
--> 漂白去掉第一次显影形成的负像银
--> 清洗 / 清除漂白残留
--> 二次曝光或化学雾化
--> 第二次显影形成正像
--> 定影 / 水洗 / 干燥
-```
-
-### 是否现在实现？
-
-目前并没有把正冲做进主流程。
-
-原因：
-
-1. 项目当前最有价值的主线是电子负片母版，正冲会绕开“负片 -> 扫描解释”这条主线。
-2. 黑白反转可以较简单地做成 `bw_reversal_positive`，但它需要新的状态对象：正片密度或正像透过率，而不是 `density_cmy` 负片密度。
-3. 彩色反转需要新的材料假设：正片胶片的 H-D、染料形成、颜色密度和扫描逻辑都不同，不能直接复用彩负参数。
-4. 如果只是为了“像正片”，更适合先做 scan/render preset；如果要物理语义成立，就应该作为独立 film mode。
-
-可作为未来的拓展
-
 ## 测试 / Tests
 
 运行测试：
@@ -239,11 +211,17 @@ python -m compileall half_frame_darkroom run_darkroom.py run_darkroom_gui.py
 
 ## License
 
-本项目当前尚未决定最终采用哪一种开源协议。在正式添加 `LICENSE` 文件之前，项目作者暂时保留所有权利。
+Film Foundry 采用 **GNU General Public License version 3 (GPL-3.0-or-later)**。
 
-目前允许个人出于学习、研究、测试和非商业创作目的查看、运行和修改本项目代码。其他形式的分发、再授权、商业使用或将本项目整合进公开产品前，请先与项目作者确认授权边界。
+你可以在 GPLv3 条款下使用、学习、研究、修改和分发本项目。如果你分发修改版或基于本项目的派生作品，需要遵守 GPLv3 的相应义务，包括在适用情况下提供对应源代码并保留许可证声明。
 
-The final open-source license has not been selected yet. Until a `LICENSE` file is added, all rights are reserved by the project author. Personal study, research, testing, and non-commercial creative use are currently permitted.
+如果你希望将本项目用于闭源商业产品、专有再发行、商业 SDK/插件集成，或其他无法遵守 GPLv3 开源义务的产品，请单独联系项目作者获取商业授权。
+
+Film Foundry is licensed under **GNU General Public License version 3  (GPL-3.0-or-later)**.
+
+You may use, study, modify, and distribute this project under the GPLv3. If you distribute modified versions or derivative works, you must comply with GPLv3 obligations, including providing corresponding source code where required and preserving license notices.
+
+For closed-source commercial use, proprietary redistribution, commercial SDK/plugin integration, or use in a product that cannot comply with GPLv3, please contact the project author for a separate commercial license.
 
 ## Code Provenance Notice
 
@@ -254,8 +232,16 @@ The final open-source license has not been selected yet. Until a `LICENSE` file 
 This project was developed with assistance from AI agents for coding, refactoring, documentation, and debugging. If you believe any code, comments, documentation, naming, or structure infringes your rights or is too similar to protected work, please contact the project author with specific details so it can be reviewed and corrected.
 
 
-## Notes
+## Notice
 
-本项目不声称精确复刻任何商业胶卷。当前 preset 更适合理解为“行为类型”或“材料倾向”，不是官方胶片模拟。
+Film Foundry 是一个物理启发式虚拟暗房与电子负片材料生成项目。
 
-This project avoids claiming exact film stock reproduction. Presets should be treated as behavior profiles, not official emulations of commercial film products.
+本项目与任何胶片厂商、扫描仪厂商、相机厂商或商业胶片模拟软件均无从属、赞助、认证或官方授权关系。
+
+官方预设以画面行为或材料行为描述命名，不是任何商业胶卷产品的官方模拟。
+
+Film Foundry is a physics-inspired virtual darkroom and electronic negative material factory.
+
+It is not affiliated with, endorsed by, or sponsored by any film manufacturer, scanner manufacturer, camera manufacturer, or commercial film-emulation software vendor.
+
+Official presets are named descriptively by visual behavior or material behavior. They are not official emulations of commercial film products.
