@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "film-foundry"
+version = "0.1.0"
+description = "Physics-inspired film and electronic negative material factory."
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "opencv-python>=4.8",
+  "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+film-foundry = "half_frame_darkroom.app.cli:main"
+electronic-negative-factory = "half_frame_darkroom.app.cli:main"
+half-frame-darkroom = "half_frame_darkroom.app.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["half_frame_darkroom*", "film_foundry*"]

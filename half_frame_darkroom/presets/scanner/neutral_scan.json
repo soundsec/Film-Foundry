@@ -1,0 +1,26 @@
+{
+  "scanner": {
+    "scanner_light_color": [1.0, 1.0, 1.0],
+    "scanner_response_matrix": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    "scan_method": "negative_inversion",
+    "scan_base_percentile": 99.5,
+    "print_reference_density": [1.52, 1.56, 1.50],
+    "print_gamma": 0.92,
+    "print_mapping_mode": "printlike",
+    "print_color_bias": [1.0, 1.0, 1.0],
+    "print_color_shift": [0.004, 0.0, -0.010],
+    "highlight_color_bias": [1.0, 1.015, 0.985],
+    "highlight_bias_threshold": 0.76,
+    "highlight_bias_softness": 0.18,
+    "scan_saturation": 1.06,
+    "scan_normalize": true,
+    "scan_normalize_strength": 0.18,
+    "scan_normalize_mode": "luma",
+    "scan_black_percentile": 0.25,
+    "scan_white_percentile": 99.7
+  },
+  "look": {
+    "print_contrast": 1.10,
+    "print_exposure_ev": 0.0
+  }
+}
