@@ -1,6 +1,6 @@
 # Film Foundry / Electronic Negative Factory
 
-Film Foundry 是一个早期阶段的物理启发式胶片成像与电子负片生成项目。它不是传统 LUT 滤镜软件，也不是严格的胶片化学仿真器。当前目标是建立一条可解释、可调试、适合单张图像处理的流程：既能生成最终正像，也能输出可复用的“电子负片”材料。
+Film Foundry 是一个物理启发式胶片成像与电子负片生成项目，目前正处于早期阶段。它不是传统 LUT 滤镜软件，也不是严格的胶片化学仿真器。当前目标是建立一条可解释、可调试、适合单张图像处理的流程：既能生成最终正像，也能输出可复用的“电子负片”。
 
 Film Foundry is an early-stage, physics-inspired film imaging prototype. It is not a LUT filter app and not a strict chemical simulator. The current focus is a practical single-image pipeline that can generate both final rendered images and reusable electronic negative materials.
 
@@ -15,7 +15,7 @@ input image
 -> final sRGB output
 ```
 
-普通 JPG / PNG / TIFF 输入图像通常已经经过相机 ISP、tone mapping、锐化、降噪和压缩。这里的 sRGB-to-linear 只表示“近似线性工作空间”，不是还原真实场景辐照度。
+普通 JPG / PNG / TIFF 输入图像通常已经经过相机 ISP、tone mapping、锐化、降噪和压缩。这里的 sRGB-to-linear 只表示“近似线性工作空间”，不是还原真实场景辐照度。目前没对RAW格式的支持。
 
 Typical JPG / PNG / TIFF images are display-referred and often already processed by camera ISP pipelines. The sRGB-to-linear conversion here only creates an approximate linear working space, not real scene radiance.
 
@@ -26,7 +26,7 @@ Typical JPG / PNG / TIFF images are display-referred and often already processed
 - **冲洗 / Develop**：从输入图像生成电子负片。
 - **扫描 / Scan**：把已有电子负片解释成正像输出。
 
-因此，你可以先冲洗一次得到 `.npz` 或 scanner raw TIFF，再用不同扫描 preset 扫描同一张底片。
+因此，你可以先冲洗一次得到 `.npz` 或 scanner raw TIFF，再用不同扫描 preset 扫描同一张底片，也可以跳过扫描步骤使用负片校色。
 
 This repository is an alpha prototype. The useful parts are already separated into two stages:
 
