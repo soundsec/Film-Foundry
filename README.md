@@ -85,6 +85,32 @@ GUI 适合快速预览整体色调和影调。界面按阶段分离：
 - **Develop**：只冲洗，输出电子负片。
 - **Scan**：读取已有 `.npz` 或 scanner raw TIFF，重新扫描。
 
+## Windows  EXE 测试包 /  Windows EXE Build
+
+如果不熟悉python或是想快速试用，项目提供了简单的exe程序以供使用。
+
+Download the Windows portable package from the release assets:
+
+请在 Release 的附件中下载 Windows 便携包：
+
+**FilmFoundry-portable-win64.zip**
+
+Unzip the package and run the included .exe file.
+
+解压后，直接运行其中的 .exe 文件即可。
+
+The portable EXE is intended for users who want to quickly try the GUI without manually installing Python, creating a virtual environment, or installing dependencies.
+
+Because the EXE package includes the required runtime and Python dependencies, it is much larger than the source code package.
+
+This package is currently built and tested mainly for Windows. Other platforms are not officially packaged in this release.
+
+便携版 EXE 适合只想快速试用的用户，不需要手动安装 Python、创建虚拟环境或安装依赖。
+
+由于 EXE 便携包中打包了运行环境和 Python 依赖，因此它的体积会明显大于源码包。
+
+当前便携版主要面向 Windows 平台构建和测试。本版本暂未正式提供其他平台的打包版本。
+
 
 ## IDE 脚本使用 / IDE Script Usage
 
