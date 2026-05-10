@@ -2,7 +2,11 @@
 
 Film Foundry 是一个早期阶段的物理启发式胶片成像与电子负片生成项目。它不是传统 LUT 滤镜软件，也不是严格的胶片化学仿真器。当前目标是建立一条可解释、可调试、适合单张图像处理的流程：既能生成最终正像，也能输出可复用的“电子负片”材料。
 
+它首先是一个轻量级的图像玩具与实验工具，而不是专业胶片扫描软件、严肃光谱胶片仿真器或商业胶片调色插件。项目更关心“数字图像如何被转化为一份可保存、可复扫、可继续创作的电子负片材料”，而不是追求最准确的胶卷复刻或最成熟的一键成片效果。
+
 Film Foundry is an early-stage, physics-inspired film imaging prototype. It is not a LUT filter app and not a strict chemical simulator. The current focus is a practical single-image pipeline that can generate both final rendered images and reusable electronic negative materials.
+
+It is first of all a lightweight image toy and experimental tool, not a professional film-scanning application, a rigorous spectral film simulator, or a commercial film-emulation plugin. The project is more interested in turning digital images into reusable electronic negative materials than in accurately reproducing a specific film stock or providing the most polished one-click film look.
 
 ## 核心流程 / Core Pipeline
 
@@ -18,6 +22,28 @@ input image
 普通 JPG / PNG / TIFF 输入图像通常已经经过相机 ISP、tone mapping、锐化、降噪和压缩。这里的 sRGB-to-linear 只表示“近似线性工作空间”，不是还原真实场景辐照度。
 
 Typical JPG / PNG / TIFF images are display-referred and often already processed by camera ISP pipelines. The sRGB-to-linear conversion here only creates an approximate linear working space, not real scene radiance.
+
+## 项目边界 / Scope
+
+Film Foundry 的核心对象是 **电子负片 / electronic negative**，而不是最终胶片风格图。
+
+本项目使用“胶片过程”的语言组织图像处理流程：近似线性工作空间、密度响应、CMY density、片基、颗粒、halation、扫描解释等。但这些模块是为了构建一个可玩的、可解释的电子负片工作流，而不是为了声称对真实胶片化学、真实扫描仪或特定商业胶卷进行精确复刻。
+
+更准确地说，本项目是：
+
+- 一个轻量级虚拟暗房玩具；
+- 一个电子负片材料生成器；
+- 一个用于观察、保存、复扫和导出中间图像材料的实验工具。
+- 
+Film Foundry is centered around the **electronic negative**, not the final film-look image.
+
+The project uses the language of photographic film processes — approximate linear working space, density response, CMY density, film base, grain, halation, and scan interpretation — to organize the pipeline. These modules are intended to build a playful and inspectable electronic-negative workflow, not to claim accurate reproduction of real film chemistry, real scanners, or specific commercial film stocks.
+
+It is more accurately described as:
+
+- a lightweight virtual darkroom toy;
+- an electronic-negative material generator;
+- an experimental tool for inspecting, saving, rescanning, and exporting intermediate image materials.
 
 ## 当前状态 / Current Status
 
@@ -257,6 +283,45 @@ For closed-source commercial use, proprietary redistribution, commercial SDK/plu
 
 This project was developed with assistance from AI agents for coding, refactoring, documentation, and debugging. If you believe any code, comments, documentation, naming, or structure infringes your rights or is too similar to protected work, please contact the project author with specific details so it can be reviewed and corrected.
 
+## Related Work / 相关工作
+
+Film Foundry 并不是第一个尝试用摄影材料过程来处理数字图像的项目。摄影显影过程模拟、virtual darkroom、光谱级胶片模拟、胶片调色插件和真实负片反相工具都已经有相当多的前人工作。本项目从这些方向中获得概念上的启发，但并不试图替代它们，也不声称实现了同等深度或精度。
+
+Film Foundry is not the first attempt to process digital images through photographic-material concepts. There is existing work in photographic development simulation, virtual darkrooms, spectral film simulation, film-emulation plugins, and real negative-conversion tools. This project is conceptually adjacent to those areas, but it does not attempt to replace them or claim the same level of physical depth or production quality.
+
+相关方向包括：
+
+- **Photographic development simulation / virtual darkroom research**  
+  Early research explored simulating photographic development processes on computer-generated or other digital images, including density response, spectral sensitivity, resolution, and granularity.
+
+- **Spectral or physically based film simulation**  
+  Projects such as [spektrafilm](https://github.com/andreavolpato/spektrafilm) and [vkdt filmsim](https://jo.dreggn.org/vkdt/src/pipe/modules/filmsim/readme.html) explore more physically detailed analog film simulation workflows, often involving film-stock data, spectral calculations, negative/print stages, couplers, grain, halation, and print or scan processes.
+
+- **Film-emulation and color-grading tools**  
+  Commercial and open-source tools may provide mature film looks, film-stock profiles, grain, halation, print emulation, and professional color workflows. Film Foundry does not try to compete with them in default rendering quality or production readiness.
+
+- **Negative-conversion and scanning tools**  
+  Tools for converting real scanned or camera-digitized negatives focus on color inversion, film-base removal, scanner/camera profiles, and manual or semi-automatic color correction. Film Foundry’s scan/render stage is intentionally basic and should not be treated as a professional negative-conversion replacement.
+
+Film Foundry 的区别在于：它把 **电子负片** 作为中心产物，而不是只把负片当作最终成片之前的内部步骤。本项目更关注：
+
+- 生成 `.npz` 形式的电子负片密度母版；
+- 导出 scanner raw TIFF；
+- 用不同 scanner preset 复扫同一张电子负片；
+- 导出透明片基、density alpha、CMY plate set 和 layer pack；
+- 让照片、插画、CG、AI 图、截图等任意数字图像获得一份可继续加工的“虚拟负片材料”。
+
+The difference is that Film Foundry treats the **electronic negative** as the central artifact, rather than only an internal step before the final image. The project focuses on:
+
+- generating `.npz` electronic negative density masters;
+- exporting scanner raw TIFF files;
+- rescanning the same electronic negative with different scanner presets;
+- exporting transparent plates, density alpha, CMY plate sets, and layer packs;
+- giving photographs, illustrations, CG renders, AI images, screenshots, and other digital images a reusable virtual-negative material form.
+
+In short, Film Foundry is not trying to be the most accurate film simulator or the most polished film-look renderer. It is a small, lightweight, playful electronic-negative factory.
+
+简而言之，Film Foundry 不试图成为最准确的胶片仿真器，也不试图成为最成熟的胶片风格渲染器。它只是一个小型、轻量、偏玩具性质的电子负片工厂。
 
 ## Notice
 
@@ -271,3 +336,7 @@ Film Foundry is a physics-inspired virtual darkroom and electronic negative mate
 It is not affiliated with, endorsed by, or sponsored by any film manufacturer, scanner manufacturer, camera manufacturer, or commercial film-emulation software vendor.
 
 Official presets are named descriptively by visual behavior or material behavior. They are not official emulations of commercial film products.
+
+References to related work are provided only for positioning and context. They do not imply affiliation, endorsement, compatibility, code reuse, or reproduction of any specific project, product, film stock, scanner, or commercial workflow.
+
+对相关工作的提及仅用于说明项目定位和技术背景，不表示从属、授权、兼容、代码复用，也不表示本项目复刻任何特定项目、产品、胶卷、扫描仪或商业工作流。
