@@ -1,0 +1,27 @@
+{
+  "develop": {
+    "developer_name": "Fine Grain BW Developer",
+    "developer_type": "fine_grain",
+    "fixer_name": "Fresh Rapid Fixer",
+    "fixer_type": "rapid",
+    "process_mode": "normal_negative",
+    "frame_size": "35mm",
+    "time_min": 9.0,
+    "temperature_c": 20.0,
+    "concentration": 1.0,
+    "agitation": 0.85,
+    "push_stops": 0.0,
+    "developer_exhaustion": 0.0,
+    "fixer_exhaustion": 0.0,
+    "compensation": 0.15,
+    "silver_retention": 0.0
+  },
+  "mode": "bw_negative",
+  "look": {
+    "exposure_ev": -0.05,
+    "negative_contrast": 0.98,
+    "halation_multiplier": 0.45,
+    "grain_multiplier": 0.85,
+    "grain_size_multiplier": 0.90
+  }
+}

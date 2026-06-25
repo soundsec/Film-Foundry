@@ -1,29 +1,45 @@
 {
-  "mode": "bw_negative",
   "film": {
     "name": "Monochrome Push",
     "halation_strength": 0.05,
     "halation_threshold": 0.74,
-    "hd_gamma": [0.78, 0.78, 0.78],
-    "density_min": [0.12, 0.12, 0.12],
-    "density_max": [2.10, 2.10, 2.10],
-    "log_exposure_toe": [-2.05, -2.05, -2.05],
-    "log_exposure_shoulder": [0.36, 0.36, 0.36],
+    "hd_gamma": [
+      0.78,
+      0.78,
+      0.78
+    ],
+    "density_min": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "density_max": [
+      2.1,
+      2.1,
+      2.1
+    ],
+    "log_exposure_toe": [
+      -2.05,
+      -2.05,
+      -2.05
+    ],
+    "log_exposure_shoulder": [
+      0.36,
+      0.36,
+      0.36
+    ],
     "hd_toe_width": 0.15,
-    "hd_shoulder_width": 0.20,
-    "film_base_density_rgb": [0.12, 0.12, 0.12],
-    "granularity_sigma": [0.040, 0.040, 0.040],
+    "hd_shoulder_width": 0.2,
+    "film_base_density_rgb": [
+      0.12,
+      0.12,
+      0.12
+    ],
+    "granularity_sigma": [
+      0.04,
+      0.04,
+      0.04
+    ],
     "grain_density_correlation_radius": 0.0016
-  },
-  "chemistry": {
-    "push_stops": 1.0,
-    "temperature_c": 21.0,
-    "developer_exhaustion": 0.05
-  },
-  "look": {
-    "exposure_ev": -0.35,
-    "negative_contrast": 1.0,
-    "grain_multiplier": 1.2,
-    "grain_size_multiplier": 1.1
   }
 }

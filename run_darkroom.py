@@ -58,9 +58,13 @@ OUTPUT_PATH = PROJECT_ROOT / "outputs"
 # scan 模式：可以指向一个 .npz 文件，也可以指向装有 .npz 的文件夹。
 NEGATIVE_PATH = PROJECT_ROOT / "outputs" / "negatives"
 
-# 胶片预设。
-# 胶片/冲洗预设只决定电子负片如何形成；scan 模式下不会使用它。
+# 胶片材料预设。
+# 它描述材料本体；scan 模式下不会使用它重新解释已经冲洗好的底片。
 FILM_PRESET_NAME = "clear_modern_negative"
+
+# 冲洗流程预设。
+# 它描述这一次暗房流程：药水类型、时间、温度、浓度、搅拌、定影/显定一体状态。
+DEVELOP_PRESET_NAME = "standard_color_negative"
 
 # 扫描/输出预设只决定底片如何被解释成正像；develop 模式下不会使用它。
 SCANNER_PRESET_NAME = "neutral_scan"
@@ -82,6 +86,12 @@ PREVIEW_LONG_EDGE = 1600
 # 快速模式会用较低中间尺寸计算光晕/颗粒，适合反复试参数。
 FAST_MODE = True
 
+# 内部处理质量：draft / standard / high。
+# draft 更快；standard 平衡；high 尽量使用原尺寸计算低频/颗粒模块。
+QUALITY_MODE = "standard"
+HALATION_WORK_LONG_EDGE = 1800
+GRAIN_WORK_LONG_EDGE = 1800
+
 
 # =========================
 # Film / Develop 参数
@@ -99,9 +109,22 @@ EMULSION_MTF_STRENGTH = 0.25
 DIGITAL_ARTIFACT_SUPPRESSION = 0.15
 HALATION_EDGE_COMPENSATION = 0.35
 
+DEVELOPER_TYPE = None
+FIXER_TYPE = None
+FRAME_SIZE = None
+DEVELOP_TIME_MIN = None
+DEVELOPER_CONCENTRATION = None
+AGITATION = None
+PROCESS_MODE = None
+COMPENSATION = None
 PUSH_STOPS = None
 TEMPERATURE_C = None
 DEVELOPER_EXHAUSTION = None
+FIXER_EXHAUSTION = None
+SILVER_RETENTION = None
+LIGHT_LEAK_STRENGTH = None
+CHEMICAL_STAIN = None
+UNEVEN_DEVELOPMENT = None
 
 
 # =========================
@@ -177,19 +200,46 @@ QUALITY = 95
 # =========================
 
 PRESET_DIR = PROJECT_ROOT / "half_frame_darkroom" / "presets"
-FILM_PRESET_PATH = PRESET_DIR / "film" / f"{FILM_PRESET_NAME}.json"
-SCANNER_PRESET_PATH = PRESET_DIR / "scanner" / f"{SCANNER_PRESET_NAME}.json"
+USER_PRESET_DIR = PROJECT_ROOT / "user_presets"
 NEGATIVE_SUFFIX = ".darkroom_negative.npz"
+
+
+def _preset_path(value: str | Path, kind: str) -> Path:
+    path = Path(value)
+    if path.exists():
+        return path
+
+    user_path = USER_PRESET_DIR / kind / f"{value}.json"
+    if user_path.exists():
+        return user_path
+
+    bundled_path = PRESET_DIR / kind / f"{value}.json"
+    if bundled_path.exists():
+        return bundled_path
+
+    raise FileNotFoundError(f"Preset not found: {value} ({kind})")
+
+
+FILM_PRESET_PATH: Path | None = None
+DEVELOP_PRESET_PATH: Path | None = None
+SCANNER_PRESET_PATH: Path | None = None
 
 
 def _load_config() -> DarkroomConfig:
     mode = str(PIPELINE_MODE).strip().lower()
-    film_config = DarkroomConfig.from_json(FILM_PRESET_PATH) if mode in {"full", "develop"} else None
-    scanner_config = DarkroomConfig.from_json(SCANNER_PRESET_PATH) if mode in {"full", "scan"} else None
-    config = merge_config_presets(film_config, scanner_config)
+    film_preset_path = _preset_path(FILM_PRESET_NAME, "film") if mode in {"full", "develop"} else None
+    develop_preset_path = _preset_path(DEVELOP_PRESET_NAME, "develop") if mode in {"full", "develop"} else None
+    scanner_preset_path = _preset_path(SCANNER_PRESET_NAME, "scanner") if mode in {"full", "scan"} else None
+    film_config = DarkroomConfig.from_json(film_preset_path) if film_preset_path is not None else None
+    develop_config = DarkroomConfig.from_json(develop_preset_path) if develop_preset_path is not None else None
+    scanner_config = DarkroomConfig.from_json(scanner_preset_path) if scanner_preset_path is not None else None
+    config = merge_config_presets(film_config, scanner_config, develop_config=develop_config)
     config.random_seed = RANDOM_SEED
     config.seed_strategy = str(SEED_STRATEGY)
     config.fast_mode = bool(FAST_MODE)
+    config.processing.quality_mode = str(QUALITY_MODE)
+    config.processing.halation_work_long_edge = HALATION_WORK_LONG_EDGE
+    config.processing.grain_work_long_edge = GRAIN_WORK_LONG_EDGE
     config.look.exposure_ev = float(EXPOSURE_EV)
     config.look.print_contrast = float(PRINT_CONTRAST)
     config.look.print_exposure_ev = float(PRINT_EXPOSURE_EV)
@@ -229,12 +279,40 @@ def _load_config() -> DarkroomConfig:
     config.scanner.print_color_shift = tuple(float(v) for v in PRINT_COLOR_SHIFT)
     config.scanner.highlight_color_bias = tuple(float(v) for v in HIGHLIGHT_COLOR_BIAS)
 
+    if DEVELOPER_TYPE is not None:
+        config.chemistry.developer_type = str(DEVELOPER_TYPE)
+        config.chemistry.developer_name = str(DEVELOPER_TYPE).replace("_", " ").title()
+    if FIXER_TYPE is not None:
+        config.chemistry.fixer_type = str(FIXER_TYPE)
+        config.chemistry.fixer_name = str(FIXER_TYPE).replace("_", " ").title()
+    if FRAME_SIZE is not None:
+        config.chemistry.frame_size = str(FRAME_SIZE)
+    if DEVELOP_TIME_MIN is not None:
+        config.chemistry.time_min = float(DEVELOP_TIME_MIN)
+    if DEVELOPER_CONCENTRATION is not None:
+        config.chemistry.concentration = float(DEVELOPER_CONCENTRATION)
+    if AGITATION is not None:
+        config.chemistry.agitation = float(AGITATION)
+    if PROCESS_MODE is not None:
+        config.chemistry.process_mode = str(PROCESS_MODE)
+    if COMPENSATION is not None:
+        config.chemistry.compensation = float(COMPENSATION)
     if PUSH_STOPS is not None:
         config.chemistry.push_stops = float(PUSH_STOPS)
     if TEMPERATURE_C is not None:
         config.chemistry.temperature_c = float(TEMPERATURE_C)
     if DEVELOPER_EXHAUSTION is not None:
         config.chemistry.developer_exhaustion = float(DEVELOPER_EXHAUSTION)
+    if FIXER_EXHAUSTION is not None:
+        config.chemistry.fixer_exhaustion = float(FIXER_EXHAUSTION)
+    if SILVER_RETENTION is not None:
+        config.chemistry.silver_retention = float(SILVER_RETENTION)
+    if LIGHT_LEAK_STRENGTH is not None:
+        config.chemistry.light_leak_strength = float(LIGHT_LEAK_STRENGTH)
+    if CHEMICAL_STAIN is not None:
+        config.chemistry.chemical_stain = float(CHEMICAL_STAIN)
+    if UNEVEN_DEVELOPMENT is not None:
+        config.chemistry.uneven_development = float(UNEVEN_DEVELOPMENT)
     if OUTPUT_FORMAT is not None:
         config.output.format = str(OUTPUT_FORMAT)
     if BIT_DEPTH is not None:
@@ -264,6 +342,14 @@ def _negative_path_for(input_path: Path, negative_root: Path) -> Path:
     if negative_root.suffix.lower() == ".npz":
         return negative_root
     return negative_root / f"{input_path.stem}{NEGATIVE_SUFFIX}"
+
+
+def _ensure_batch_output_target(items: list[Path], output_root: Path, label: str) -> bool:
+    if len(items) <= 1 or not output_root.suffix:
+        return True
+    print(f"{label} output is a single file, but {len(items)} input files were found.")
+    print(f"Please set it to a folder to avoid overwriting results: {output_root}")
+    return False
 
 
 def _scanner_raw_path_for_negative(negative_path: Path) -> Path:
@@ -447,6 +533,8 @@ def _run_full(config: DarkroomConfig) -> None:
     if not input_paths:
         _print_input_help()
         return
+    if not _ensure_batch_output_target(input_paths, OUTPUT_PATH, "Final image"):
+        return
     for input_path in input_paths:
         output_path = _output_path_for(input_path, OUTPUT_PATH, config.output.format)
         process_file(input_path, output_path, config, preview=RUN_AS_PREVIEW)
@@ -457,6 +545,8 @@ def _run_develop(config: DarkroomConfig) -> None:
     input_paths = iter_images(INPUT_PATH)
     if not input_paths:
         _print_input_help()
+        return
+    if not _ensure_batch_output_target(input_paths, NEGATIVE_PATH, "Developed negative"):
         return
     for input_path in input_paths:
         image = load_image(input_path)
@@ -474,6 +564,8 @@ def _run_scan(config: DarkroomConfig) -> None:
         print("没有找到可扫描的 .npz 底片文件。")
         print(f"当前 NEGATIVE_PATH: {NEGATIVE_PATH}")
         print('请先把 PIPELINE_MODE 设为 "develop" 运行一次，或把 NEGATIVE_PATH 指向已有 .npz。')
+        return
+    if not _ensure_batch_output_target(negative_paths, OUTPUT_PATH, "Scanned image"):
         return
     for negative_path in negative_paths:
         scanned, scan_source, source_path = _scan_from_file(negative_path, config)
@@ -498,10 +590,6 @@ def _run_scan(config: DarkroomConfig) -> None:
 
 def main() -> None:
     mode = str(PIPELINE_MODE).strip().lower()
-    if mode in {"full", "develop"} and not FILM_PRESET_PATH.exists():
-        raise FileNotFoundError(f"Film preset not found: {FILM_PRESET_PATH}")
-    if mode in {"full", "scan"} and not SCANNER_PRESET_PATH.exists():
-        raise FileNotFoundError(f"Scanner preset not found: {SCANNER_PRESET_PATH}")
     config = _load_config()
     if mode == "full":
         _run_full(config)

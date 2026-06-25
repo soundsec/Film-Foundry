@@ -2,26 +2,39 @@
   "film": {
     "name": "High Contrast Push",
     "halation_strength": 0.14,
-    "halation_threshold": 0.70,
-    "hd_gamma": [0.72, 0.76, 0.70],
-    "density_min": [0.11, 0.12, 0.11],
-    "density_max": [1.90, 2.02, 1.82],
-    "log_exposure_toe": [-2.05, -2.00, -2.10],
-    "log_exposure_shoulder": [0.34, 0.38, 0.32],
+    "halation_threshold": 0.7,
+    "hd_gamma": [
+      0.72,
+      0.76,
+      0.7
+    ],
+    "density_min": [
+      0.11,
+      0.12,
+      0.11
+    ],
+    "density_max": [
+      1.9,
+      2.02,
+      1.82
+    ],
+    "log_exposure_toe": [
+      -2.05,
+      -2.0,
+      -2.1
+    ],
+    "log_exposure_shoulder": [
+      0.34,
+      0.38,
+      0.32
+    ],
     "hd_toe_width": 0.16,
-    "hd_shoulder_width": 0.20,
-    "granularity_sigma": [0.038, 0.036, 0.040],
+    "hd_shoulder_width": 0.2,
+    "granularity_sigma": [
+      0.038,
+      0.036,
+      0.04
+    ],
     "grain_density_correlation_radius": 0.0016
-  },
-  "chemistry": {
-    "push_stops": 1.0,
-    "temperature_c": 21.0,
-    "developer_exhaustion": 0.08
-  },
-  "look": {
-    "exposure_ev": -0.35,
-    "negative_contrast": 1.0,
-    "grain_multiplier": 1.15,
-    "grain_size_multiplier": 1.15
   }
 }

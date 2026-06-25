@@ -1,24 +1,46 @@
 {
   "film": {
     "name": "Deep Shadow Negative",
-    "halation_strength": 0.10,
+    "halation_strength": 0.1,
     "halation_threshold": 0.74,
     "halation_softness": 0.18,
-    "hd_gamma": [0.66, 0.69, 0.64],
-    "density_min": [0.09, 0.10, 0.09],
-    "density_max": [1.92, 2.00, 1.84],
-    "log_exposure_toe": [-2.08, -2.05, -2.12],
-    "log_exposure_shoulder": [0.36, 0.40, 0.34],
+    "hd_gamma": [
+      0.66,
+      0.69,
+      0.64
+    ],
+    "density_min": [
+      0.09,
+      0.1,
+      0.09
+    ],
+    "density_max": [
+      1.92,
+      2.0,
+      1.84
+    ],
+    "log_exposure_toe": [
+      -2.08,
+      -2.05,
+      -2.12
+    ],
+    "log_exposure_shoulder": [
+      0.36,
+      0.4,
+      0.34
+    ],
     "hd_toe_width": 0.15,
     "hd_shoulder_width": 0.22,
-    "film_base_density_rgb": [0.18, 0.55, 0.84],
-    "granularity_sigma": [0.030, 0.028, 0.032],
+    "film_base_density_rgb": [
+      0.18,
+      0.55,
+      0.84
+    ],
+    "granularity_sigma": [
+      0.03,
+      0.028,
+      0.032
+    ],
     "grain_density_correlation_radius": 0.0014
-  },
-  "look": {
-    "exposure_ev": -0.18,
-    "negative_contrast": 1.05,
-    "grain_multiplier": 0.95,
-    "grain_size_multiplier": 1.05
   }
 }

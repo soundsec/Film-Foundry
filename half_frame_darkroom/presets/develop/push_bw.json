@@ -1,0 +1,27 @@
+{
+  "develop": {
+    "developer_name": "Push BW Developer",
+    "developer_type": "push",
+    "fixer_name": "Standard Fixer",
+    "fixer_type": "standard",
+    "process_mode": "normal_negative",
+    "frame_size": "35mm",
+    "time_min": 11.0,
+    "temperature_c": 21.0,
+    "concentration": 1.15,
+    "agitation": 1.25,
+    "push_stops": 1.0,
+    "developer_exhaustion": 0.08,
+    "fixer_exhaustion": 0.0,
+    "compensation": 0.0,
+    "silver_retention": 0.0
+  },
+  "mode": "bw_negative",
+  "look": {
+    "exposure_ev": -0.35,
+    "negative_contrast": 1.05,
+    "halation_multiplier": 0.60,
+    "grain_multiplier": 1.10,
+    "grain_size_multiplier": 1.05
+  }
+}

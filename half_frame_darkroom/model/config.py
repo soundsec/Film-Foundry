@@ -1,11 +1,12 @@
 """Film Foundry 配置对象。
 
-配置分为五层：
-- FilmStockConfig：胶片本体
-- ChemistryConfig：显影条件
+配置分为六层：
+- FilmStockConfig：胶片/介质材料本体
+- DevelopRecipeConfig：冲洗流程配方；ChemistryConfig 只是兼容旧名称的别名
 - ScannerConfig：扫描/打印解释
-- LookAdjustConfig：GUI/脚本滑块微调
+- LookAdjustConfig：GUI/脚本中的一次性微调
 - OutputConfig：文件输出
+- ProcessingConfig：处理质量与内部工作尺寸
 
 from_dict() 会迁移旧 preset 中混放在 film/output/top-level 的字段。
 """
@@ -28,6 +29,10 @@ class FilmStockConfig:
     """胶片本体属性。"""
 
     name: str = "Generic Color Negative"
+    medium_family: str = "film"
+    medium_process: str = "negative"
+    image_polarity: str = "negative"
+    color_process: str = "color"
 
     halation_strength: float = 0.12
     halation_threshold: float = 0.72
@@ -37,6 +42,10 @@ class FilmStockConfig:
     halation_core_mix: float = 0.62
     halation_color: Vector3 = (1.0, 0.42, 0.16)
 
+    # Legacy RGB-response fields.
+    # The current electronic-negative pipeline uses sensitometry.py
+    # (H-D density) instead of core/response.py. These fields are kept for
+    # older helpers/tests and should not be used for new film presets.
     color_matrix: Matrix3 = (
         (1.05, -0.03, -0.02),
         (-0.04, 1.02, 0.02),
@@ -49,6 +58,9 @@ class FilmStockConfig:
     shoulder_point: float = 0.72
     saturation: float = 0.96
 
+    # Legacy image-space grain fields.
+    # The current electronic-negative pipeline uses density_grain.py with
+    # granularity_sigma and grain_density_correlation_radius.
     grain_strength: float = 0.035
     grain_scales: tuple[float, ...] = (0.0012, 0.0035, 0.010)
     grain_scale_weights: tuple[float, ...] = (0.58, 0.30, 0.12)
@@ -62,6 +74,13 @@ class FilmStockConfig:
 
     halation_source_blur_radius: float = 0.0010
     halation_gradient_suppression: float = 0.35
+    # Halation source gating: prefer local specular peaks over broad bright matte areas.
+    halation_peak_radius: float = 0.006
+    halation_peak_threshold: float = 0.12
+    halation_peak_softness: float = 0.08
+    halation_area_radius: float = 0.028
+    halation_area_threshold: float = 0.32
+    halation_area_suppression: float = 0.75
 
     hd_gamma: Vector3 = (0.62, 0.66, 0.60)
     density_min: Vector3 = (0.10, 0.10, 0.10)
@@ -94,18 +113,43 @@ class FilmStockConfig:
 
 
 @dataclass(slots=True)
-class ChemistryConfig:
+class DevelopRecipeConfig:
     """显影条件。"""
 
-    push_stops: float = 0.0
+    developer_name: str = "Standard Developer"
+    developer_type: str = "standard"
+    fixer_name: str = "Standard Fixer"
+    fixer_type: str = "standard"
+    medium_process: str = "negative"
+    process_mode: str = "normal_negative"
+    frame_size: str = "35mm"
+    time_min: float = 8.0
     temperature_c: float = 20.0
+    concentration: float = 1.0
+    agitation: float = 1.0
+    push_stops: float = 0.0
     developer_exhaustion: float = 0.0
+    fixer_exhaustion: float = 0.0
+    compensation: float = 0.0
+    silver_retention: float = 0.0
+    light_leak_strength: float = 0.0
+    chemical_stain: float = 0.0
+    uneven_development: float = 0.0
+
+
+# Legacy alias for older presets/tests. New code should use DevelopRecipeConfig;
+# ChemistryConfig remains here as a compatibility layer while public naming
+# moves from "chemistry" toward "develop recipe".
+ChemistryConfig = DevelopRecipeConfig
 
 
 @dataclass(slots=True)
 class ScannerConfig:
     """扫描/打印解释。"""
 
+    target_medium_process: str = "negative"
+    input_polarity: str = "negative"
+    output_polarity: str = "positive"
     scanner_light_color: Vector3 = (1.0, 1.0, 1.0)
     scanner_response_matrix: Matrix3 = (
         (1.00, 0.00, 0.00),
@@ -171,6 +215,19 @@ class OutputConfig:
 
 
 @dataclass(slots=True)
+class ProcessingConfig:
+    """处理质量与内部工作尺寸。
+
+    这些设置不改变胶片材料、冲洗流程或扫描解释的物理语义，只决定某些低频/
+    随机场模块是否先在较小尺寸计算再回贴到目标尺寸。
+    """
+
+    quality_mode: str = "standard"
+    halation_work_long_edge: int | None = 1800
+    grain_work_long_edge: int | None = 1800
+
+
+@dataclass(slots=True)
 class DarkroomConfig:
     """单张图像处理总配置。"""
 
@@ -179,6 +236,7 @@ class DarkroomConfig:
     scanner: ScannerConfig = field(default_factory=ScannerConfig)
     look: LookAdjustConfig = field(default_factory=LookAdjustConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    processing: ProcessingConfig = field(default_factory=ProcessingConfig)
 
     random_seed: int | None = None
     seed_strategy: str = "random"
@@ -188,6 +246,7 @@ class DarkroomConfig:
     enable_grain: bool = True
     enable_subtractive: bool = True
     mode: str = "color_negative"
+    medium: str = "film_negative"
     debug_output: bool = False
     save_sidecar: bool = True
     comparison_grid: bool = False
@@ -224,11 +283,22 @@ class DarkroomConfig:
     def look_strength(self, value: float) -> None:
         self.look.look_strength = float(value)
 
+    @property
+    def develop(self) -> DevelopRecipeConfig:
+        return self.chemistry
+
+    @develop.setter
+    def develop(self, value: DevelopRecipeConfig) -> None:
+        self.chemistry = value
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DarkroomConfig":
         film_data = dict(data.get("film", {}))
+        chemistry_data = dict(data.get("chemistry", {}))
+        chemistry_data.update(dict(data.get("develop", {})))
         scanner_data = dict(data.get("scanner", {}))
         output_data = dict(data.get("output", {}))
+        processing_data = dict(data.get("processing", {}))
         look_data = dict(data.get("look", {}))
 
         # 旧 preset 迁移：这些字段过去混在 film 中。
@@ -280,10 +350,11 @@ class DarkroomConfig:
 
         return cls(
             film=FilmStockConfig(**film_data),
-            chemistry=ChemistryConfig(**data.get("chemistry", {})),
+            chemistry=ChemistryConfig(**chemistry_data),
             scanner=ScannerConfig(**scanner_data),
             look=LookAdjustConfig(**look_data),
             output=OutputConfig(**output_data),
+            processing=ProcessingConfig(**processing_data),
             random_seed=data.get("random_seed"),
             seed_strategy=str(data.get("seed_strategy", "random")),
             fast_mode=bool(data.get("fast_mode", False)),
@@ -292,6 +363,7 @@ class DarkroomConfig:
             enable_grain=bool(data.get("enable_grain", True)),
             enable_subtractive=bool(data.get("enable_subtractive", True)),
             mode=str(data.get("mode", "color_negative")),
+            medium=str(data.get("medium", data.get("medium_type", "film_negative"))),
             debug_output=bool(data.get("debug_output", False)),
             save_sidecar=bool(data.get("save_sidecar", True)),
             comparison_grid=bool(data.get("comparison_grid", False)),
@@ -325,6 +397,7 @@ SCAN_LOOK_FIELDS = (
 def merge_config_presets(
     film_config: DarkroomConfig | None = None,
     scanner_config: DarkroomConfig | None = None,
+    develop_config: DarkroomConfig | None = None,
 ) -> DarkroomConfig:
     """Compose one runtime config from separated film/develop and scanner presets.
 
@@ -338,11 +411,21 @@ def merge_config_presets(
         merged.film = copy.deepcopy(film_config.film)
         merged.chemistry = copy.deepcopy(film_config.chemistry)
         merged.mode = str(film_config.mode)
+        merged.medium = str(film_config.medium)
         merged.enable_mtf = bool(film_config.enable_mtf)
         merged.enable_halation = bool(film_config.enable_halation)
         merged.enable_grain = bool(film_config.enable_grain)
         for field_name in DEVELOP_LOOK_FIELDS:
             setattr(merged.look, field_name, copy.deepcopy(getattr(film_config.look, field_name)))
+
+    if develop_config is not None:
+        merged.chemistry = copy.deepcopy(develop_config.chemistry)
+        if str(develop_config.mode).lower() != "color_negative":
+            merged.mode = str(develop_config.mode)
+        if str(develop_config.medium).lower() != "film_negative":
+            merged.medium = str(develop_config.medium)
+        for field_name in DEVELOP_LOOK_FIELDS:
+            setattr(merged.look, field_name, copy.deepcopy(getattr(develop_config.look, field_name)))
 
     if scanner_config is not None:
         merged.scanner = copy.deepcopy(scanner_config.scanner)

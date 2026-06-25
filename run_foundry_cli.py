@@ -2,8 +2,8 @@
 
 Windows/Anaconda friendly usage:
 
-    ~\python.exe run_foundry_cli.py full input_images outputs
-    ~\python.exe run_foundry_cli.py develop input_images outputs\negatives --layer-pack
+    ~\python.exe run_foundry_cli.py full input_images outputs --film-preset clear_modern_negative --develop-preset standard_color_negative --scanner-preset neutral_scan
+    ~\python.exe run_foundry_cli.py develop input_images outputs\negatives --film-preset clear_modern_negative --develop-preset monobath_clean --layer-pack
     ~\python.exe run_foundry_cli.py scan outputs\negatives outputs\rescans
 """
 

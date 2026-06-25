@@ -50,18 +50,38 @@ def apply_color_matrix(image: Array, matrix: Array) -> Array:
 
 
 def ensure_rgb_float(image: Array) -> Array:
-    """把灰度/RGBA/整数图像整理成 [0, 1] 范围内的 float32 RGB。"""
+    """把灰度/RGB/RGBA 图像整理成 [0, 1] 范围内的 float32 RGB。"""
     image = np.asarray(image)
-    if image.ndim == 2:
-        image = np.repeat(image[..., None], 3, axis=-1)
-    if image.shape[-1] == 4:
-        image = image[..., :3]
-    if image.dtype == np.uint8:
-        image = image.astype(np.float32) / 255.0
-    elif image.dtype == np.uint16:
-        image = image.astype(np.float32) / 65535.0
+    if image.ndim not in {2, 3}:
+        raise ValueError(f"Image array must be 2D grayscale or 3D color data, got shape {image.shape}.")
+
+    if np.issubdtype(image.dtype, np.integer):
+        image = image.astype(np.float32) / max(float(np.iinfo(image.dtype).max), 1.0)
     else:
         image = image.astype(np.float32)
-        if image.max(initial=0.0) > 1.0:
+        max_value = float(np.nanmax(image)) if image.size else 0.0
+        if max_value > 1.0:
             image = image / 255.0
+
+    if image.ndim == 2:
+        return np.clip(np.repeat(image[..., None], 3, axis=-1), 0.0, 1.0).astype(np.float32)
+
+    channels = image.shape[-1]
+    if channels == 1:
+        image = np.repeat(image, 3, axis=-1)
+    elif channels == 2:
+        gray = np.repeat(image[..., :1], 3, axis=-1)
+        alpha = np.clip(image[..., 1:2], 0.0, 1.0)
+        image = gray * alpha + (1.0 - alpha)
+    elif channels == 3:
+        pass
+    elif channels == 4:
+        rgb = image[..., :3]
+        alpha = np.clip(image[..., 3:4], 0.0, 1.0)
+        # 透明图不是物理照片；按白底合成，避免透明区域被静默当成黑色曝光。
+        image = rgb * alpha + (1.0 - alpha)
+    else:
+        raise ValueError(
+            f"Unsupported channel count {channels}. Film Foundry currently accepts grayscale, RGB, or RGBA images."
+        )
     return np.clip(image, 0.0, 1.0).astype(np.float32)

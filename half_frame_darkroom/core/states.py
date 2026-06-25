@@ -20,6 +20,11 @@ class DevelopedNegative:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+# Generic aliases for future media such as slides, instant film, direct-positive
+# paper, daguerreotype-style plates, and other image-bearing materials.
+DevelopedMedium = DevelopedNegative
+
+
 @dataclass(slots=True)
 class ScannedPositive:
     """扫描/打印解释后的正像状态。"""
@@ -33,3 +38,6 @@ class ScannedPositive:
     output_srgb: np.ndarray
     positive_no_grain: np.ndarray
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+RenderedPositive = ScannedPositive

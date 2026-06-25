@@ -1,0 +1,27 @@
+{
+  "develop": {
+    "developer_name": "Exhausted Monobath",
+    "developer_type": "monobath",
+    "fixer_name": "Exhausted Integrated Fixer",
+    "fixer_type": "monobath",
+    "process_mode": "monobath",
+    "frame_size": "35mm",
+    "time_min": 10.0,
+    "temperature_c": 22.0,
+    "concentration": 0.85,
+    "agitation": 0.45,
+    "push_stops": 0.0,
+    "developer_exhaustion": 0.45,
+    "fixer_exhaustion": 0.70,
+    "compensation": 0.35,
+    "silver_retention": 0.55
+  },
+  "mode": "bw_negative",
+  "look": {
+    "exposure_ev": -0.15,
+    "negative_contrast": 0.92,
+    "halation_multiplier": 0.40,
+    "grain_multiplier": 1.05,
+    "grain_size_multiplier": 1.12
+  }
+}

@@ -45,7 +45,12 @@ from half_frame_darkroom.model.config import DarkroomConfig, merge_config_preset
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PRESET_DIR = PROJECT_ROOT / "half_frame_darkroom" / "presets"
 FILM_PRESET_DIR = PRESET_DIR / "film"
+DEVELOP_PRESET_DIR = PRESET_DIR / "develop"
 SCANNER_PRESET_DIR = PRESET_DIR / "scanner"
+USER_PRESET_DIR = PROJECT_ROOT / "user_presets"
+USER_FILM_PRESET_DIR = USER_PRESET_DIR / "film"
+USER_DEVELOP_PRESET_DIR = USER_PRESET_DIR / "develop"
+USER_SCANNER_PRESET_DIR = USER_PRESET_DIR / "scanner"
 NEGATIVE_SUFFIX = ".darkroom_negative.npz"
 
 
@@ -56,16 +61,16 @@ def _preset_path(value: str | None, kind: str | None = None) -> Path | None:
     if path.exists():
         return path
     if kind == "film":
-        named = FILM_PRESET_DIR / f"{value}.json"
+        candidates = (USER_FILM_PRESET_DIR / f"{value}.json", FILM_PRESET_DIR / f"{value}.json")
+    elif kind == "develop":
+        candidates = (USER_DEVELOP_PRESET_DIR / f"{value}.json", DEVELOP_PRESET_DIR / f"{value}.json")
     elif kind == "scanner":
-        named = SCANNER_PRESET_DIR / f"{value}.json"
+        candidates = (USER_SCANNER_PRESET_DIR / f"{value}.json", SCANNER_PRESET_DIR / f"{value}.json")
     else:
-        named = PRESET_DIR / f"{value}.json"
-    if named.exists():
-        return named
-    fallback = PRESET_DIR / f"{value}.json"
-    if fallback.exists():
-        return fallback
+        candidates = (USER_PRESET_DIR / f"{value}.json", PRESET_DIR / f"{value}.json")
+    for named in candidates:
+        if named.exists():
+            return named
     raise FileNotFoundError(f"Preset not found: {value}")
 
 
@@ -88,6 +93,14 @@ def _negative_path_for(input_path: Path, negative_root: Path) -> Path:
     if negative_root.suffix.lower() == ".npz":
         return negative_root
     return negative_root / f"{input_path.stem}{NEGATIVE_SUFFIX}"
+
+
+def _ensure_batch_output_target(items: list[Path], output_root: Path, label: str) -> None:
+    """批处理时禁止把多个结果写进同一个文件路径。"""
+    if len(items) > 1 and output_root.suffix:
+        raise ValueError(
+            f"{label} output must be a folder when processing multiple files: {output_root}"
+        )
 
 
 def _scanner_raw_path_for_negative(negative_path: Path) -> Path:
@@ -252,6 +265,9 @@ def _add_common_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed", type=int, help="Random seed.")
     parser.add_argument("--seed-strategy", choices=("random", "fixed", "path"), help="Random seed strategy.")
     parser.add_argument("--fast", action="store_true", help="Enable fast internal processing.")
+    parser.add_argument("--quality-mode", choices=("draft", "standard", "high"), help="Internal processing quality preset.")
+    parser.add_argument("--halation-work-long-edge", type=int, help="Work long edge for halation low-frequency spread; 0 disables resizing.")
+    parser.add_argument("--grain-work-long-edge", type=int, help="Work long edge for density grain random field; 0 disables resizing.")
     parser.add_argument("--format", choices=("png", "jpg", "jpeg", "tif", "tiff", "webp"), help="Output format.")
     parser.add_argument("--bit-depth", type=int, choices=(8, 16), help="Output bit depth.")
     parser.add_argument("--quality", type=int, help="JPEG/WebP quality.")
@@ -263,16 +279,30 @@ def _add_common_config_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_develop_config_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--film-preset", help="Film/develop preset name or JSON path.")
-    parser.add_argument("--exposure-ev", type=float, help="Develop/input exposure EV.")
+    parser.add_argument("--film-preset", help="Film material preset name or JSON path.")
+    parser.add_argument("--develop-preset", help="Darkroom process preset name or JSON path.")
+    parser.add_argument("--exposure-ev", type=float, help="Input exposure proxy EV before negative formation.")
     parser.add_argument("--negative-contrast", type=float, help="H-D gamma multiplier.")
     parser.add_argument("--dye-selectivity", type=float, help="Film dye absorption selectivity multiplier.")
     parser.add_argument("--halation", type=float, help="Halation multiplier.")
     parser.add_argument("--grain", type=float, help="Grain multiplier.")
     parser.add_argument("--grain-size", type=float, help="Grain correlation size multiplier; base size is relative to image frame.")
+    parser.add_argument("--developer-type", help="Developer response type, e.g. standard, fine_grain, compensating, push, monobath.")
+    parser.add_argument("--fixer-type", help="Fixer or clearing type, e.g. standard, rapid, hardening, monobath.")
+    parser.add_argument("--frame-size", help="Frame size for visible grain scaling, e.g. half_frame, 35mm, 6x6, 6x7, 4x5.")
+    parser.add_argument("--develop-time", type=float, help="Development time in minutes.")
+    parser.add_argument("--concentration", type=float, help="Developer concentration multiplier.")
+    parser.add_argument("--agitation", type=float, help="Agitation intensity multiplier.")
+    parser.add_argument("--process-mode", help="Process mode, e.g. normal_negative, bw_reversal, cross_process.")
+    parser.add_argument("--compensation", type=float, help="Compensating development strength in [0, 1].")
     parser.add_argument("--push", type=float, help="Chemistry push stops.")
     parser.add_argument("--temperature", type=float, help="Chemistry temperature in Celsius.")
     parser.add_argument("--exhaustion", type=float, help="Developer exhaustion in [0, 1].")
+    parser.add_argument("--fixer-exhaustion", type=float, help="Fixer exhaustion / clearing failure in [0, 1].")
+    parser.add_argument("--silver-retention", type=float, help="Retained silver / monobath silvering tendency in [0, 1].")
+    parser.add_argument("--light-leak", type=float, help="Intentional light leak accident strength in [0, 1].")
+    parser.add_argument("--chemical-stain", type=float, help="Dirty chemistry / kelp-like stain accident strength in [0, 1].")
+    parser.add_argument("--uneven-development", type=float, help="Uneven development mottling accident strength in [0, 1].")
     parser.add_argument("--bw", action="store_true", help="Use black-and-white negative mode.")
     parser.add_argument("--no-mtf", action="store_true", help="Disable emulsion MTF.")
     parser.add_argument("--no-halation", action="store_true", help="Disable halation.")
@@ -296,16 +326,21 @@ def _apply_common_config(args: argparse.Namespace) -> DarkroomConfig:
     else:
         command = str(getattr(args, "command", "full"))
         film_value = getattr(args, "film_preset", None)
+        develop_value = getattr(args, "develop_preset", None)
         scanner_value = getattr(args, "scanner_preset", None)
         if film_value is None and command in {"full", "develop"}:
             film_value = "clear_modern_negative"
+        if develop_value is None and command in {"full", "develop"}:
+            develop_value = "standard_color_negative"
         if scanner_value is None and command in {"full", "scan"}:
             scanner_value = "neutral_scan"
         film_preset = _preset_path(film_value, "film")
+        develop_preset = _preset_path(develop_value, "develop")
         scanner_preset = _preset_path(scanner_value, "scanner")
         film_config = DarkroomConfig.from_json(film_preset) if film_preset is not None else None
+        develop_config = DarkroomConfig.from_json(develop_preset) if develop_preset is not None else None
         scanner_config = DarkroomConfig.from_json(scanner_preset) if scanner_preset is not None else None
-        config = merge_config_presets(film_config, scanner_config)
+        config = merge_config_presets(film_config, scanner_config, develop_config=develop_config)
 
     if getattr(args, "seed", None) is not None:
         config.random_seed = args.seed
@@ -313,6 +348,14 @@ def _apply_common_config(args: argparse.Namespace) -> DarkroomConfig:
         config.seed_strategy = args.seed_strategy
     if getattr(args, "fast", False):
         config.fast_mode = True
+    if getattr(args, "quality_mode", None) is not None:
+        config.processing.quality_mode = args.quality_mode
+    if getattr(args, "halation_work_long_edge", None) is not None:
+        value = int(args.halation_work_long_edge)
+        config.processing.halation_work_long_edge = None if value <= 0 else value
+    if getattr(args, "grain_work_long_edge", None) is not None:
+        value = int(args.grain_work_long_edge)
+        config.processing.grain_work_long_edge = None if value <= 0 else value
     if getattr(args, "format", None) is not None:
         config.output.format = args.format
     if getattr(args, "bit_depth", None) is not None:
@@ -341,12 +384,40 @@ def _apply_common_config(args: argparse.Namespace) -> DarkroomConfig:
         config.look.grain_multiplier = args.grain
     if getattr(args, "grain_size", None) is not None:
         config.look.grain_size_multiplier = args.grain_size
+    if getattr(args, "developer_type", None) is not None:
+        config.chemistry.developer_type = args.developer_type
+        config.chemistry.developer_name = str(args.developer_type).replace("_", " ").title()
+    if getattr(args, "fixer_type", None) is not None:
+        config.chemistry.fixer_type = args.fixer_type
+        config.chemistry.fixer_name = str(args.fixer_type).replace("_", " ").title()
+    if getattr(args, "frame_size", None) is not None:
+        config.chemistry.frame_size = args.frame_size
+    if getattr(args, "develop_time", None) is not None:
+        config.chemistry.time_min = args.develop_time
+    if getattr(args, "concentration", None) is not None:
+        config.chemistry.concentration = args.concentration
+    if getattr(args, "agitation", None) is not None:
+        config.chemistry.agitation = args.agitation
+    if getattr(args, "process_mode", None) is not None:
+        config.chemistry.process_mode = args.process_mode
+    if getattr(args, "compensation", None) is not None:
+        config.chemistry.compensation = args.compensation
     if getattr(args, "push", None) is not None:
         config.chemistry.push_stops = args.push
     if getattr(args, "temperature", None) is not None:
         config.chemistry.temperature_c = args.temperature
     if getattr(args, "exhaustion", None) is not None:
         config.chemistry.developer_exhaustion = args.exhaustion
+    if getattr(args, "fixer_exhaustion", None) is not None:
+        config.chemistry.fixer_exhaustion = args.fixer_exhaustion
+    if getattr(args, "silver_retention", None) is not None:
+        config.chemistry.silver_retention = args.silver_retention
+    if getattr(args, "light_leak", None) is not None:
+        config.chemistry.light_leak_strength = args.light_leak
+    if getattr(args, "chemical_stain", None) is not None:
+        config.chemistry.chemical_stain = args.chemical_stain
+    if getattr(args, "uneven_development", None) is not None:
+        config.chemistry.uneven_development = args.uneven_development
     if getattr(args, "bw", False):
         config.mode = "bw_negative"
     if getattr(args, "no_mtf", False):
@@ -412,6 +483,7 @@ def _run_full(args: argparse.Namespace, config: DarkroomConfig) -> int:
     inputs = iter_images(args.input)
     if not inputs:
         raise FileNotFoundError(f"No supported images found in {args.input}")
+    _ensure_batch_output_target(inputs, args.output, "Final image")
     for input_path in inputs:
         output_path = _output_path_for(input_path, args.output, config.output.format)
         process_file(input_path, output_path, config, preview=bool(args.preview))
@@ -435,6 +507,7 @@ def _run_develop(args: argparse.Namespace, config: DarkroomConfig) -> int:
     inputs = iter_images(args.input)
     if not inputs:
         raise FileNotFoundError(f"No supported images found in {args.input}")
+    _ensure_batch_output_target(inputs, args.negative_output, "Developed negative")
     for input_path in inputs:
         image = load_image(input_path)
         long_edge = config.output.preview_long_edge if args.preview else config.output.render_long_edge
@@ -457,6 +530,7 @@ def _run_scan(args: argparse.Namespace, config: DarkroomConfig) -> int:
     negatives = _iter_negative_files(args.negative)
     if not negatives:
         raise FileNotFoundError(f"No .npz or .scanner_raw.tiff negatives found in {args.negative}")
+    _ensure_batch_output_target(negatives, args.output, "Scanned image")
     for negative_path in negatives:
         scanned, scan_source, source_path = _scan_from_file(negative_path, config)
         output_path = _output_path_for(negative_path, args.output, config.output.format)

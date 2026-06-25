@@ -5,35 +5,88 @@
     "halation_threshold": 0.86,
     "halation_softness": 0.12,
     "halation_core_radius": 0.0025,
-    "halation_outer_radius": 0.010,
-    "halation_color": [1.0, 0.55, 0.30],
+    "halation_outer_radius": 0.01,
+    "halation_color": [
+      1.0,
+      0.55,
+      0.3
+    ],
     "base_fog": 0.004,
     "emulsion_mtf_strength": 0.08,
     "digital_artifact_suppression": 0.06,
-    "halation_gradient_suppression": 0.10,
-    "hd_gamma": [0.78, 0.78, 0.78],
-    "density_min": [0.035, 0.035, 0.035],
-    "density_max": [2.25, 2.25, 2.25],
-    "log_exposure_toe": [-2.65, -2.65, -2.65],
-    "log_exposure_shoulder": [0.72, 0.72, 0.72],
+    "halation_gradient_suppression": 0.1,
+    "hd_gamma": [
+      0.78,
+      0.78,
+      0.78
+    ],
+    "density_min": [
+      0.035,
+      0.035,
+      0.035
+    ],
+    "density_max": [
+      2.25,
+      2.25,
+      2.25
+    ],
+    "log_exposure_toe": [
+      -2.65,
+      -2.65,
+      -2.65
+    ],
+    "log_exposure_shoulder": [
+      0.72,
+      0.72,
+      0.72
+    ],
     "hd_toe_width": 0.13,
     "hd_shoulder_width": 0.28,
-    "layer_sensitivity_matrix": [[0.96, 0.03, 0.01], [0.02, 0.96, 0.02], [0.01, 0.04, 0.95]],
-    "dye_absorption_matrix": [[0.98, 0.04, 0.02], [0.03, 0.98, 0.04], [0.02, 0.05, 0.98]],
-    "film_base_density_rgb": [0.08, 0.08, 0.08],
-    "granularity_sigma": [0.006, 0.006, 0.006],
+    "layer_sensitivity_matrix": [
+      [
+        0.96,
+        0.03,
+        0.01
+      ],
+      [
+        0.02,
+        0.96,
+        0.02
+      ],
+      [
+        0.01,
+        0.04,
+        0.95
+      ]
+    ],
+    "dye_absorption_matrix": [
+      [
+        0.98,
+        0.04,
+        0.02
+      ],
+      [
+        0.03,
+        0.98,
+        0.04
+      ],
+      [
+        0.02,
+        0.05,
+        0.98
+      ]
+    ],
+    "film_base_density_rgb": [
+      0.08,
+      0.08,
+      0.08
+    ],
+    "granularity_sigma": [
+      0.006,
+      0.006,
+      0.006
+    ],
     "grain_density_correlation_radius": 0.0008,
-    "halation_exponential_radius": 0.010
-  },
-  "look": {
-    "exposure_ev": 0.0,
-    "negative_contrast": 1.0,
-    "saturation_multiplier": 1.0,
-    "halation_multiplier": 1.0,
-    "grain_multiplier": 1.0,
-    "grain_size_multiplier": 0.85,
-    "emulsion_mtf_strength": 0.08,
-    "digital_artifact_suppression": 0.06,
-    "halation_edge_compensation": 0.10
+    "halation_exponential_radius": 0.01
   }
 }

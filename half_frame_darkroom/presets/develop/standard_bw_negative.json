@@ -1,0 +1,27 @@
+{
+  "develop": {
+    "developer_name": "Standard BW Developer",
+    "developer_type": "standard",
+    "fixer_name": "Standard Fixer",
+    "fixer_type": "standard",
+    "process_mode": "normal_negative",
+    "frame_size": "35mm",
+    "time_min": 8.0,
+    "temperature_c": 20.0,
+    "concentration": 1.0,
+    "agitation": 1.0,
+    "push_stops": 0.0,
+    "developer_exhaustion": 0.0,
+    "fixer_exhaustion": 0.0,
+    "compensation": 0.0,
+    "silver_retention": 0.0
+  },
+  "mode": "bw_negative",
+  "look": {
+    "exposure_ev": -0.10,
+    "negative_contrast": 1.0,
+    "halation_multiplier": 0.55,
+    "grain_multiplier": 1.0,
+    "grain_size_multiplier": 1.0
+  }
+}
