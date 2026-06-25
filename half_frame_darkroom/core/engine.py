@@ -11,10 +11,20 @@ from pathlib import Path
 
 import numpy as np
 
+from half_frame_darkroom.core.accidents import apply_density_accidents, apply_light_leak_to_exposure
 from half_frame_darkroom.core.color import linear_to_srgb, luminance, srgb_to_linear
 from half_frame_darkroom.core.density_grain import apply_density_grain
 from half_frame_darkroom.core.halation import apply_halation
 from half_frame_darkroom.core.io_utils import load_image, save_image
+from half_frame_darkroom.core.electronic_negative import (
+    export_layer_pack,
+    export_plate_set,
+    export_transparent_plate_set,
+    save_linear_rgb_tiff,
+    scanner_raw_with_clear_border,
+)
+from half_frame_darkroom.core.media import config_medium_process, is_monochrome_process
+from half_frame_darkroom.core.media_registry import get_media_pipeline, install_default_media_pipelines
 from half_frame_darkroom.core.mtf import apply_emulsion_mtf
 from half_frame_darkroom.core.preview import negative_visual_preview, resize_to_long_edge
 from half_frame_darkroom.core.scanner import (
@@ -102,7 +112,7 @@ def _apply_look_strength(config: DarkroomConfig) -> None:
 
 def _force_bw_negative(config: DarkroomConfig) -> None:
     """黑白负片模式：把三层参数同步成单一银盐密度响应，避免彩色染料色偏。"""
-    if str(config.mode).lower() != "bw_negative":
+    if not is_monochrome_process(config):
         return
     lum = (0.2126, 0.7152, 0.0722)
     config.film.layer_sensitivity_matrix = (lum, lum, lum)
@@ -167,11 +177,57 @@ def _runtime_config(config: DarkroomConfig | None, prepared: bool = False) -> Da
     return runtime
 
 
+def _resolve_scan_interpretation_config(
+    negative: DevelopedNegative,
+    config: DarkroomConfig | None,
+    prepared_config: bool,
+) -> tuple[DarkroomConfig, bool]:
+    """Resolve scan-time config without changing the developed negative identity."""
+    stored = negative.metadata.get("runtime_config")
+    if config is None:
+        resolved = copy.deepcopy(stored) if isinstance(stored, DarkroomConfig) else DarkroomConfig()
+        return resolved, isinstance(stored, DarkroomConfig)
+    if isinstance(stored, DarkroomConfig) and not prepared_config:
+        return _with_scan_interpretation(stored, config), True
+    return config, prepared_config
+
+
+def _processing_work_long_edge(config: DarkroomConfig, module_name: str) -> int | None:
+    """Resolve internal work size for low-frequency or stochastic modules."""
+    quality = str(config.processing.quality_mode).strip().lower()
+    if quality in {"high", "full", "native"}:
+        return None
+    if quality in {"draft", "preview"}:
+        default_edge = 1200
+    else:
+        default_edge = 1800
+
+    configured = getattr(config.processing, f"{module_name}_work_long_edge", None)
+    edge = default_edge if configured is None else int(configured)
+    if edge <= 0:
+        return None
+    if config.fast_mode:
+        edge = min(edge, 1600)
+    return edge
+
+
 def develop_negative(
     image_srgb: np.ndarray,
     config: DarkroomConfig | None = None,
     rng: np.random.Generator | None = None,
     *,
+    _prepared_config: bool = False,
+) -> DevelopedNegative:
+    """Dispatch development through the registered media pipeline."""
+    runtime = _runtime_config(config, prepared=_prepared_config)
+    pipeline = get_media_pipeline(runtime)
+    return pipeline.develop(image_srgb, runtime, rng, True)
+
+
+def _develop_negative_pipeline(
+    image_srgb: np.ndarray,
+    config: DarkroomConfig | None = None,
+    rng: np.random.Generator | None = None,
     _prepared_config: bool = False,
 ) -> DevelopedNegative:
     """把输入 sRGB 图像冲洗成 CMY 底片密度状态。"""
@@ -181,7 +237,7 @@ def develop_negative(
 
     linear = srgb_to_linear(image_srgb)
     linear = linear * (2.0 ** float(config.look.exposure_ev))
-    if str(config.mode).lower() == "bw_negative":
+    if is_monochrome_process(config):
         linear = np.repeat(luminance(linear)[..., None], 3, axis=-1)
     linear_input = np.clip(linear, 0.0, 1.0)
 
@@ -191,11 +247,17 @@ def develop_negative(
         after_mtf = linear
 
     if config.enable_halation:
-        after_halation = apply_halation(after_mtf, config.film, fast=config.fast_mode)
+        after_halation = apply_halation(
+            after_mtf,
+            config.film,
+            fast=config.fast_mode,
+            work_long_edge=_processing_work_long_edge(config, "halation"),
+        )
     else:
         after_halation = after_mtf
 
-    density_cmy = exposure_to_density(after_halation, config.film, config.chemistry)
+    after_accidents, light_leak_map = apply_light_leak_to_exposure(after_halation, config.chemistry, rng=rng)
+    density_cmy = exposure_to_density(after_accidents, config.film, config.chemistry)
     if config.enable_grain:
         density_grain = apply_density_grain(
             density_cmy,
@@ -203,19 +265,38 @@ def develop_negative(
             config.chemistry,
             rng=rng,
             fast=config.fast_mode,
+            work_long_edge=_processing_work_long_edge(config, "grain"),
         )
     else:
         density_grain = density_cmy
-    if str(config.mode).lower() == "bw_negative":
+    density_grain, accident_maps = apply_density_accidents(
+        density_grain,
+        config.chemistry,
+        rng=rng,
+        fast=config.fast_mode,
+        work_long_edge=_processing_work_long_edge(config, "grain"),
+    )
+    if is_monochrome_process(config):
         density_grain = np.repeat(density_grain.mean(axis=-1, keepdims=True), 3, axis=-1)
 
     return DevelopedNegative(
         linear_input=linear_input.astype(np.float32),
         after_mtf=np.clip(after_mtf, 0.0, 1.0).astype(np.float32),
-        after_halation=np.clip(after_halation, 0.0, 1.0).astype(np.float32),
+        after_halation=np.clip(after_accidents, 0.0, 1.0).astype(np.float32),
         density_cmy=density_cmy.astype(np.float32),
         density_grain=density_grain.astype(np.float32),
-        metadata={"runtime_config": config, "stage": "developed_negative"},
+        metadata={
+            "runtime_config": config,
+            "stage": "developed_negative",
+            "medium": config.medium,
+            "medium_process": config_medium_process(config),
+            "image_polarity": config.film.image_polarity,
+            "light_leak_strength": float(config.chemistry.light_leak_strength),
+            "chemical_stain": float(config.chemistry.chemical_stain),
+            "uneven_development": float(config.chemistry.uneven_development),
+            "has_light_leak_map": light_leak_map is not None,
+            "accident_maps": tuple(sorted(accident_maps)),
+        },
     )
 
 
@@ -225,16 +306,20 @@ def scan_negative(
     *,
     _prepared_config: bool = False,
 ) -> ScannedPositive:
+    """Dispatch scan/render through the registered media pipeline."""
+    resolved_config, prepared = _resolve_scan_interpretation_config(negative, config, _prepared_config)
+    runtime = _runtime_config(resolved_config, prepared=prepared)
+    pipeline = get_media_pipeline(runtime)
+    return pipeline.scan(negative, runtime, True)
+
+
+def _scan_negative_pipeline(
+    negative: DevelopedNegative,
+    config: DarkroomConfig | None = None,
+    _prepared_config: bool = False,
+) -> ScannedPositive:
     """把已冲洗底片解释成可观看正像。"""
-    if config is None:
-        stored = negative.metadata.get("runtime_config")
-        config = copy.deepcopy(stored) if isinstance(stored, DarkroomConfig) else DarkroomConfig()
-        prepared = isinstance(stored, DarkroomConfig)
-    else:
-        stored = negative.metadata.get("runtime_config")
-        if isinstance(stored, DarkroomConfig) and not _prepared_config:
-            config = _with_scan_interpretation(stored, config)
-        prepared = _prepared_config
+    config, prepared = _resolve_scan_interpretation_config(negative, config, _prepared_config)
     auto_bw = _density_is_monochrome(negative.density_grain)
     if auto_bw:
         config.mode = "bw_negative"
@@ -257,7 +342,15 @@ def scan_negative(
         config,
         positive_no_grain=np.clip(positive_no_grain, 0.0, 1.0).astype(np.float32),
         negative_total_density=negative_total_density,
-        metadata={"runtime_config": config, "stage": "scanned_positive", "scan_source": "density_negative"},
+        metadata={
+            "runtime_config": config,
+            "stage": "scanned_positive",
+            "scan_source": "density_negative",
+            "medium": config.medium,
+            "medium_process": config_medium_process(config),
+            "input_polarity": config.scanner.input_polarity,
+            "output_polarity": config.scanner.output_polarity,
+        },
         _prepared_config=True,
     )
 
@@ -281,6 +374,10 @@ def scan_scanner_raw(
             "stage": "scanned_positive",
             "scan_source": "scanner_raw_tiff",
             "source_path": str(source_path) if source_path is not None else None,
+            "medium": config.medium,
+            "medium_process": config_medium_process(config),
+            "input_polarity": config.scanner.input_polarity,
+            "output_polarity": config.scanner.output_polarity,
         },
         _prepared_config=True,
     )
@@ -359,11 +456,11 @@ def _scan_scanner_raw_array(
     )
 
 
-def process_array_with_stages(
+def _process_array_with_runtime(
     image_srgb: np.ndarray,
     config: DarkroomConfig | None = None,
     rng: np.random.Generator | None = None,
-) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+) -> tuple[np.ndarray, dict[str, np.ndarray], DarkroomConfig, DevelopedNegative]:
     """处理数组并返回关键中间结果，供 debug 输出使用。"""
     config = _runtime_config(config)
     if rng is None:
@@ -384,7 +481,17 @@ def process_array_with_stages(
         "10_positive_linear": scanned.positive_linear,
         "11_output_srgb": scanned.output_srgb,
     }
-    return scanned.output_srgb, stages
+    return scanned.output_srgb, stages, config, negative
+
+
+def process_array_with_stages(
+    image_srgb: np.ndarray,
+    config: DarkroomConfig | None = None,
+    rng: np.random.Generator | None = None,
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """处理数组并返回关键中间结果，供 debug 输出使用。"""
+    output, stages, _, _ = _process_array_with_runtime(image_srgb, config, rng)
+    return output, stages
 
 
 def process_array(
@@ -456,6 +563,103 @@ def _save_sidecar(
         json.dump(sidecar, handle, ensure_ascii=False, indent=2)
 
 
+def _save_full_negative_materials(
+    input_path: Path,
+    output_path: Path,
+    negative: DevelopedNegative,
+    config: DarkroomConfig,
+    resolved_seed: int | None,
+) -> dict[str, str]:
+    """完整流程中同步保存可复用电子负片材料。"""
+    negative_path = output_path.with_suffix(".darkroom_negative.npz")
+    negative_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        negative_path,
+        density_cmy=negative.density_cmy.astype(np.float32),
+        density_grain=negative.density_grain.astype(np.float32),
+    )
+
+    paths: dict[str, str] = {"negative_path": str(negative_path)}
+    preview_path = output_path.with_suffix(".negative_visual.png")
+    save_image(negative_visual_preview(negative.density_grain, config.film), preview_path, config.output)
+    paths["negative_visual_preview"] = str(preview_path)
+
+    scanner_raw_path: Path | None = None
+    if config.output.save_scanner_raw:
+        scanner_raw = scanner_raw_with_clear_border(
+            negative.density_grain,
+            config.film,
+            config.scanner,
+            border_percent=config.output.scanner_raw_border_percent,
+            border_min_px=config.output.scanner_raw_border_min_px,
+        )
+        scanner_raw_path = output_path.with_suffix(".scanner_raw.tiff")
+        save_linear_rgb_tiff(scanner_raw, scanner_raw_path)
+        paths["scanner_raw_path"] = str(scanner_raw_path)
+
+    material_base = negative_path.with_suffix("")
+    material_paths: dict[str, str] = {}
+    if config.output.export_layer_pack:
+        material_paths.update(
+            export_layer_pack(
+                negative,
+                config.film,
+                material_base.parent / f"{material_base.name}_layer_pack",
+                source_negative_path=negative_path,
+                scanner_raw_path=scanner_raw_path,
+                orange_preview_path=preview_path,
+                metadata={
+                    "input_path": str(input_path),
+                    "output_path": str(output_path),
+                    "negative_path": str(negative_path),
+                    "config": asdict(config),
+                },
+            )
+        )
+    else:
+        if config.output.export_transparent_plate:
+            material_paths.update(
+                export_transparent_plate_set(
+                    negative.density_grain,
+                    config.film,
+                    material_base.parent / f"{material_base.name}_transparent_plate",
+                )
+            )
+        if config.output.export_plate_set:
+            material_paths.update(
+                export_plate_set(
+                    negative.density_cmy,
+                    negative.density_grain,
+                    negative.after_mtf,
+                    negative.after_halation,
+                    config.film,
+                    material_base.parent / f"{material_base.name}_plate_set",
+                )
+            )
+    paths.update({f"material:{key}": value for key, value in material_paths.items()})
+
+    if config.save_sidecar:
+        sidecar_path = negative_path.with_suffix(negative_path.suffix + ".json")
+        with sidecar_path.open("w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "kind": "DevelopedNegative",
+                    "created_at": datetime.now().isoformat(timespec="seconds"),
+                    "project": "Film Foundry / Electronic Negative Factory",
+                    "input_path": str(input_path),
+                    "output_path": str(output_path),
+                    "resolved_seed": resolved_seed,
+                    "paths": paths,
+                    "config": asdict(config),
+                },
+                handle,
+                ensure_ascii=False,
+                indent=2,
+            )
+        paths["sidecar"] = str(sidecar_path)
+    return paths
+
+
 def process_file(
     input_path: str | Path,
     output_path: str | Path,
@@ -470,11 +674,18 @@ def process_file(
     long_edge = config.output.preview_long_edge if preview else config.output.render_long_edge
     image = resize_to_long_edge(image, long_edge)
     rng, resolved_seed = _rng_for_input(input_path, config)
-    result, stages = process_array_with_stages(image, config, rng=rng)
-    save_image(result, output_path, config.output)
+    result, stages, runtime_config, negative = _process_array_with_runtime(image, config, rng=rng)
+    save_image(result, output_path, runtime_config.output)
+    _save_full_negative_materials(input_path, output_path, negative, runtime_config, resolved_seed)
 
-    if config.debug_output:
-        _save_debug_outputs(output_path, image, stages, config)
-    if config.save_sidecar:
-        _save_sidecar(input_path, output_path, config, resolved_seed, preview)
+    if runtime_config.debug_output:
+        _save_debug_outputs(output_path, image, stages, runtime_config)
+    if runtime_config.save_sidecar:
+        _save_sidecar(input_path, output_path, runtime_config, resolved_seed, preview)
     return output_path
+
+
+install_default_media_pipelines(
+    negative_develop=_develop_negative_pipeline,
+    negative_scan=_scan_negative_pipeline,
+)

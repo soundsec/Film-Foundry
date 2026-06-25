@@ -1,0 +1,27 @@
+{
+  "develop": {
+    "developer_name": "Compensating BW Developer",
+    "developer_type": "compensating",
+    "fixer_name": "Standard Fixer",
+    "fixer_type": "standard",
+    "process_mode": "normal_negative",
+    "frame_size": "35mm",
+    "time_min": 10.0,
+    "temperature_c": 20.0,
+    "concentration": 0.85,
+    "agitation": 0.55,
+    "push_stops": 0.0,
+    "developer_exhaustion": 0.0,
+    "fixer_exhaustion": 0.0,
+    "compensation": 0.70,
+    "silver_retention": 0.0
+  },
+  "mode": "bw_negative",
+  "look": {
+    "exposure_ev": -0.05,
+    "negative_contrast": 0.95,
+    "halation_multiplier": 0.50,
+    "grain_multiplier": 1.0,
+    "grain_size_multiplier": 1.0
+  }
+}

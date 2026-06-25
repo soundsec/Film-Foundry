@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+# Legacy RGB film-response helper.
+#
+# The current electronic-negative pipeline uses
+# sensitometry.exposure_to_density() to form CMY density. This module is kept
+# for old tests and experiments.
+
 import numpy as np
 
 from half_frame_darkroom.core.color import apply_color_matrix, luminance

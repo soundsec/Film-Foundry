@@ -1,0 +1,54 @@
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+.env/
+.agents/
+.codex/
+dist/
+build/
+*.egg-info/
+*.manifest
+*.toc
+*.pkg
+
+# Local IDE / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local backups and user-supplied material
+\#BackUp/
+input_images/*
+!input_images/.gitkeep
+user_presets/*
+!user_presets/.gitkeep
+
+# Generated outputs and electronic negatives
+outputs/*
+!outputs/.gitkeep
+
+# Packaged release artifacts
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.whl
+
+# Logs / temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# Local collected reference / handoff scratch files
+HALF_FRAME_DARKROOM_COLLECTED_REFERENCE.py
+*_COLLECTED_REFERENCE.py

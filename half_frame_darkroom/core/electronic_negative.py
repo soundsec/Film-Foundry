@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from half_frame_darkroom.core.io_utils import cv_imread_unicode, cv_imwrite_unicode
 from half_frame_darkroom.core.scanner import render_negative_image
 from half_frame_darkroom.model.config import FilmStockConfig, ScannerConfig
 
@@ -54,7 +55,7 @@ def _save_rgba_tiff_16(rgba: np.ndarray, path: str | Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     arr = np.round(np.clip(rgba, 0.0, 1.0) * 65535.0).astype(np.uint16)
     bgra = arr[..., [2, 1, 0, 3]]
-    if not cv2.imwrite(str(path), bgra):
+    if not cv_imwrite_unicode(path, bgra):
         raise OSError(f"Failed to save transparent plate TIFF: {path}")
     return path
 
@@ -85,6 +86,13 @@ def halation_alpha(after_mtf: np.ndarray, after_halation: np.ndarray) -> np.ndar
     diff = np.maximum(np.asarray(after_halation, dtype=np.float32) - np.asarray(after_mtf, dtype=np.float32), 0.0)
     values = diff[..., 0] * 0.2126 + diff[..., 1] * 0.7152 + diff[..., 2] * 0.0722
     return _normalize_channel(values)
+
+
+def halation_alpha_linear(after_mtf: np.ndarray, after_halation: np.ndarray, scale: float = 0.05) -> np.ndarray:
+    """Fixed-scale halation strength map; unlike preview, it is not normalized per image."""
+    diff = np.maximum(np.asarray(after_halation, dtype=np.float32) - np.asarray(after_mtf, dtype=np.float32), 0.0)
+    values = diff[..., 0] * 0.2126 + diff[..., 1] * 0.7152 + diff[..., 2] * 0.0722
+    return np.clip(values / max(float(scale), 1e-6), 0.0, 1.0).astype(np.float32)
 
 
 def export_transparent_plate_set(
@@ -126,7 +134,8 @@ def export_plate_set(
         "yellow_plate": str(_save_gray_png(density_norm[..., 2], output_dir / "yellow_plate.png")),
         "density_plate": str(_save_gray_png(total_density, output_dir / "density_plate.png")),
         "grain_layer": str(_save_gray_png(grain_alpha(density_cmy, density_grain), output_dir / "grain_layer.png")),
-        "halation_layer": str(_save_gray_png(halation_alpha(after_mtf, after_halation), output_dir / "halation_layer.png")),
+        "halation_layer_preview": str(_save_gray_png(halation_alpha(after_mtf, after_halation), output_dir / "halation_layer_preview.png")),
+        "halation_layer_linear": str(_save_gray_png(halation_alpha_linear(after_mtf, after_halation), output_dir / "halation_layer_linear.png")),
     }
     return paths
 
@@ -224,7 +233,7 @@ def save_linear_rgb_tiff(image: np.ndarray, path: str | Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     image = np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0)
     bgr16 = np.round(image * 65535.0).astype(np.uint16)[..., ::-1]
-    if not cv2.imwrite(str(path), bgr16):
+    if not cv_imwrite_unicode(path, bgr16):
         raise OSError(f"Failed to save scanner raw TIFF: {path}")
     return path
 
@@ -232,7 +241,7 @@ def save_linear_rgb_tiff(image: np.ndarray, path: str | Path) -> Path:
 def load_linear_rgb_tiff(path: str | Path) -> np.ndarray:
     """读取 16-bit/8-bit TIFF 电子负片，按线性 RGB 返回 float32。"""
     path = Path(path)
-    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED | cv2.IMREAD_COLOR)
+    image = cv_imread_unicode(path, cv2.IMREAD_UNCHANGED | cv2.IMREAD_COLOR)
     if image is None:
         raise OSError(f"Failed to load scanner raw TIFF: {path}")
     image = image[..., ::-1]

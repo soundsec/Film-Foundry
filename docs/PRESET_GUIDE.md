@@ -6,6 +6,10 @@
 
 ```text
 half_frame_darkroom/presets/film/
+  film material: H-D curve, base, dye, grain, halation
+
+half_frame_darkroom/presets/develop/
+  darkroom process: developer/monobath, time, temperature, concentration, agitation, exhaustion, frame size
   胶片 / 冲洗 / 电子负片形成
 
 half_frame_darkroom/presets/scanner/
@@ -134,3 +138,39 @@ H-D toe / shoulder
 - 整体像通道曲线硬掰过。
 
 如果想要“浓郁”，优先提高 luma 黑白点展开、中间调反差和扫描饱和度；不要只靠大幅度 `print_color_shift` 或三通道独立曲线。
+
+## Diagnostic Develop Sensitivity
+
+### `film/diagnostic_develop_sensitive` + `scanner/diagnostic_flat_scan`
+
+Purpose: diagnostic preset pair for checking whether develop controls are actually changing the negative state and final render.
+
+Characteristics:
+- Very steep and narrow H-D curve, so time, temperature, concentration, exhaustion, compensation, and push controls produce visible density shifts.
+- Low halation, grain, MTF smoothing, and scanner color styling, so those effects do not hide develop-stage changes.
+- Scanner normalization is disabled. This is intentional: automatic black/white correction can flatten the difference between two develop recipes.
+- Not intended as a daily creative look. Use it as a calibration target, then move back to normal film/scanner presets after the develop behavior is tuned.
+
+Suggested CLI check:
+
+```bash
+python run_foundry_cli.py full input_images outputs/diagnostic_develop \
+  --film-preset diagnostic_develop_sensitive \
+  --develop-preset standard_color_negative \
+  --scanner-preset diagnostic_flat_scan \
+  --fast
+```
+
+## Darkroom Accidents
+
+### `develop/accident_kelp_light_leak`
+
+Purpose: playful expert-mode accident preset for ruined chemistry, retained silver, murky stain, uneven development, and edge light leaks.
+
+New develop fields:
+- `light_leak_strength`: adds warm edge/corner exposure before H-D density formation.
+- `chemical_stain`: adds dirty chemistry fog, lowers effective Dmax, and creates murky CMY density stain.
+- `uneven_development`: adds low-frequency mottling and chemical flow marks in density space.
+- `silver_retention`: existing retained-silver / silvering control, still useful for bleach bypass, monobath failure, and bad clearing.
+
+These controls are bounded accident controls. They are meant to produce repeatable ruined-film behavior, not unbounded physical simulation.

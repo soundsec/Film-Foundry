@@ -75,19 +75,62 @@ def _halation_source_luminance(image: np.ndarray, film: FilmStockConfig) -> np.n
     return (y * (1.0 - edge_mask) + scattered * edge_mask).astype(np.float32)
 
 
-def apply_halation(image: np.ndarray, film: FilmStockConfig, fast: bool = False) -> np.ndarray:
-    """用 PSF 对高光泄漏能量做卷积，再以暖色散射能量加回线性图像。"""
-    image = np.asarray(image, dtype=np.float32)
+def _local_peak_mask(values: np.ndarray, film: FilmStockConfig, image_shape: tuple[int, int, int]) -> np.ndarray:
+    """Estimate local highlight peaks and suppress broad bright matte surfaces."""
+    sigma = radius_to_sigma(film.halation_peak_radius, image_shape)
+    local_base = cv2.GaussianBlur(values, (0, 0), sigmaX=sigma, sigmaY=sigma)
+    local_peak = np.clip(values - local_base, 0.0, None)
+    relative_peak = local_peak / (local_base + 0.05)
+    return soft_threshold(
+        relative_peak,
+        float(film.halation_peak_threshold),
+        float(film.halation_peak_softness),
+    )
+
+
+def _large_bright_area_weight(highlight_mask: np.ndarray, film: FilmStockConfig, image_shape: tuple[int, int, int]) -> np.ndarray:
+    """Down-weight large bright regions such as sky, white walls, or white cups."""
+    suppression = float(np.clip(film.halation_area_suppression, 0.0, 1.0))
+    if suppression <= 0.0:
+        return np.ones_like(highlight_mask, dtype=np.float32)
+
+    sigma = radius_to_sigma(film.halation_area_radius, image_shape)
+    local_area = cv2.GaussianBlur(highlight_mask, (0, 0), sigmaX=sigma, sigmaY=sigma)
+    area_mask = soft_threshold(
+        local_area,
+        float(film.halation_area_threshold),
+        0.25,
+    )
+    return np.clip(1.0 - suppression * area_mask, 0.0, 1.0).astype(np.float32)
+
+
+def halation_source_energy(image: np.ndarray, film: FilmStockConfig) -> np.ndarray:
+    """Build the leaked highlight energy source for halation."""
     y = _halation_source_luminance(image, film)
     highlight_mask = soft_threshold(y, film.halation_threshold, film.halation_softness)
+    peak_mask = _local_peak_mask(y, film, image.shape)
+    area_weight = _large_bright_area_weight(highlight_mask, film, image.shape)
     excess_energy = np.clip(y - film.halation_threshold, 0.0, None)
-    source = highlight_mask * excess_energy
+    return (highlight_mask * peak_mask * area_weight * excess_energy).astype(np.float32)
 
-    # 快速模式先在较小能量源上扩散，再放回原尺寸；视觉比例仍按图像尺寸计算。
-    work_source = _resize_mask(source, long_edge=1600) if fast else source
+
+def apply_halation(
+    image: np.ndarray,
+    film: FilmStockConfig,
+    fast: bool = False,
+    work_long_edge: int | None = None,
+) -> np.ndarray:
+    """用 PSF 对高光泄漏能量做卷积，再以暖色散射能量加回线性图像。"""
+    image = np.asarray(image, dtype=np.float32)
+    source = halation_source_energy(image, film)
+
+    # 低频光晕可以先在较小能量源上扩散，再放回原尺寸；视觉比例仍按图像尺寸计算。
+    if work_long_edge is None and fast:
+        work_long_edge = 1600
+    work_source = _resize_mask(source, long_edge=int(work_long_edge)) if work_long_edge else source
     work_shape = (*work_source.shape, 3)
     kernel = halation_psf_kernel(work_shape, film)
-    spread = cv2.filter2D(work_source, cv2.CV_32F, kernel, borderType=cv2.BORDER_REFLECT)
+    spread = cv2.filter2D(work_source, cv2.CV_32F, kernel, borderType=cv2.BORDER_CONSTANT)
     if spread.shape != source.shape:
         spread = cv2.resize(spread, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
 

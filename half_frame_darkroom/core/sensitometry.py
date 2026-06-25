@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from half_frame_darkroom.core.development import build_effective_development
 from half_frame_darkroom.model.config import ChemistryConfig, FilmStockConfig
 
 
@@ -35,21 +36,14 @@ def hd_density_curve(
     exposure = np.clip(np.asarray(exposure, dtype=np.float32), 1e-6, None)
     log_e = np.log10(exposure)
 
-    push = float(chemistry.push_stops)
-    exhaustion = float(np.clip(chemistry.developer_exhaustion, 0.0, 1.0))
-    temp_delta = float(chemistry.temperature_c) - 20.0
+    development = build_effective_development(chemistry)
 
-    gamma = np.asarray(film.hd_gamma, dtype=np.float32) * (1.0 + 0.08 * push)
-    gamma *= 1.0 - 0.12 * exhaustion
-    gamma *= 1.0 + 0.004 * temp_delta
+    gamma = np.asarray(film.hd_gamma, dtype=np.float32) * development.gamma_factor
+    d_min = np.asarray(film.density_min, dtype=np.float32) + development.d_min_shift
+    d_max = np.asarray(film.density_max, dtype=np.float32) * development.d_max_factor
 
-    d_min = np.asarray(film.density_min, dtype=np.float32)
-    d_min = d_min + 0.012 * max(push, 0.0) + 0.030 * exhaustion
-    d_max = np.asarray(film.density_max, dtype=np.float32)
-    d_max = d_max * (1.0 - 0.08 * exhaustion)
-
-    toe = np.asarray(film.log_exposure_toe, dtype=np.float32) - 0.10 * push
-    shoulder = np.asarray(film.log_exposure_shoulder, dtype=np.float32) - 0.06 * push
+    toe = np.asarray(film.log_exposure_toe, dtype=np.float32) + development.toe_shift
+    shoulder = np.asarray(film.log_exposure_shoulder, dtype=np.float32) + development.shoulder_shift
 
     toe_term = _softplus(log_e - toe, film.hd_toe_width)
     shoulder_term = _softplus(log_e - shoulder, film.hd_shoulder_width)
@@ -65,4 +59,3 @@ def exposure_to_density(
     """完整的 RGB 曝光代理 -> 三层 CMY 染料密度。"""
     layer_exposure = rgb_exposure_to_layer_exposure(image, film)
     return hd_density_curve(layer_exposure, film, chemistry)
-

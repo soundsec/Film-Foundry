@@ -22,6 +22,7 @@ from half_frame_darkroom.model.config import DarkroomConfig, merge_config_preset
 PROJECT_ROOT = Path(__file__).resolve().parent
 PRESET_DIR = PROJECT_ROOT / "half_frame_darkroom" / "presets"
 FILM_PRESET_DIR = PRESET_DIR / "film"
+DEVELOP_PRESET_DIR = PRESET_DIR / "develop"
 SCANNER_PRESET_DIR = PRESET_DIR / "scanner"
 OUTPUT_DIR = PROJECT_ROOT / "outputs" / "preset_curves"
 
@@ -103,18 +104,28 @@ def draw_scan_curve(config: DarkroomConfig, output_path: Path) -> None:
 
 def main() -> None:
     film_presets = sorted(FILM_PRESET_DIR.glob("*.json"))
+    develop_presets = sorted(DEVELOP_PRESET_DIR.glob("*.json"))
     scanner_presets = sorted(SCANNER_PRESET_DIR.glob("*.json"))
     example_presets = sorted(PRESET_DIR.glob("*.json"))
-    if not film_presets and not scanner_presets and not example_presets:
+    if not film_presets and not develop_presets and not scanner_presets and not example_presets:
         raise FileNotFoundError(f"No presets found in {PRESET_DIR}")
 
+    standard_develop_path = DEVELOP_PRESET_DIR / "standard_color_negative.json"
+    standard_develop = DarkroomConfig.from_json(standard_develop_path) if standard_develop_path.exists() else None
+
     for preset in film_presets:
-        config = merge_config_presets(DarkroomConfig.from_json(preset), None)
+        config = merge_config_presets(DarkroomConfig.from_json(preset), develop_config=standard_develop)
         stem = f"film_{preset.stem}"
         draw_hd_curve(config, OUTPUT_DIR / f"{stem}_hd_curve.png")
         print(f"saved film curve for {preset.stem}")
 
     neutral_film = DarkroomConfig.from_json(FILM_PRESET_DIR / "clear_modern_negative.json") if (FILM_PRESET_DIR / "clear_modern_negative.json").exists() else DarkroomConfig()
+    for preset in develop_presets:
+        config = merge_config_presets(neutral_film, develop_config=DarkroomConfig.from_json(preset))
+        stem = f"develop_{preset.stem}"
+        draw_hd_curve(config, OUTPUT_DIR / f"{stem}_hd_curve.png")
+        print(f"saved develop curve for {preset.stem}")
+
     for preset in scanner_presets:
         config = merge_config_presets(neutral_film, DarkroomConfig.from_json(preset))
         stem = f"scanner_{preset.stem}"

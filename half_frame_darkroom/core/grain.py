@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+# Legacy image-space correlated grain helper.
+#
+# The current electronic-negative pipeline uses
+# density_grain.apply_density_grain() to perturb CMY density. This module is
+# kept for old tests and experiments.
+
 import cv2
 import numpy as np
 

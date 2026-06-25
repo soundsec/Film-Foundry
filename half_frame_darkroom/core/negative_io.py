@@ -5,11 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import json
+import os
 
 import numpy as np
 
 from half_frame_darkroom.core.states import DevelopedNegative
 from half_frame_darkroom.model.config import DarkroomConfig
+
+
+LEGACY_PICKLE_ENV = "FILM_FOUNDRY_ALLOW_LEGACY_PICKLE"
 
 
 def _as_density_array(value: Any, key: str, path: Path) -> np.ndarray:
@@ -49,27 +53,48 @@ def _negative_from_object(value: Any, path: Path) -> tuple[np.ndarray, np.ndarra
     return None
 
 
-def load_negative_density_arrays(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
+def _allow_legacy_pickle(value: bool | None) -> bool:
+    if value is not None:
+        return bool(value)
+    return os.environ.get(LEGACY_PICKLE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def load_negative_density_arrays(
+    path: str | Path,
+    *,
+    allow_legacy_pickle: bool | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """读取 .npz 电子负片，只返回 density_cmy 和 density_grain。
 
-    默认先用 allow_pickle=False 的安全路径读取。若遇到旧实验文件中混入的 object
-    数据，再退回 allow_pickle=True 做一次兼容读取，但仍只接受可转换为数值数组的密度数据。
+    默认只用 allow_pickle=False 的安全路径读取。旧实验文件如果混入 object/pickle
+    数据，必须显式启用 allow_legacy_pickle 或设置 FILM_FOUNDRY_ALLOW_LEGACY_PICKLE=1。
+    即便启用兼容读取，也只接受可转换为数值数组的密度数据。
     """
     path = Path(path)
+    legacy_reason: str | None = None
     try:
         with np.load(path, allow_pickle=False) as data:
             return (
                 _as_density_array(data["density_cmy"], "density_cmy", path),
                 _as_density_array(data["density_grain"], "density_grain", path),
             )
-    except KeyError:
+    except KeyError as exc:
         # 旧实验文件可能把整个 DevelopedNegative/dict 存在单个 object key 里。
-        pass
+        legacy_reason = f"missing density key: {exc}"
     except ValueError as exc:
         message = str(exc)
         object_pickle_error = "Object arrays cannot be loaded" in message or "pickled" in message
         if not object_pickle_error:
             raise
+        legacy_reason = message
+
+    if not _allow_legacy_pickle(allow_legacy_pickle):
+        raise ValueError(
+            f"{path} looks like a legacy object/pickled negative file ({legacy_reason}). "
+            "For safety, Film Foundry does not load pickled .npz data by default. "
+            f"If this file was created by your own old experiment and you trust it, set "
+            f"{LEGACY_PICKLE_ENV}=1 or call load_negative_density_arrays(..., allow_legacy_pickle=True)."
+        )
 
     with np.load(path, allow_pickle=True) as data:
         files = set(data.files)
@@ -85,10 +110,17 @@ def load_negative_density_arrays(path: str | Path) -> tuple[np.ndarray, np.ndarr
     raise ValueError(f"{path} 不是可识别的电子负片 .npz，缺少 density_cmy / density_grain。")
 
 
-def load_developed_negative_npz(path: str | Path) -> DevelopedNegative:
+def load_developed_negative_npz(
+    path: str | Path,
+    *,
+    allow_legacy_pickle: bool | None = None,
+) -> DevelopedNegative:
     """从 .npz 母版读取 DevelopedNegative 状态对象。"""
     path = Path(path)
-    density_cmy, density_grain = load_negative_density_arrays(path)
+    density_cmy, density_grain = load_negative_density_arrays(
+        path,
+        allow_legacy_pickle=allow_legacy_pickle,
+    )
     empty = np.zeros_like(density_grain, dtype=np.float32)
     metadata: dict[str, Any] = {"negative_path": str(path)}
     sidecar_path = path.with_suffix(path.suffix + ".json")

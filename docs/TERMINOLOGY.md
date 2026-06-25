@@ -52,6 +52,10 @@ image.scanner_raw.tiff.json              电子负片 TIFF sidecar
 ```text
 film preset
 -> FilmStockConfig
+ 
+develop preset
+-> DevelopRecipeConfig / ChemistryConfig
+-> developer, monobath, time, temperature, concentration, agitation, exhaustion, frame size
 -> ChemistryConfig
 -> develop/look 微调
 
@@ -84,10 +88,48 @@ scanner preset
 | `emulsion_mtf_strength` | `film` | 乳剂有限解析力 / 输入高频抑制 | 数码锐边更不“浮”，但真实细节也可能被压掉 |
 | `digital_artifact_suppression` | `film` | 对 ISP 锐化振铃的额外抑制 | JPEG/手机锐化边缘更柔，但过高会糊 |
 
+### Legacy RGB response / grain 字段
+
+`FilmStockConfig` 中仍保留了一批旧字段：
+
+```text
+color_matrix
+base_fog
+contrast
+toe_strength
+shoulder_strength
+shoulder_point
+saturation
+grain_strength
+grain_scales
+grain_scale_weights
+grain_midtone_mu
+grain_midtone_sigma
+```
+
+这些字段主要服务旧的 `core/response.py` 和 `core/grain.py` 辅助模块，不属于当前电子负片主链路。当前主链路使用的是：
+
+```text
+sensitometry.py      -> H-D density / CMY density
+density_grain.py    -> density-domain grain
+scanner.py          -> negative inversion / scan render
+```
+
+因此，新的 film preset 不建议再调 `contrast`、`saturation` 或 `grain_strength` 这类旧字段。若要改变底片材料，应优先调 `hd_gamma`、`density_min/max`、`layer_sensitivity_matrix`、`dye_absorption_matrix`、`granularity_sigma` 和 `grain_density_correlation_radius`。若只想改变最终正像，应优先调 scanner preset 中的 `scan_saturation`、`print_contrast`、`print_color_shift` 等。
+
 ## 冲洗参数
+
+冲洗参数描述“这一次如何处理胶片材料”。它们不会永久改变 film stock，而是先进入一个简化显影动力学模型，推导出显影活性、显影进度、灰雾、最大密度限制、颗粒增长和肩部压缩，再影响最终底片密度。
 
 | 参数 | 所属配置 | 直观含义 | 增大时通常发生什么 |
 | --- | --- | --- | --- |
+| `developer_type` | `chemistry/develop` | 显影液响应类型 | 改变显影速率、反差倾向、雾化、颗粒和高光补偿方式 |
+| `frame_size` | `chemistry/develop` | 画幅 / 放大倍率代理 | 半格/35mm 颗粒更显眼，中画幅和大画幅更细；不改变胶片材料本身 |
+| `time_min` | `chemistry/develop` | 显影时间 | 时间更长通常显影更充分，反差/雾化/颗粒可能增加 |
+| `concentration` | `chemistry/develop` | 药水浓度倍率 | 浓度更高会提高显影活性，但也更容易增加灰雾和反差 |
+| `agitation` | `chemistry/develop` | 搅拌强度 | 搅拌更强会提高局部药水交换和显影活性 |
+| `process_mode` | `chemistry/develop` | 处理模式 | 当前主线为 `normal_negative`；后续可扩展黑白反转、交叉处理等 |
+| `compensation` | `chemistry/develop` | 补偿显影倾向 | 更强时更压高光、肩部更早介入 |
 | `push_stops` | `chemistry` | 迫冲档数 | 中段反差、灰雾、颗粒都会变强；阴影可能更硬 |
 | `temperature_c` | `chemistry` | 显影温度 | 高于基准时反应更激烈，反差和颗粒略增 |
 | `developer_exhaustion` | `chemistry` | 药水疲劳 | 最大密度下降，灰雾增加，反差可能变钝，颗粒更脏 |
@@ -114,7 +156,7 @@ scanner preset
 
 | 参数 | 所属配置 | 作用对象 | 增大时通常发生什么 |
 | --- | --- | --- | --- |
-| `exposure_ev` | `look` | 冲洗前曝光代理 | 底片密度整体变化；scan normalize 开启后最终亮暗会被部分抵消 |
+| `exposure_ev` | `look` | 输入曝光代理 EV | 在冲洗/底片形成前调整输入曝光计量，不是药水参数；会改变底片密度整体变化 |
 | `negative_contrast` | `look` | 胶片 H-D gamma 倍率 | 改变底片形成方式，属于负片层反差 |
 | `print_contrast` | `look` | 扫描/打印 gamma 倍率 | 不改变底片，只改变正像解释反差 |
 | `print_exposure_ev` | `look` | 扫描输出曝光 | 不改变底片，只改变最终正像整体亮暗 |
@@ -122,8 +164,45 @@ scanner preset
 | `halation_multiplier` | `look` | halation 强度倍数 | 快速增加/减少光晕 |
 | `grain_multiplier` | `look` | 颗粒强度倍数 | 只控制颗粒显著程度 |
 | `grain_size_multiplier` | `look` | 颗粒尺寸倍数 | 只控制颗粒空间相关半径，底层按画幅比例换算 |
-| `look_strength` | `look` | 总体风格强度 | 同时影响 halation、颗粒和 H-D gamma，适合粗调 |
+| `look_strength` | `look` | 体验型总体风格强度 | 同时改写 halation、颗粒和 H-D gamma，适合 GUI 粗调；严肃 preset 标定时不建议依赖 |
 
+`look_strength` 不是物理参数，而是面向 GUI / CLI 的“一键味道浓淡”总控。它会直接修改运行时 film 参数，所以适合快速预览，不适合作为精细 film preset 的核心定义。制作严肃 preset 时，应把 `look_strength` 保持在 `1.0`，直接调胶片和扫描器参数。
+
+## 正冲 / 反转 / Reversal
+
+中文里“正冲”常被用来指反转冲洗：最终直接在胶片上得到正像，而不是得到负片再扫描反相。
+
+黑白反转的典型流程是：
+
+```text
+第一次显影
+-> 漂白去掉第一次显影形成的负像银
+-> 清洗 / 清除漂白残留
+-> 二次曝光或化学雾化
+-> 第二次显影形成正像
+-> 定影 / 水洗 / 干燥
+```
+
+彩色反转并不是不存在。彩色反转片一般对应 E-6 一类流程，目标是得到彩色正片/幻灯片。它和“彩色负片 + C-41 + 扫描反相”不是一回事。
+
+### 是否建议现在实现？
+
+当前不建议马上把正冲做进主流程。
+
+原因：
+
+1. 项目当前最有价值的主线是电子负片母版，正冲会绕开“负片 -> 扫描解释”这条主线。
+2. 黑白反转可以较简单地做成 `bw_reversal_positive`，但它需要新的状态对象：正片密度或正像透过率，而不是 `density_cmy` 负片密度。
+3. 彩色反转需要新的材料假设：正片胶片的 H-D、染料形成、颜色密度和扫描逻辑都不同，不能直接复用彩负参数。
+4. 如果只是为了“像正片”，更适合先做 scan/render preset；如果要物理语义成立，就应该作为独立 film mode。
+
+建议路线：
+
+```text
+第一步：继续打磨彩色负片 / 电子负片
+第二步：加 bw_reversal_positive 原型，只做黑白正片
+第三步：稳定后再考虑 color_reversal_slide / E-6-inspired 模式
+```
 
 ## 常见调参判断
 
@@ -150,3 +229,14 @@ scanner preset
 4. 最后再调输出格式、尺寸、sidecar、layer pack。
 
 不要一次同时改胶片、冲洗和扫描参数。否则很难判断问题来自底片本身，还是扫描解释。
+
+## 大图性能路线
+
+当前开发阶段可以用 `preview_long_edge` 或 GUI 预览模式快速试参；正式输出再回到原始尺寸。后续若要让大分辨率冲洗更快，优先考虑这些方向：
+
+1. **分辨率分层计算**：halation、MTF 判定、部分低频残留层可以在较低分辨率计算，再上采样回原图；真正需要像素级保真的 H-D 密度映射保留全分辨率。
+2. **分块 / tile 处理**：对 H-D、密度映射、扫描反相这类局部运算可按块处理，降低内存峰值；halation 这类卷积需要带 overlap padding。
+3. **缓存电子负片阶段**：develop 阶段生成 `.npz` / scanner raw 后，反复调扫描不再重跑冲洗，这是当前最重要的实际加速方式。
+4. **更快的随机场生成**：颗粒可以先在低分辨率生成相关随机场，再按画幅比例上采样；细节颗粒可叠加轻量局部噪声。
+5. **可选 FFT / separable convolution**：大半径 halation PSF 可以切换到 FFT 卷积或分离近似核，避免大核 `filter2D` 在高分辨率下变慢。
+6. **Numba / CuPy / OpenCL 可选后端**：核心仍保持 NumPy/OpenCV，但以后可以为重计算模块加可选加速后端，而不是把 GPU 作为必需依赖。
