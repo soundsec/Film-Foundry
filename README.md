@@ -8,10 +8,6 @@ Film Foundry is an early-stage, physics-inspired film imaging prototype. It is n
 
 Its models are intentionally approximate: physics-inspired, chemistry-inspired, and real-workflow-inspired rather than physically exact. The project favors explainable controls, inspectable intermediate states, and creative material behavior over laboratory-accurate simulation.
 
-长期的材料、工艺和输出解释设计记录在 `docs/MEDIA_PIPELINE_ROADMAP.md`。
-
-Longer-term material/process/render design notes are tracked in `docs/MEDIA_PIPELINE_ROADMAP.md`.
-
 ## 核心流程 / Core Pipeline
 
 ```text
@@ -275,7 +271,7 @@ The launcher also includes folder buttons for `input_images`, `outputs`, `output
 
 More documentation:
 
-- `STRUCTURE.md`
+- `docs/STRUCTURE.md`
 - `docs/PRESET_GUIDE.md`
 - `docs/TERMINOLOGY.md`
 
