@@ -322,33 +322,6 @@ The project can export creative and plate-making materials:
 
 These outputs are suitable for Photoshop, Krita, Affinity, Procreate, poster work, separations, screen printing, halftone experiments, and later contact-print-style experiments.
 
-## 测试 / Tests
-
-运行测试：
-
-Run tests:
-
-```bash
-python -m pytest half_frame_darkroom/tests
-```
-
-快速语法检查：
-
-Quick syntax check:
-
-```bash
-python -m compileall half_frame_darkroom run_darkroom.py run_darkroom_gui.py run_film_foundry_launcher.py run_film_material_editor.py run_develop_process_editor.py run_scanner_render_editor.py run_foundry_cli.py
-```
-
-在本项目的 Windows/Anaconda 测试环境中，可以直接使用：
-
-In the current Windows/Anaconda test environment, use:
-
-```powershell
-& 'D:\Anaconda3\envs\film\python.exe' -m pytest half_frame_darkroom/tests -q
-& 'D:\Anaconda3\envs\film\python.exe' -m compileall half_frame_darkroom run_darkroom.py run_darkroom_gui.py run_film_foundry_launcher.py run_film_material_editor.py run_develop_process_editor.py run_scanner_render_editor.py run_foundry_cli.py
-```
-
 ## 许可证 / License
 
 Film Foundry 采用 **GNU General Public License version 3 (GPL-3.0-or-later)**。
