@@ -1,6 +1,10 @@
 {
   "film": {
     "name": "Red Rich Negative",
+    "medium_family": "film",
+    "medium_process": "negative",
+    "image_polarity": "negative",
+    "color_process": "color",
     "halation_strength": 0.16,
     "halation_threshold": 0.7,
     "halation_softness": 0.2,
@@ -78,9 +82,9 @@
       0.86
     ],
     "granularity_sigma": [
-      0.031,
-      0.029,
-      0.033
+      0.025,
+      0.023,
+      0.027
     ],
     "grain_density_correlation_radius": 0.0014,
     "halation_exponential_radius": 0.021

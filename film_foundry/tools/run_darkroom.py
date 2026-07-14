@@ -4,37 +4,46 @@
 “用户常用设置”，然后点击 IDE 的 Run/运行按钮。
 
 现在支持三种阶段模式：
-- full：输入图片 -> 冲洗底片 -> 扫描正像 -> 保存最终图
-- develop：输入图片 -> 只冲洗并保存底片密度 .npz
-- scan：读取已冲洗的 .npz 底片 -> 只测试扫描/打印效果
+- full：输入图片 -> 冲洗负片/反转正片 -> 对应扫描观察 -> 保存最终图
+- develop：输入图片 -> 只冲洗并保存介质密度 .npz
+- scan：读取已冲洗的 .npz 或透射 raw -> 只测试扫描/观看效果
 """
 
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict
 from datetime import datetime
-import json
 from pathlib import Path
+import sys
 
 import numpy as np
 
-from half_frame_darkroom.core.engine import develop_negative, process_file, scan_negative, scan_scanner_raw, seed_from_path
+SOURCE_ROOT = Path(__file__).resolve().parents[2]
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
+
+from half_frame_darkroom.core.engine import apply_optical_observation_snapshot, develop_negative, process_file, save_developed_medium_at_path, scan_medium_direct, scan_scanner_raw_direct, seed_from_path
 from half_frame_darkroom.core.electronic_negative import (
-    export_layer_pack,
-    export_plate_set,
-    export_transparent_plate_set,
     load_linear_rgb_tiff,
-    save_linear_rgb_tiff,
-    scanner_raw_with_clear_border,
     split_scanner_raw_border,
 )
-from half_frame_darkroom.core.io_utils import SUPPORTED_EXTENSIONS, iter_images, load_image, save_image
+from half_frame_darkroom.core.execution import processing_long_edge, resolve_execution_mode
+from half_frame_darkroom.core.io_utils import SUPPORTED_EXTENSIONS, assert_unique_output_stems, iter_images, load_image, output_target_is_file, save_image_bundle, scan_output_stem
 from half_frame_darkroom.core.negative_io import load_developed_negative_npz
 from half_frame_darkroom.core.preview import negative_visual_preview, resize_to_long_edge
+from half_frame_darkroom.core.sidecar import (
+    load_scanner_raw_sidecar,
+    scanner_raw_border_width_from_sidecar,
+    scanner_raw_optical_observation_from_sidecar,
+    transmission_raw_source_kind,
+)
 from half_frame_darkroom.core.states import DevelopedNegative
 from half_frame_darkroom.model.config import DarkroomConfig, merge_config_presets
+from film_foundry.tools.paths import app_root, resource_root
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = app_root()
+RESOURCE_ROOT = resource_root()
 
 
 # =========================
@@ -89,8 +98,9 @@ FAST_MODE = True
 # 内部处理质量：draft / standard / high。
 # draft 更快；standard 平衡；high 尽量使用原尺寸计算低频/颗粒模块。
 QUALITY_MODE = "standard"
-HALATION_WORK_LONG_EDGE = 1800
-GRAIN_WORK_LONG_EDGE = 1800
+# None follows QUALITY_MODE. Set an explicit pixel edge only for manual tuning.
+HALATION_WORK_LONG_EDGE = None
+GRAIN_WORK_LONG_EDGE = None
 
 
 # =========================
@@ -102,9 +112,11 @@ GRAIN_WORK_LONG_EDGE = 1800
 EXPOSURE_EV = -0.2
 NEGATIVE_CONTRAST = 1.05
 HALATION_MULTIPLIER = 0.90
+HALATION_SENSITIVITY = 0.00
 GRAIN_MULTIPLIER = 0.85
 GRAIN_SIZE_MULTIPLIER = 1.00
 FILM_DYE_SELECTIVITY = 1.00
+MATERIAL_DEGRADATION = None
 EMULSION_MTF_STRENGTH = 0.25
 DIGITAL_ARTIFACT_SUPPRESSION = 0.15
 HALATION_EDGE_COMPENSATION = 0.35
@@ -122,9 +134,11 @@ TEMPERATURE_C = None
 DEVELOPER_EXHAUSTION = None
 FIXER_EXHAUSTION = None
 SILVER_RETENTION = None
+SILVER_PLATING = None
 LIGHT_LEAK_STRENGTH = None
 CHEMICAL_STAIN = None
 UNEVEN_DEVELOPMENT = None
+PROCESS_VARIATION = 0.0
 
 
 # =========================
@@ -183,7 +197,7 @@ SCANNER_RAW_BORDER_MIN_PX = 32
 # 材料包导出：不改变最终成片，只额外输出透明片基/分色制版素材。
 EXPORT_LAYER_PACK = False
 EXPORT_TRANSPARENT_PLATE = True
-EXPORT_PLATE_SET = True
+EXPORT_PLATE_SET = False
 
 
 # =========================
@@ -193,15 +207,17 @@ EXPORT_PLATE_SET = True
 OUTPUT_FORMAT = "jpg"
 BIT_DEPTH = 8
 QUALITY = 95
+ANTI_BANDING_STRENGTH = 0.18
 
 
 # =========================
 # 内部运行逻辑
 # =========================
 
-PRESET_DIR = PROJECT_ROOT / "half_frame_darkroom" / "presets"
+PRESET_DIR = RESOURCE_ROOT / "half_frame_darkroom" / "presets"
 USER_PRESET_DIR = PROJECT_ROOT / "user_presets"
 NEGATIVE_SUFFIX = ".darkroom_negative.npz"
+POSITIVE_SUFFIX = ".darkroom_positive.npz"
 
 
 def _preset_path(value: str | Path, kind: str) -> Path:
@@ -237,6 +253,7 @@ def _load_config() -> DarkroomConfig:
     config.random_seed = RANDOM_SEED
     config.seed_strategy = str(SEED_STRATEGY)
     config.fast_mode = bool(FAST_MODE)
+    config.processing.execution_mode = "reduced_fast" if FAST_MODE else "quality"
     config.processing.quality_mode = str(QUALITY_MODE)
     config.processing.halation_work_long_edge = HALATION_WORK_LONG_EDGE
     config.processing.grain_work_long_edge = GRAIN_WORK_LONG_EDGE
@@ -268,7 +285,10 @@ def _load_config() -> DarkroomConfig:
 
     config.look.negative_contrast = float(NEGATIVE_CONTRAST)
     config.look.saturation_multiplier = float(FILM_DYE_SELECTIVITY)
+    if MATERIAL_DEGRADATION is not None:
+        config.film.material_degradation = float(MATERIAL_DEGRADATION)
     config.look.halation_multiplier = float(HALATION_MULTIPLIER)
+    config.look.halation_sensitivity = float(HALATION_SENSITIVITY)
     config.look.grain_multiplier = float(GRAIN_MULTIPLIER)
     config.look.grain_size_multiplier = float(GRAIN_SIZE_MULTIPLIER)
     config.look.emulsion_mtf_strength = float(EMULSION_MTF_STRENGTH)
@@ -307,18 +327,22 @@ def _load_config() -> DarkroomConfig:
         config.chemistry.fixer_exhaustion = float(FIXER_EXHAUSTION)
     if SILVER_RETENTION is not None:
         config.chemistry.silver_retention = float(SILVER_RETENTION)
+    if SILVER_PLATING is not None:
+        config.chemistry.silver_plating = float(SILVER_PLATING)
     if LIGHT_LEAK_STRENGTH is not None:
         config.chemistry.light_leak_strength = float(LIGHT_LEAK_STRENGTH)
     if CHEMICAL_STAIN is not None:
         config.chemistry.chemical_stain = float(CHEMICAL_STAIN)
     if UNEVEN_DEVELOPMENT is not None:
         config.chemistry.uneven_development = float(UNEVEN_DEVELOPMENT)
+    config.chemistry.process_variation = float(PROCESS_VARIATION)
     if OUTPUT_FORMAT is not None:
         config.output.format = str(OUTPUT_FORMAT)
     if BIT_DEPTH is not None:
         config.output.bit_depth = int(BIT_DEPTH)
     if QUALITY is not None:
         config.output.quality = int(QUALITY)
+    config.output.anti_banding_strength = float(ANTI_BANDING_STRENGTH)
     return config
 
 
@@ -332,10 +356,10 @@ def _scale_dye_selectivity(matrix, selectivity: float):
 
 
 def _output_path_for(input_path: Path, output_root: Path, output_format: str) -> Path:
-    if output_root.suffix:
+    if output_target_is_file(output_root):
         return output_root
     suffix = "." + output_format.lower().lstrip(".")
-    return output_root / f"{input_path.stem}_darkroom{suffix}"
+    return output_root / f"{scan_output_stem(input_path)}_darkroom{suffix}"
 
 
 def _negative_path_for(input_path: Path, negative_root: Path) -> Path:
@@ -344,20 +368,38 @@ def _negative_path_for(input_path: Path, negative_root: Path) -> Path:
     return negative_root / f"{input_path.stem}{NEGATIVE_SUFFIX}"
 
 
+def _developed_path_for(input_path: Path, output_root: Path, medium: DevelopedNegative) -> Path:
+    if output_root.suffix.lower() == ".npz":
+        return output_root
+    suffix = POSITIVE_SUFFIX if str(medium.image_polarity).lower() == "positive" else NEGATIVE_SUFFIX
+    return output_root / f"{input_path.stem}{suffix}"
+
+
 def _ensure_batch_output_target(items: list[Path], output_root: Path, label: str) -> bool:
-    if len(items) <= 1 or not output_root.suffix:
-        return True
-    print(f"{label} output is a single file, but {len(items)} input files were found.")
-    print(f"Please set it to a folder to avoid overwriting results: {output_root}")
-    return False
+    if len(items) > 1 and output_target_is_file(output_root):
+        print(f"{label} output is a single file, but {len(items)} input files were found.")
+        print(f"Please set it to a folder to avoid overwriting results: {output_root}")
+        return False
+    try:
+        assert_unique_output_stems(items, label)
+    except ValueError as exc:
+        print(exc)
+        return False
+    return True
 
 
 def _scanner_raw_path_for_negative(negative_path: Path) -> Path:
     return negative_path.with_suffix(".scanner_raw.tiff")
 
 
+def _raw_path_for_medium(medium_path: Path) -> Path:
+    if medium_path.name.lower().endswith(POSITIVE_SUFFIX):
+        return medium_path.with_suffix(".light_table_raw.tiff")
+    return _scanner_raw_path_for_negative(medium_path)
+
+
 def _is_scanner_raw_tiff(path: Path) -> bool:
-    return path.suffix.lower() in {".tif", ".tiff"} and ".scanner_raw" in path.stem
+    return path.suffix.lower() in {".tif", ".tiff"} and any(token in path.stem.lower() for token in (".scanner_raw", ".light_table_raw"))
 
 
 def _resolved_seed_for(path: Path, config: DarkroomConfig) -> int | None:
@@ -374,104 +416,15 @@ def _rng_for_develop(path: Path, config: DarkroomConfig) -> np.random.Generator:
     return np.random.default_rng(seed)
 
 
-def _save_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
-
-
 def _save_negative(negative: DevelopedNegative, path: Path, input_path: Path, config: DarkroomConfig) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
+    """Compatibility name for the unified developed-medium exporter."""
+    save_developed_medium_at_path(
+        input_path,
         path,
-        density_cmy=negative.density_cmy.astype(np.float32),
-        density_grain=negative.density_grain.astype(np.float32),
+        negative,
+        config,
+        resolved_seed=_resolved_seed_for(input_path, config),
     )
-    preview_path = path.with_suffix(".negative_visual.png")
-    save_image(negative_visual_preview(negative.density_grain, config.film), preview_path, config.output)
-    scanner_raw_path = None
-    if config.output.save_scanner_raw:
-        scanner_raw = scanner_raw_with_clear_border(
-            negative.density_grain,
-            config.film,
-            config.scanner,
-            border_percent=config.output.scanner_raw_border_percent,
-            border_min_px=config.output.scanner_raw_border_min_px,
-        )
-        scanner_raw_path = path.with_suffix(".scanner_raw.tiff")
-        save_linear_rgb_tiff(scanner_raw, scanner_raw_path)
-        if SAVE_SIDECAR:
-            _save_json(
-                scanner_raw_path.with_suffix(scanner_raw_path.suffix + ".json"),
-                {
-                    "kind": "ScannerRawNegative",
-                    "created_at": datetime.now().isoformat(timespec="seconds"),
-                    "input_path": str(input_path),
-                    "negative_path": str(path),
-                    "scanner_raw_path": str(scanner_raw_path),
-                    "encoding": "16-bit linear RGB TIFF, no sRGB gamma",
-                    "border": {
-                        "meaning": "unexposed clear film base for mask removal",
-                        "percent": config.output.scanner_raw_border_percent,
-                        "min_px": config.output.scanner_raw_border_min_px,
-                    },
-                    "config": asdict(config),
-                },
-            )
-    material_dir = path.with_suffix("")
-    material_paths: dict[str, str] = {}
-    if config.output.export_layer_pack:
-        material_paths.update(
-            export_layer_pack(
-                negative,
-                config.film,
-                material_dir.parent / f"{material_dir.name}_layer_pack",
-                source_negative_path=path,
-                scanner_raw_path=scanner_raw_path,
-                orange_preview_path=preview_path,
-                metadata={
-                    "input_path": str(input_path),
-                    "negative_path": str(path),
-                    "config": asdict(config),
-                },
-            )
-        )
-    else:
-        if config.output.export_transparent_plate:
-            material_paths.update(
-                export_transparent_plate_set(
-                    negative.density_grain,
-                    config.film,
-                    material_dir.parent / f"{material_dir.name}_transparent_plate",
-                )
-            )
-        if config.output.export_plate_set:
-            material_paths.update(
-                export_plate_set(
-                    negative.density_cmy,
-                    negative.density_grain,
-                    negative.after_mtf,
-                    negative.after_halation,
-                    config.film,
-                    material_dir.parent / f"{material_dir.name}_plate_set",
-                )
-            )
-    if SAVE_SIDECAR:
-        _save_json(
-            path.with_suffix(path.suffix + ".json"),
-            {
-                "kind": "DevelopedNegative",
-                "created_at": datetime.now().isoformat(timespec="seconds"),
-                "input_path": str(input_path),
-                "negative_path": str(path),
-                "negative_visual_preview": str(preview_path),
-                "scanner_raw_path": str(scanner_raw_path) if scanner_raw_path is not None else None,
-                "material_exports": material_paths,
-                "resolved_seed": _resolved_seed_for(input_path, config),
-                "note": "这个 .npz 保存的是已冲洗底片密度。scan 模式会读取它反复测试扫描解释。",
-                "config": asdict(config),
-            },
-        )
 
 
 def _load_negative(path: Path) -> DevelopedNegative:
@@ -479,43 +432,86 @@ def _load_negative(path: Path) -> DevelopedNegative:
 
 
 def _scan_from_file(path: Path, config: DarkroomConfig):
+    # Keep per-file sidecar optics out of persistent settings and later raws.
+    config = copy.deepcopy(config)
+    interpretation = str(config.scanner.interpretation_mode or "auto")
     if _is_scanner_raw_tiff(path):
+        raw_sidecar = load_scanner_raw_sidecar(path)
+        apply_optical_observation_snapshot(
+            config,
+            scanner_raw_optical_observation_from_sidecar(raw_sidecar),
+        )
         scanner_raw = load_linear_rgb_tiff(path)
-        inner, border_samples = split_scanner_raw_border(
-            scanner_raw,
-            border_percent=config.output.scanner_raw_border_percent,
-            border_min_px=config.output.scanner_raw_border_min_px,
-        )
-        return scan_scanner_raw(inner, config, base_samples=border_samples, source_path=path), "scanner_raw_tiff", path
-
-    scanner_raw_path = _scanner_raw_path_for_negative(path)
-    if scanner_raw_path.exists():
-        scanner_raw = load_linear_rgb_tiff(scanner_raw_path)
-        inner, border_samples = split_scanner_raw_border(
-            scanner_raw,
-            border_percent=config.output.scanner_raw_border_percent,
-            border_min_px=config.output.scanner_raw_border_min_px,
-        )
-        return scan_scanner_raw(
+        source_kind = transmission_raw_source_kind(path, raw_sidecar)
+        border_width = scanner_raw_border_width_from_sidecar(raw_sidecar, scanner_raw.shape)
+        if border_width is not None:
+            inner, border_samples = split_scanner_raw_border(
+                scanner_raw,
+                border_width_px=border_width,
+            )
+        elif source_kind == "light_table_raw_tiff":
+            inner, border_samples = scanner_raw, None
+        else:
+            inner, border_samples = split_scanner_raw_border(
+                scanner_raw,
+                border_percent=config.output.scanner_raw_border_percent,
+                border_min_px=config.output.scanner_raw_border_min_px,
+            )
+        scanned = scan_scanner_raw_direct(
             inner,
             config,
+            interpretation,
+            base_samples=border_samples,
+            source_path=path,
+            raw_source_kind=source_kind,
+        )
+        return scanned, source_kind, path
+
+    scanner_raw_path = _raw_path_for_medium(path)
+    if scanner_raw_path.exists():
+        raw_sidecar = load_scanner_raw_sidecar(scanner_raw_path)
+        apply_optical_observation_snapshot(
+            config,
+            scanner_raw_optical_observation_from_sidecar(raw_sidecar),
+        )
+        scanner_raw = load_linear_rgb_tiff(scanner_raw_path)
+        source_kind = transmission_raw_source_kind(scanner_raw_path, raw_sidecar)
+        border_width = scanner_raw_border_width_from_sidecar(raw_sidecar, scanner_raw.shape)
+        if border_width is not None:
+            inner, border_samples = split_scanner_raw_border(
+                scanner_raw,
+                border_width_px=border_width,
+            )
+        elif source_kind == "light_table_raw_tiff":
+            inner, border_samples = scanner_raw, None
+        else:
+            inner, border_samples = split_scanner_raw_border(
+                scanner_raw,
+                border_percent=config.output.scanner_raw_border_percent,
+                border_min_px=config.output.scanner_raw_border_min_px,
+            )
+        return scan_scanner_raw_direct(
+            inner,
+            config,
+            interpretation,
             base_samples=border_samples,
             source_path=scanner_raw_path,
-        ), "scanner_raw_tiff", scanner_raw_path
+            raw_source_kind=source_kind,
+        ), source_kind, scanner_raw_path
 
     if path.suffix.lower() != ".npz":
         raise ValueError(f"不支持的底片文件：{path}。请选择 .npz 或 .scanner_raw.tiff，不要选择 sidecar .json。")
     negative = _load_negative(path)
-    return scan_negative(negative, config), "density_npz", path
+    return scan_medium_direct(negative, config, interpretation), "density_npz", path
 
 
 def _iter_negative_files(path: Path) -> list[Path]:
     if path.is_file():
         return [path] if path.suffix.lower() == ".npz" or _is_scanner_raw_tiff(path) else []
     if path.is_dir():
-        npz_paths = sorted(path.glob(f"*{NEGATIVE_SUFFIX}"))
-        raw_paths = sorted(item for item in path.glob("*.scanner_raw.tif*") if _is_scanner_raw_tiff(item))
-        npz_raw_paths = {_scanner_raw_path_for_negative(item).resolve() for item in npz_paths}
+        npz_paths = sorted(path.glob(f"*{NEGATIVE_SUFFIX}")) + sorted(path.glob(f"*{POSITIVE_SUFFIX}"))
+        raw_paths = sorted(item for item in path.glob("*.tif*") if _is_scanner_raw_tiff(item))
+        npz_raw_paths = {_raw_path_for_medium(item).resolve() for item in npz_paths}
         return npz_paths + [item for item in raw_paths if item.resolve() not in npz_raw_paths]
     return []
 
@@ -524,7 +520,7 @@ def _print_input_help() -> None:
     supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
     print("没有找到输入图片。")
     print(f"当前 INPUT_PATH: {INPUT_PATH}")
-    print("请把图片放进该文件夹，或修改 run_darkroom.py 顶部的 INPUT_PATH。")
+    print("请把图片放进该文件夹，或修改 film_foundry/tools/run_darkroom.py 顶部的 INPUT_PATH。")
     print(f"支持的扩展名: {supported}")
 
 
@@ -535,10 +531,18 @@ def _run_full(config: DarkroomConfig) -> None:
         return
     if not _ensure_batch_output_target(input_paths, OUTPUT_PATH, "Final image"):
         return
+    failures: list[tuple[Path, Exception]] = []
+    completed = 0
     for input_path in input_paths:
-        output_path = _output_path_for(input_path, OUTPUT_PATH, config.output.format)
-        process_file(input_path, output_path, config, preview=RUN_AS_PREVIEW)
-        print(f"已保存最终图: {output_path}")
+        try:
+            output_path = _output_path_for(input_path, OUTPUT_PATH, config.output.format)
+            process_file(input_path, output_path, config, preview=RUN_AS_PREVIEW)
+            print(f"已保存最终图: {output_path}")
+            completed += 1
+        except Exception as exc:
+            failures.append((input_path, exc))
+            print(f"[完整流程失败] {input_path}: {exc}", file=sys.stderr)
+    _raise_batch_failures("完整流程", completed, failures)
 
 
 def _run_develop(config: DarkroomConfig) -> None:
@@ -548,44 +552,94 @@ def _run_develop(config: DarkroomConfig) -> None:
         return
     if not _ensure_batch_output_target(input_paths, NEGATIVE_PATH, "Developed negative"):
         return
+    failures: list[tuple[Path, Exception]] = []
+    completed = 0
     for input_path in input_paths:
-        image = load_image(input_path)
-        long_edge = config.output.preview_long_edge if RUN_AS_PREVIEW else config.output.render_long_edge
-        image = resize_to_long_edge(image, long_edge)
-        negative = develop_negative(image, config, rng=_rng_for_develop(input_path, config))
-        negative_path = _negative_path_for(input_path, NEGATIVE_PATH)
-        _save_negative(negative, negative_path, input_path, config)
-        print(f"已保存冲洗底片: {negative_path}")
+        try:
+            execution_mode = resolve_execution_mode(
+                config,
+                scaled_override=RUN_AS_PREVIEW,
+            )
+            long_edge = processing_long_edge(config, scaled_override=RUN_AS_PREVIEW)
+            runtime_config = copy.deepcopy(config)
+            runtime_config.processing.execution_mode = execution_mode
+            runtime_config.fast_mode = execution_mode == "reduced_fast"
+            if execution_mode == "scaled_fast":
+                image = load_image(input_path, decode_long_edge=long_edge)
+            else:
+                image = load_image(input_path)
+            image = resize_to_long_edge(image, long_edge)
+            negative = develop_negative(
+                image,
+                runtime_config,
+                rng=_rng_for_develop(input_path, runtime_config),
+            )
+            del image
+            negative_path = _developed_path_for(input_path, NEGATIVE_PATH, negative)
+            _save_negative(negative, negative_path, input_path, runtime_config)
+            print(f"已保存冲洗底片: {negative_path}")
+            completed += 1
+        except Exception as exc:
+            failures.append((input_path, exc))
+            print(f"[冲洗失败] {input_path}: {exc}", file=sys.stderr)
+    _raise_batch_failures("冲洗", completed, failures)
 
 
 def _run_scan(config: DarkroomConfig) -> None:
     negative_paths = _iter_negative_files(NEGATIVE_PATH)
     if not negative_paths:
-        print("没有找到可扫描的 .npz 底片文件。")
+        print("没有找到可扫描的 .npz 冲洗介质或透射 raw。")
         print(f"当前 NEGATIVE_PATH: {NEGATIVE_PATH}")
-        print('请先把 PIPELINE_MODE 设为 "develop" 运行一次，或把 NEGATIVE_PATH 指向已有 .npz。')
+        print('请先把 PIPELINE_MODE 设为 "develop" 运行一次，或把 NEGATIVE_PATH 指向已有介质文件。')
         return
     if not _ensure_batch_output_target(negative_paths, OUTPUT_PATH, "Scanned image"):
         return
+    failures: list[tuple[Path, Exception]] = []
+    completed = 0
     for negative_path in negative_paths:
-        scanned, scan_source, source_path = _scan_from_file(negative_path, config)
-        output_path = _output_path_for(negative_path.with_suffix(""), OUTPUT_PATH, config.output.format)
-        save_image(scanned.output_srgb, output_path, config.output)
-        if SAVE_SIDECAR:
-            _save_json(
-                output_path.with_suffix(output_path.suffix + ".json"),
-                {
-                    "kind": "ScannedPositive",
-                    "created_at": datetime.now().isoformat(timespec="seconds"),
-                    "negative_path": str(negative_path),
-                    "scan_source": scan_source,
-                    "scan_source_path": str(source_path),
-                    "output_path": str(output_path),
-                    "note": "这个结果由已冲洗底片 .npz 重新扫描得到，没有重新运行 film/develop 阶段。",
-                    "config": asdict(config),
-                },
+        try:
+            scanned, scan_source, source_path = _scan_from_file(negative_path, config)
+            output_path = _output_path_for(negative_path.with_suffix(""), OUTPUT_PATH, config.output.format)
+            if SAVE_SIDECAR:
+                sidecar = {
+                        "kind": "ScannedPositive",
+                        "created_at": datetime.now().isoformat(timespec="seconds"),
+                        "negative_path": str(negative_path),
+                        "scan_source": scan_source,
+                        "scan_source_path": str(source_path),
+                        "output_path": str(output_path),
+                        "note": "这个结果由已冲洗介质重新观察得到，没有重新运行 film/develop 阶段。",
+                        "config": asdict(config),
+                    }
+            else:
+                sidecar = None
+            save_image_bundle(
+                scanned.output_srgb,
+                output_path,
+                config.output,
+                sidecar,
+                protected_paths=(negative_path, source_path),
             )
-        print(f"已保存扫描正像: {output_path}")
+            print(f"已保存扫描正像: {output_path}")
+            completed += 1
+        except Exception as exc:
+            failures.append((negative_path, exc))
+            print(f"[扫描失败] {negative_path}: {exc}", file=sys.stderr)
+    _raise_batch_failures("扫描", completed, failures)
+
+
+def _raise_batch_failures(
+    operation: str,
+    completed: int,
+    failures: list[tuple[Path, Exception]],
+) -> None:
+    if not failures:
+        return
+    first_path, first_error = failures[0]
+    raise RuntimeError(
+        f"{operation}批处理完成 {completed} 个，失败 {len(failures)} 个；"
+        f"首个错误：{first_path}: {first_error}"
+    )
 
 
 def main() -> None:

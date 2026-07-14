@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 import copy
-import json
+
+from half_frame_darkroom.core.atomic_io import strict_json_load
 
 
 Matrix3 = tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
@@ -103,9 +104,50 @@ class FilmStockConfig:
 
     # 彩色负片片基/橙色 mask 的 RGB 光学密度。
     film_base_density_rgb: Vector3 = (0.18, 0.55, 0.85)
+    # Reduced RGB optical-density tendency of silver halide left by incomplete
+    # fixing.  This belongs to the material because color stocks, sensitizing
+    # dyes, and monochrome emulsions do not produce the same retained-salt veil.
+    retained_halide_density_rgb: Vector3 = (0.62, 0.82, 1.0)
+    # Rem-jet, anti-halation backing, protective/contamination layers, reduced
+    # to one bounded auxiliary pool. Normal programs remove it completely;
+    # incomplete or incompatible removal leaves this material-side density.
+    auxiliary_layer_amount: float = 1.0
+    auxiliary_layer_density_rgb: Vector3 = (0.08, 0.07, 0.06)
+
+    # Reduced material-ageing model. ``material_degradation`` is the common
+    # user-facing severity; the remaining fields describe how this stock ages.
+    # Ageing is part of the material presented to exposure/development, not a
+    # scanner look or a chemistry accident.
+    material_degradation: float = 0.0
+    degradation_speed_loss_stops: float = 0.65
+    degradation_fog_density_rgb: Vector3 = (0.10, 0.12, 0.14)
+    degradation_layer_balance: Vector3 = (0.90, 0.95, 1.00)
 
     granularity_sigma: Vector3 = (0.030, 0.028, 0.032)
     grain_density_correlation_radius: float = 0.0014
+
+    # Positive transparency prototype controls. These are material-side,
+    # reduced-order equivalents for slide/reversal characteristics.
+    positive_density_contrast: float = 1.0
+    positive_density_bias: float = 0.0
+    positive_latitude_compression: float = 0.0
+    positive_dye_saturation: float = 1.0
+    positive_midtone_density: float = 0.0
+    positive_shadow_toe: float = 0.0
+    positive_shadow_toe_width: float = 0.22
+    positive_highlight_shoulder: float = 0.0
+    positive_highlight_shoulder_width: float = 0.18
+
+    # Material-side response when a non-native silver-halide program is used.
+    cross_process_silver_development: float = 1.0
+    cross_process_dye_coupling: float = 1.0
+    cross_process_activation: float = 1.0
+    cross_process_silver_bleach: float = 1.0
+    cross_process_halide_fixing: float = 1.0
+    cross_process_silver_removal: float = 1.0
+    cross_process_dye_stability: float = 1.0
+    cross_process_auxiliary_removal: float = 1.0
+    cross_process_layer_balance: Vector3 = (1.0, 1.0, 1.0)
 
     halation_gaussian_amplitude: float = 0.62
     halation_exponential_amplitude: float = 0.38
@@ -114,7 +156,12 @@ class FilmStockConfig:
 
 @dataclass(slots=True)
 class DevelopRecipeConfig:
-    """显影条件。"""
+    """银盐胶片工艺条件与降阶程序参数。
+
+    时间、温度、浓度等字段描述药水/环境条件；``program_key`` 和步骤
+    completion 字段描述银盐胶片共享算子程序。即时成像、银版等非银盐胶片
+    工艺不应复用本配置。
+    """
 
     developer_name: str = "Standard Developer"
     developer_type: str = "standard"
@@ -122,6 +169,7 @@ class DevelopRecipeConfig:
     fixer_type: str = "standard"
     medium_process: str = "negative"
     process_mode: str = "normal_negative"
+    program_key: str = "auto"
     frame_size: str = "35mm"
     time_min: float = 8.0
     temperature_c: float = 20.0
@@ -132,9 +180,23 @@ class DevelopRecipeConfig:
     fixer_exhaustion: float = 0.0
     compensation: float = 0.0
     silver_retention: float = 0.0
+    # Surface metallic-silver deposition caused by mishandled/exhausted rapid
+    # processing or monobath chemistry. This is distinct from bleach bypass:
+    # it adds a deposit instead of retaining the developed image silver pool.
+    silver_plating: float = 0.0
     light_leak_strength: float = 0.0
     chemical_stain: float = 0.0
     uneven_development: float = 0.0
+    process_variation: float = 0.0
+    first_development_completion: float = 1.0
+    second_development_completion: float = 1.0
+    reversal_activation: float = 1.0
+    first_silver_removal: float = 1.0
+    silver_bleach_completion: float = 1.0
+    halide_fixing_completion: float = 1.0
+    dye_coupling_efficiency: float = 1.0
+    auxiliary_removal: float = 1.0
+    process_layer_balance: Vector3 = (1.0, 1.0, 1.0)
 
 
 # Legacy alias for older presets/tests. New code should use DevelopRecipeConfig;
@@ -147,10 +209,19 @@ ChemistryConfig = DevelopRecipeConfig
 class ScannerConfig:
     """扫描/打印解释。"""
 
+    interpretation_mode: str = "auto"
+    interpreter_key: str = "negative_scan"
     target_medium_process: str = "negative"
     input_polarity: str = "negative"
     output_polarity: str = "positive"
     scanner_light_color: Vector3 = (1.0, 1.0, 1.0)
+    negative_backlight_ev: float = 0.0
+    negative_backlight_temperature_k: float = 5500.0
+    light_table_ev: float = 0.0
+    light_table_temperature_k: float = 5500.0
+    positive_scan_color_control_strength: float = 0.35
+    projection_white_softness: float = 0.0
+    projection_black_adaptation: float = 0.0
     scanner_response_matrix: Matrix3 = (
         (1.00, 0.00, 0.00),
         (0.00, 1.00, 0.00),
@@ -158,6 +229,16 @@ class ScannerConfig:
     )
     scan_method: str = "negative_inversion"
     scan_base_percentile: float = 99.5
+    negative_channel_matrix: Matrix3 = (
+        (1.00, 0.00, 0.00),
+        (0.00, 1.00, 0.00),
+        (0.00, 0.00, 1.00),
+    )
+    negative_channel_gamma: Vector3 = (1.0, 1.0, 1.0)
+    # Optional reduced dye-channel decoupling derived from the immutable
+    # material absorption matrix. Off by default to preserve existing presets.
+    negative_channel_compensation_enabled: bool = False
+    negative_channel_compensation_strength: float = 0.35
 
     print_reference_density: Vector3 = (1.58, 1.61, 1.53)
     print_gamma: float = 0.95
@@ -168,7 +249,7 @@ class ScannerConfig:
     highlight_bias_threshold: float = 0.72
     highlight_bias_softness: float = 0.18
     # 扫描/输出阶段的色彩浓度。它不改变底片染料密度，只改变正像解释。
-    scan_saturation: float = 1.0
+    scan_saturation: float = 1.05
 
     scan_normalize: bool = True
     scan_normalize_strength: float = 0.15
@@ -187,6 +268,9 @@ class LookAdjustConfig:
     print_exposure_ev: float = 0.0
     saturation_multiplier: float = 1.0
     halation_multiplier: float = 1.0
+    # Runtime-only control: positive values make halation easier to trigger by
+    # lowering the effective film threshold; negative values raise it.
+    halation_sensitivity: float = 0.0
     # 颗粒强度控制密度扰动幅度；颗粒尺寸控制相关噪声半径，仍按画幅比例换算像素。
     grain_multiplier: float = 1.0
     grain_size_multiplier: float = 1.0
@@ -206,12 +290,27 @@ class OutputConfig:
     bit_depth: int = 8
     render_long_edge: int | None = None
     preview_long_edge: int | None = 1600
+    # Bound float quantization temporaries during final image/raw encoding.
+    # Zero disables row tiling for diagnostics.
+    encode_tile_rows: int = 512
+    encode_tile_threshold_megapixels: float = 8.0
+    # compressed minimizes archive size; store trades disk space for faster
+    # saves without changing any stored float values.
+    medium_npz_compression: str = "compressed"
     save_scanner_raw: bool = True
     scanner_raw_border_percent: float = 0.04
     scanner_raw_border_min_px: int = 32
+    # Complete archive bundle: NPZ, preview/raw when available, transparency,
+    # transmission, density/effect plates, and a manifest.
     export_layer_pack: bool = False
+    # Standalone transparent/transmission rendition. A layer pack includes it.
     export_transparent_plate: bool = True
-    export_plate_set: bool = True
+    # Standalone derived density/effect plates. A layer pack includes them.
+    export_plate_set: bool = False
+    anti_banding_strength: float = 0.18
+    watermark_metadata: bool = True
+    watermark_negative_material: bool = True
+    watermark_scanner_raw_border: bool = True
 
 
 @dataclass(slots=True)
@@ -222,9 +321,31 @@ class ProcessingConfig:
     随机场模块是否先在较小尺寸计算再回贴到目标尺寸。
     """
 
+    # User-visible execution policy. quality keeps the requested frame size;
+    # scaled_fast uses output.preview_long_edge; reduced_fast keeps the frame
+    # size but permits documented lower-order internal approximations.
+    execution_mode: str = "quality"
+    # Internal detail tier inside the selected execution policy.
     quality_mode: str = "standard"
-    halation_work_long_edge: int | None = 1800
-    grain_work_long_edge: int | None = 1800
+    # Larger working frames remain enabled as best-effort support.
+    comfort_zone_megapixels: float = 30.0
+    # None means use the quality-mode default (draft=1200, standard=1800,
+    # high=native). A positive value is an explicit per-module override.
+    halation_work_long_edge: int | None = None
+    grain_work_long_edge: int | None = None
+    # Exact pointwise material-pool processing switches to bounded row tiles
+    # above this frame size. Zero rows disables tiling for diagnostics.
+    material_tile_rows: int = 256
+    material_tile_threshold_megapixels: float = 8.0
+    scan_tile_rows: int = 512
+    scan_tile_threshold_megapixels: float = 48.0
+    # Runtime ownership policy. Public develop/diagnostic paths keep full;
+    # production output may set cold_fp16 on its private config snapshot.
+    history_storage_policy: str = "full"
+    # Optional explicit capacity boundary. It only warns or rejects work; it
+    # never changes resolution, process operators, precision, or scan meaning.
+    memory_budget_mb: float | None = None
+    memory_budget_policy: str = "warn"
 
 
 @dataclass(slots=True)
@@ -293,18 +414,97 @@ class DarkroomConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DarkroomConfig":
-        film_data = dict(data.get("film", {}))
-        chemistry_data = dict(data.get("chemistry", {}))
-        chemistry_data.update(dict(data.get("develop", {})))
-        scanner_data = dict(data.get("scanner", {}))
-        output_data = dict(data.get("output", {}))
-        processing_data = dict(data.get("processing", {}))
-        look_data = dict(data.get("look", {}))
+        if not isinstance(data, dict):
+            raise ValueError("Darkroom configuration root must be a mapping object.")
+
+        def section(name: str) -> dict[str, Any]:
+            value = data.get(name, {})
+            if value is None:
+                return {}
+            if not isinstance(value, dict):
+                raise ValueError(f"Configuration section '{name}' must be an object.")
+            return dict(value)
+
+        film_data = section("film")
+        chemistry_data = section("chemistry")
+        chemistry_data.update(section("develop"))
+        scanner_data = section("scanner")
+        output_data = section("output")
+        processing_data = section("processing")
+        processing_data.setdefault(
+            "execution_mode",
+            "reduced_fast" if bool(data.get("fast_mode", False)) else "quality",
+        )
+        look_data = section("look")
+
+        # JSON has no tuple type. Normalize typed vectors/matrices at the one
+        # config boundary so presets, sessions, GUI values and defaults expose
+        # the same immutable shape to both formation and scan code.
+        film_vector_fields = {
+            "halation_color",
+            "hd_gamma",
+            "density_min",
+            "density_max",
+            "log_exposure_toe",
+            "log_exposure_shoulder",
+            "film_base_density_rgb",
+            "retained_halide_density_rgb",
+            "auxiliary_layer_density_rgb",
+            "degradation_fog_density_rgb",
+            "degradation_layer_balance",
+            "granularity_sigma",
+            "cross_process_layer_balance",
+        }
+        film_matrix_fields = {
+            "color_matrix",
+            "layer_sensitivity_matrix",
+            "dye_absorption_matrix",
+        }
+        for key in film_vector_fields:
+            if key in film_data:
+                film_data[key] = tuple(float(value) for value in film_data[key])
+        for key in film_matrix_fields:
+            if key in film_data:
+                film_data[key] = tuple(
+                    tuple(float(value) for value in row) for row in film_data[key]
+                )
+        for key in {"grain_scales", "grain_scale_weights"}:
+            if key in film_data:
+                film_data[key] = tuple(float(value) for value in film_data[key])
+
+        if "process_layer_balance" in chemistry_data:
+            chemistry_data["process_layer_balance"] = tuple(
+                float(value) for value in chemistry_data["process_layer_balance"]
+            )
+
+        scanner_vector_fields = {
+            "scanner_light_color",
+            "negative_channel_gamma",
+            "print_reference_density",
+            "print_color_bias",
+            "print_color_shift",
+            "highlight_color_bias",
+        }
+        for key in scanner_vector_fields:
+            if key in scanner_data:
+                scanner_data[key] = tuple(float(value) for value in scanner_data[key])
+        if "scanner_response_matrix" in scanner_data:
+            scanner_data["scanner_response_matrix"] = tuple(
+                tuple(float(value) for value in row)
+                for row in scanner_data["scanner_response_matrix"]
+            )
+        if "negative_channel_matrix" in scanner_data:
+            scanner_data["negative_channel_matrix"] = tuple(
+                tuple(float(value) for value in row)
+                for row in scanner_data["negative_channel_matrix"]
+            )
 
         # 旧 preset 迁移：这些字段过去混在 film 中。
         scanner_keys = {
             "scanner_light_color",
             "scanner_response_matrix",
+            "negative_channel_matrix",
+            "negative_channel_gamma",
             "print_reference_density",
             "print_gamma",
             "print_mapping_mode",
@@ -332,6 +532,22 @@ class DarkroomConfig:
         for key in list(output_data):
             if key in scanner_output_keys:
                 scanner_data.setdefault(key, output_data.pop(key))
+
+        # Legacy migrations above may have moved scanner vectors out of old
+        # film/output sections after the first normalization pass.
+        for key in scanner_vector_fields:
+            if key in scanner_data:
+                scanner_data[key] = tuple(float(value) for value in scanner_data[key])
+        if "scanner_response_matrix" in scanner_data:
+            scanner_data["scanner_response_matrix"] = tuple(
+                tuple(float(value) for value in row)
+                for row in scanner_data["scanner_response_matrix"]
+            )
+        if "negative_channel_matrix" in scanner_data:
+            scanner_data["negative_channel_matrix"] = tuple(
+                tuple(float(value) for value in row)
+                for row in scanner_data["negative_channel_matrix"]
+            )
 
         if "preview_size" in output_data:
             output_data.setdefault("render_long_edge", output_data.pop("preview_size"))
@@ -371,8 +587,10 @@ class DarkroomConfig:
 
     @classmethod
     def from_json(cls, path: str | Path) -> "DarkroomConfig":
-        with Path(path).open("r", encoding="utf-8") as handle:
-            return cls.from_dict(json.load(handle))
+        payload = strict_json_load(path)
+        if not isinstance(payload, dict):
+            raise ValueError(f"Configuration JSON root must be an object: {path}")
+        return cls.from_dict(payload)
 
 
 DEVELOP_LOOK_FIELDS = (
@@ -380,6 +598,7 @@ DEVELOP_LOOK_FIELDS = (
     "negative_contrast",
     "saturation_multiplier",
     "halation_multiplier",
+    "halation_sensitivity",
     "grain_multiplier",
     "grain_size_multiplier",
     "look_strength",
@@ -401,22 +620,16 @@ def merge_config_presets(
 ) -> DarkroomConfig:
     """Compose one runtime config from separated film/develop and scanner presets.
 
-    The film preset owns negative formation. The scanner preset owns positive
-    interpretation. Output size/format and runtime flags can still be adjusted by
-    entry scripts after this merge.
+    The film preset owns only material identity/parameters, the develop preset
+    owns chemistry and formation-side look controls, and the scanner preset
+    owns observation. Output and runtime flags remain entry-point concerns.
     """
     merged = DarkroomConfig()
 
     if film_config is not None:
         merged.film = copy.deepcopy(film_config.film)
-        merged.chemistry = copy.deepcopy(film_config.chemistry)
         merged.mode = str(film_config.mode)
         merged.medium = str(film_config.medium)
-        merged.enable_mtf = bool(film_config.enable_mtf)
-        merged.enable_halation = bool(film_config.enable_halation)
-        merged.enable_grain = bool(film_config.enable_grain)
-        for field_name in DEVELOP_LOOK_FIELDS:
-            setattr(merged.look, field_name, copy.deepcopy(getattr(film_config.look, field_name)))
 
     if develop_config is not None:
         merged.chemistry = copy.deepcopy(develop_config.chemistry)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import cv2
 import numpy as np
 
@@ -35,10 +37,18 @@ def _resize_mask(mask: np.ndarray, long_edge: int) -> np.ndarray:
     return cv2.resize(mask, size, interpolation=cv2.INTER_AREA)
 
 
-def halation_psf_kernel(image_shape: tuple[int, int, int], film: FilmStockConfig) -> np.ndarray:
-    """生成 PSF_halation(r) = A exp(-r^2/2sigma^2) + B exp(-r/R)。"""
-    sigma = radius_to_sigma(film.halation_core_radius, image_shape)
-    radius_r = max(1.0, float(film.halation_exponential_radius) * min(image_shape[:2]))
+@lru_cache(maxsize=64)
+def _cached_halation_psf_kernel(
+    height: int,
+    width: int,
+    core_radius: float,
+    exponential_radius: float,
+    gaussian_amplitude: float,
+    exponential_amplitude: float,
+) -> np.ndarray:
+    image_shape = (int(height), int(width), 3)
+    sigma = radius_to_sigma(core_radius, image_shape)
+    radius_r = max(1.0, float(exponential_radius) * min(image_shape[:2]))
     max_radius = int(np.ceil(max(sigma * 4.0, radius_r * 6.0)))
     max_radius = max(3, min(max_radius, 256))
 
@@ -46,11 +56,23 @@ def halation_psf_kernel(image_shape: tuple[int, int, int], film: FilmStockConfig
     yy, xx = np.meshgrid(coords, coords, indexing="ij")
     r = np.sqrt(xx * xx + yy * yy)
 
-    gaussian = float(film.halation_gaussian_amplitude) * np.exp(-(r * r) / (2.0 * sigma * sigma))
-    exponential = float(film.halation_exponential_amplitude) * np.exp(-r / max(radius_r, 1e-6))
+    gaussian = float(gaussian_amplitude) * np.exp(-(r * r) / (2.0 * sigma * sigma))
+    exponential = float(exponential_amplitude) * np.exp(-r / max(radius_r, 1e-6))
     kernel = gaussian + exponential
     kernel /= max(float(kernel.sum()), 1e-6)
     return kernel.astype(np.float32)
+
+
+def halation_psf_kernel(image_shape: tuple[int, int, int], film: FilmStockConfig) -> np.ndarray:
+    """Generate and cache the immutable halation PSF for a material/work size."""
+    return _cached_halation_psf_kernel(
+        int(image_shape[0]),
+        int(image_shape[1]),
+        float(film.halation_core_radius),
+        float(film.halation_exponential_radius),
+        float(film.halation_gaussian_amplitude),
+        float(film.halation_exponential_amplitude),
+    )
 
 
 def _gradient_mask(values: np.ndarray) -> np.ndarray:
@@ -122,6 +144,8 @@ def apply_halation(
 ) -> np.ndarray:
     """用 PSF 对高光泄漏能量做卷积，再以暖色散射能量加回线性图像。"""
     image = np.asarray(image, dtype=np.float32)
+    if float(film.halation_strength) <= 0.0:
+        return image
     source = halation_source_energy(image, film)
 
     # 低频光晕可以先在较小能量源上扩散，再放回原尺寸；视觉比例仍按图像尺寸计算。

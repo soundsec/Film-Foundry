@@ -38,7 +38,7 @@
     "print_color_bias": [1.0, 1.0, 1.0],
     "print_color_shift": [0.0, 0.0, 0.0],
     "highlight_color_bias": [1.0, 1.0, 1.0],
-    "granularity_sigma": [0.048, 0.048, 0.048],
+    "granularity_sigma": [0.043, 0.043, 0.043],
     "grain_density_correlation_radius": 0.0018,
     "halation_gaussian_amplitude": 0.70,
     "halation_exponential_amplitude": 0.30,

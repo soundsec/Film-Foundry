@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | 输入图像 / input image | 普通 JPG/PNG/TIFF，被当作显示编码图像 | 它不是真实场景线性辐照度，不能认为还原了真实光子能量 |
 | 近似线性工作空间 | sRGB 解码后的浮点空间 | 后续扩散、曝光、颗粒叠加更合理，但仍只是近似 |
-| 胶片本体 / film stock | 胶片材料属性，如 H-D 曲线、片基、染料吸收、颗粒、halation | 改它会改变电子负片母版，不适合在 scan-only 阶段反复试 |
+| 胶片本体 / film stock | 胶片材料属性，如 H-D 曲线、片基、染料吸收、颗粒、halation | 改它会改变负片或正片介质母版，不适合在 scan-only 阶段反复试 |
 | 冲洗 / chemistry / develop | 显影条件，如迫冲、温度、药水疲劳 | 改它会改变底片密度、灰雾、反差和颗粒 |
 | 电子负片 / electronic negative | 已冲洗完成的密度母版，主要是 `density_cmy` 和 `density_grain` | 这是项目最重要的可复用中间产物 |
 | scanner raw / 线性电子负片 TIFF | 扫描器看到的负片透射图像，通常带片基边框 | 适合外部软件手动去色罩，也适合 scan-only 快速重扫 |
@@ -76,6 +76,13 @@ scanner preset
 | `halation_core_radius` | `film` | 近程乳剂散射半径 | 光晕核心更厚，靠近高光处更糊 |
 | `halation_exponential_radius` | `film` | 长程片基反射衰减半径 | 外层红橙扩散更远，更有“片基反射”感 |
 | `film_base_density_rgb` | `film` | 彩负片基/橙色 mask 的 RGB 光学密度 | 负片外观更橙，扫描去色罩压力更大 |
+| `retained_halide_density_rgb` | `film` | 定影不足残留银盐的降阶 RGB 密度倾向 | 改变残留盐造成的色偏方向，不改变定影完成度 |
+| `material_degradation` | `film` | 材料退化/过期/保存不当的统一强度 | 同时插值感光度损失、底雾、层间失衡与颗粒增加；不代表某一种具体老化机制 |
+| `degradation_speed_loss_stops` | `film` | 满强度退化时的感光度损失 | 数值越大，退化材料形成的潜影越弱 |
+| `degradation_fog_density_rgb` | `film` | 满强度退化底雾的 RGB 光学密度 | 定义退化底雾的强度与颜色方向 |
+| `degradation_layer_balance` | `film` | 满强度退化的感色层相对感度 | 描述不同感色层老化速度不同造成的色平衡漂移 |
+| `auxiliary_layer_amount` | `film` | 可清除附加层的初始量 | 表示 rem-jet、防光晕背层或保护/污染层的降阶材料池 |
+| `auxiliary_layer_density_rgb` | `film` | 附加层单位剩余量的 RGB 光学密度 | 只有附加层清除不完全时进入最终介质密度 |
 | `layer_sensitivity_matrix` | `film` | RGB 曝光如何落到三层乳剂 | 改变颜色如何形成 CMY 密度，属于胶片材料层 |
 | `dye_absorption_matrix` | `film` | CMY 染料密度如何吸收 RGB 光 | 交叉项越强，颜色越“互染”、越不数码干净 |
 | `hd_gamma` | `film` | H-D 曲线中段斜率 | 底片密度分离更强，扫描后反差也更容易增强 |
@@ -87,6 +94,8 @@ scanner preset
 | `grain_density_correlation_radius` | `film` | 颗粒空间相关半径，按画幅比例换算像素 | 颗粒更粗，细密噪声更少，大块感更明显 |
 | `emulsion_mtf_strength` | `film` | 乳剂有限解析力 / 输入高频抑制 | 数码锐边更不“浮”，但真实细节也可能被压掉 |
 | `digital_artifact_suppression` | `film` | 对 ISP 锐化振铃的额外抑制 | JPEG/手机锐化边缘更柔，但过高会糊 |
+
+`granularity_sigma` 只是材料基准。实际颗粒还会乘以冲洗得到的 `grain_factor`，空间尺度还会乘以 `grain_radius_factor`；迫冲、过显、高温、显影/定影疲劳、残银、药染、显影不均、显影液类型和画幅都可能让最终颗粒更强或更粗。
 
 ### Legacy RGB response / grain 字段
 
@@ -124,21 +133,34 @@ scanner.py          -> negative inversion / scan render
 | 参数 | 所属配置 | 直观含义 | 增大时通常发生什么 |
 | --- | --- | --- | --- |
 | `developer_type` | `chemistry/develop` | 显影液响应类型 | 改变显影速率、反差倾向、雾化、颗粒和高光补偿方式 |
+| `fixer_type` | `chemistry/develop` | 定影/清除 profile | 快速、硬膜和单浴具有不同疲劳容忍与清除倾向，不改变显影生成量 |
 | `frame_size` | `chemistry/develop` | 画幅 / 放大倍率代理 | 半格/35mm 颗粒更显眼，中画幅和大画幅更细；不改变胶片材料本身 |
 | `time_min` | `chemistry/develop` | 显影时间 | 时间更长通常显影更充分，反差/雾化/颗粒可能增加 |
 | `concentration` | `chemistry/develop` | 药水浓度倍率 | 浓度更高会提高显影活性，但也更容易增加灰雾和反差 |
 | `agitation` | `chemistry/develop` | 搅拌强度 | 搅拌更强会提高局部药水交换和显影活性 |
-| `process_mode` | `chemistry/develop` | 处理模式 | 当前主线为 `normal_negative`；后续可扩展黑白反转、交叉处理等 |
+| `process_mode` | `chemistry/develop` | 药水执行模式 | 区分常规、单浴与反转程序所需的执行语义 |
 | `compensation` | `chemistry/develop` | 补偿显影倾向 | 更强时更压高光、肩部更早介入 |
 | `push_stops` | `chemistry` | 迫冲档数 | 中段反差、灰雾、颗粒都会变强；阴影可能更硬 |
+| `silver_retention` | `chemistry` | 留银/漂白旁路强度 | 只降低漂白去银完成度，保留显影形成的影像银 |
+| `silver_plating` | `chemistry` | 表面镀银事故强度 | 在冲洗后介质上增加斑驳中性金属银沉积，不改变原影像银材料池 |
+| `light_leak_strength` | `chemistry` | 漏光预曝光强度 | 在潜影形成前从一条或少数入光边增加局部曝光，不是四边光晕滤镜 |
+| `auxiliary_removal` | `chemistry` | 附加层去除完成度 | 越低则最终介质保留更多由材料定义的 rem-jet/背层密度 |
 | `temperature_c` | `chemistry` | 显影温度 | 高于基准时反应更激烈，反差和颗粒略增 |
 | `developer_exhaustion` | `chemistry` | 药水疲劳 | 最大密度下降，灰雾增加，反差可能变钝，颗粒更脏 |
+| `fixer_exhaustion` | `chemistry` | 定影清除能力衰减 | 留下更多原始/漂白后银盐；不降低显影活性或已形成染料 |
 
 ## 扫描 / 输出解释参数
 
 | 参数 | 所属配置 | 直观含义 | 增大时通常发生什么 |
 | --- | --- | --- | --- |
-| `scan_base_percentile` | `scanner` | 无边框时估计片基的高百分位 | 更倾向使用最亮/最低密度区域当片基，可能更强去色罩 |
+| `negative_backlight_ev` | `scanner` | 负片透射采样背光亮度 | 改变新生成的 linear scanner raw；使用同一已知片基锚点时会在去罩归一中抵消，不等于后段扫描曝光 |
+| `negative_backlight_temperature_k` | `scanner` | 负片透射采样背光色温 | 改变 raw 通道照明；已知片基归一后不应被误当作固定成片色偏 |
+| `scanner_response_matrix` | `scanner` | 背光透过介质后的传感器 RGB 响应 | 位于去色罩之前，描述采样器；不是负片染料校正或最终滤色 |
+| `scan_base_percentile` | `scanner` | 无边框、无已知片基样本时估计片基的高百分位 | full 生成型负片会使用已知 clear base；该项主要是外部 scan-only 兜底 |
+| `negative_channel_matrix` | `scanner` | 去罩并转入密度域后的通道交叉重建 | 可补偿材料/扫描组合的染料串扰；不应写成所有负片共用的固定蓝绿增强 |
+| `negative_channel_gamma` | `scanner` | 去罩后 RGB 密度通道的非线性重建曲线 | 分别改变三通道密度展开，适合温和校正蓝绿记录，不回写冲洗介质 |
+| `negative_channel_compensation_enabled` | `scanner` | 启用材料感知的负片染料/蓝绿通道解耦 | 读取最终介质光学快照中的染料吸收矩阵；默认关闭以兼容旧结果 |
+| `negative_channel_compensation_strength` | `scanner` | 材料吸收矩阵有界逆的混合强度 | 越高通道分离越强，也越可能把残银、底雾或噪声解释成色偏；默认 0.35 |
 | `print_reference_density` | `scanner` | 哪段正像 raw density 被映射到中灰附近 | 改变整体色平衡和中灰位置，三通道不一致会产生色偏 |
 | `print_gamma` | `scanner` | 扫描/打印映射基础反差 | 正像反差更强，暗部和高光更容易分开 |
 | `print_mapping_mode` | `scanner` | 正像映射曲线类型 | `printlike` 更像纸面展开，`sigmoid` 更像干净视频映射 |
@@ -185,24 +207,19 @@ scanner.py          -> negative inversion / scan render
 
 彩色反转并不是不存在。彩色反转片一般对应 E-6 一类流程，目标是得到彩色正片/幻灯片。它和“彩色负片 + C-41 + 扫描反相”不是一回事。
 
-### 是否建议现在实现？
+### 当前项目实现
 
-当前不建议马上把正冲做进主流程。
+`bw_reversal` 与 `color_reversal` 已进入统一银盐材料池主流程。它们与负片程序共享连续潜影、唯一卤化银池和基础算子。黑白反转在首次显影后直接移除第一次银像；彩色反转保留第一次银像到末段，与彩显形成的银一起漂白、定影。两者都通过剩余卤化银激活与二次显影形成正像，而不是扫描阶段反相。
 
-原因：
+这不表示彩负材料和反转材料可以混为一谈：材料 preset 仍应分别描述感光曲线、片基、染料与正片密度特性；药水兼容性也应保留差异。统一的是降阶状态转换语言和形成入口，不是具体材料或标准工艺参数。
 
-1. 项目当前最有价值的主线是电子负片母版，正冲会绕开“负片 -> 扫描解释”这条主线。
-2. 黑白反转可以较简单地做成 `bw_reversal_positive`，但它需要新的状态对象：正片密度或正像透过率，而不是 `density_cmy` 负片密度。
-3. 彩色反转需要新的材料假设：正片胶片的 H-D、染料形成、颜色密度和扫描逻辑都不同，不能直接复用彩负参数。
-4. 如果只是为了“像正片”，更适合先做 scan/render preset；如果要物理语义成立，就应该作为独立 film mode。
+最终介质继续保存为密度母版并声明自身极性。`positive_transparency_scan` 只负责观察正像透明介质，不能改变已经形成的银、染料或残留卤化银状态。
 
-建议路线：
+## 彩负黑白冲洗
 
-```text
-第一步：继续打磨彩色负片 / 电子负片
-第二步：加 bw_reversal_positive 原型，只做黑白正片
-第三步：稳定后再考虑 color_reversal_slide / E-6-inspired 模式
-```
+彩色负片使用黑白显影程序时，材料仍然是彩色多层负片：感色矩阵、三层卤化银响应、橙色片基和材料光学参数不会被改写。黑白程序不进行染料偶合，最终主要留下宽谱吸收的金属银。因此它不同于使用真正黑白胶片，也不同于把彩色扫描结果简单去饱和。
+
+项目用 `silver_on_color_material` 标识该最终介质，并把组合记录为 material/process mismatch。扫描仍可观察片基带来的颜色影响，但不能把它解释为冲洗时形成了彩色染料像。
 
 ## 常见调参判断
 
@@ -229,14 +246,3 @@ scanner.py          -> negative inversion / scan render
 4. 最后再调输出格式、尺寸、sidecar、layer pack。
 
 不要一次同时改胶片、冲洗和扫描参数。否则很难判断问题来自底片本身，还是扫描解释。
-
-## 大图性能路线
-
-当前开发阶段可以用 `preview_long_edge` 或 GUI 预览模式快速试参；正式输出再回到原始尺寸。后续若要让大分辨率冲洗更快，优先考虑这些方向：
-
-1. **分辨率分层计算**：halation、MTF 判定、部分低频残留层可以在较低分辨率计算，再上采样回原图；真正需要像素级保真的 H-D 密度映射保留全分辨率。
-2. **分块 / tile 处理**：对 H-D、密度映射、扫描反相这类局部运算可按块处理，降低内存峰值；halation 这类卷积需要带 overlap padding。
-3. **缓存电子负片阶段**：develop 阶段生成 `.npz` / scanner raw 后，反复调扫描不再重跑冲洗，这是当前最重要的实际加速方式。
-4. **更快的随机场生成**：颗粒可以先在低分辨率生成相关随机场，再按画幅比例上采样；细节颗粒可叠加轻量局部噪声。
-5. **可选 FFT / separable convolution**：大半径 halation PSF 可以切换到 FFT 卷积或分离近似核，避免大核 `filter2D` 在高分辨率下变慢。
-6. **Numba / CuPy / OpenCL 可选后端**：核心仍保持 NumPy/OpenCV，但以后可以为重计算模块加可选加速后端，而不是把 GPU 作为必需依赖。

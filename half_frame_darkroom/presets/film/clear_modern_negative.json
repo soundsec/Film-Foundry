@@ -1,6 +1,10 @@
 {
   "film": {
     "name": "Clear Modern Negative",
+    "medium_family": "film",
+    "medium_process": "negative",
+    "image_polarity": "negative",
+    "color_process": "color",
     "halation_strength": 0.075,
     "halation_threshold": 0.78,
     "halation_softness": 0.16,
@@ -84,9 +88,9 @@
       0.82
     ],
     "granularity_sigma": [
-      0.022,
-      0.021,
-      0.024
+      0.018,
+      0.017,
+      0.020
     ],
     "grain_density_correlation_radius": 0.0011,
     "halation_gaussian_amplitude": 0.64,

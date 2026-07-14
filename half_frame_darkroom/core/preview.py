@@ -30,7 +30,7 @@ def resize_to_long_edge(image: np.ndarray, long_edge: int | None) -> np.ndarray:
 def negative_visual_preview(
     density_cmy: np.ndarray,
     film: FilmStockConfig,
-    base_mask_color: tuple[float, float, float] = (1.0, 0.56, 0.24),
+    base_mask_color: tuple[float, float, float] | None = None,
 ) -> np.ndarray:
     """把 CMY 底片密度转换成接近肉眼透射观看的彩色负片预览。
 
@@ -38,11 +38,16 @@ def negative_visual_preview(
     密度映射到 RGB 光学密度，再用 T = 10^-D 得到透过率；橙色片基在这里用
     一个简化的透射色罩表示。
     """
-    rgb_density = negative_total_density_rgb(density_cmy, film)
-    transmittance = np.power(10.0, -np.clip(rgb_density, 0.0, None))
-
-    base = np.asarray(base_mask_color, dtype=np.float32).reshape(1, 1, 3)
-    preview = transmittance * base
+    if base_mask_color is None:
+        rgb_density = negative_total_density_rgb(density_cmy, film)
+        preview = np.power(10.0, -np.clip(rgb_density, 0.0, None))
+    else:
+        rgb_density = negative_total_density_rgb(density_cmy, film)
+        base_density = np.asarray(film.film_base_density_rgb, dtype=np.float32).reshape(1, 1, 3)
+        dye_density = np.clip(rgb_density - base_density, 0.0, None)
+        dye_transmittance = np.power(10.0, -dye_density)
+        base = np.asarray(base_mask_color, dtype=np.float32).reshape(1, 1, 3)
+        preview = dye_transmittance * base
 
     # 仅为屏幕查看做全局曝光归一化，不做分通道白平衡，避免洗掉负片色罩。
     luma = preview[..., 0] * 0.2126 + preview[..., 1] * 0.7152 + preview[..., 2] * 0.0722

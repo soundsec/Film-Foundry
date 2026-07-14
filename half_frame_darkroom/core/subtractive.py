@@ -21,6 +21,7 @@ def density_to_positive_rgb(
     print_exposure_ev: float = 0.0,
     paper_black: float = 0.0,
     paper_white: float = 1.0,
+    base_samples: np.ndarray | None = None,
 ) -> np.ndarray:
     """兼容旧入口：CMY density -> scanner raw -> positive RGB。"""
     scanner_raw = scan_negative_raw(density_cmy, film, scanner)
@@ -31,4 +32,6 @@ def density_to_positive_rgb(
         print_exposure_ev=print_exposure_ev,
         paper_black=paper_black,
         paper_white=paper_white,
+        base_samples=base_samples,
+        dye_absorption_matrix=film.dye_absorption_matrix,
     )

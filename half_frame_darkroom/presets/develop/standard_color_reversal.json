@@ -1,0 +1,31 @@
+{
+  "develop": {
+    "developer_name": "Standard Color Reversal Process",
+    "developer_type": "standard",
+    "fixer_name": "Standard Reversal Fixer",
+    "fixer_type": "standard",
+    "medium_process": "reversal",
+    "program_key": "color_reversal",
+    "process_mode": "reversal",
+    "frame_size": "35mm",
+    "time_min": 8.0,
+    "temperature_c": 20.0,
+    "concentration": 1.0,
+    "agitation": 1.0,
+    "first_development_completion": 1.0,
+    "second_development_completion": 1.0,
+    "reversal_activation": 1.0,
+    "silver_bleach_completion": 1.0,
+    "halide_fixing_completion": 1.0,
+    "dye_coupling_efficiency": 1.0,
+    "auxiliary_removal": 1.0
+  },
+  "mode": "color_negative",
+  "look": {
+    "exposure_ev": -0.05,
+    "negative_contrast": 1.0,
+    "halation_multiplier": 1.0,
+    "grain_multiplier": 1.0,
+    "grain_size_multiplier": 1.0
+  }
+}

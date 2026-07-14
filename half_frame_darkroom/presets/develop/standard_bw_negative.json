@@ -4,6 +4,7 @@
     "developer_type": "standard",
     "fixer_name": "Standard Fixer",
     "fixer_type": "standard",
+    "program_key": "bw_negative",
     "process_mode": "normal_negative",
     "frame_size": "35mm",
     "time_min": 8.0,

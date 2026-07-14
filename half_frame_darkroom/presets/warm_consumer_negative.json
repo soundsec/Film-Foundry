@@ -39,7 +39,7 @@
     "highlight_bias_threshold": 0.68,
     "highlight_bias_softness": 0.22,
     "scan_saturation": 1.06,
-    "granularity_sigma": [0.031, 0.029, 0.033],
+    "granularity_sigma": [0.028, 0.026, 0.030],
     "grain_density_correlation_radius": 0.0014,
     "halation_gaussian_amplitude": 0.58,
     "halation_exponential_amplitude": 0.42,

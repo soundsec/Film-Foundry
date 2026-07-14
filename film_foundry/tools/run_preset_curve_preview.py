@@ -10,17 +10,25 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import numpy as np
 from PIL import Image, ImageDraw
 
+SOURCE_ROOT = Path(__file__).resolve().parents[2]
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
+
+from half_frame_darkroom.core.atomic_io import atomic_output_path
 from half_frame_darkroom.core.scanner import render_positive_scan
 from half_frame_darkroom.core.sensitometry import hd_density_curve
 from half_frame_darkroom.model.config import DarkroomConfig, merge_config_presets
+from film_foundry.tools.paths import app_root, resource_root
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-PRESET_DIR = PROJECT_ROOT / "half_frame_darkroom" / "presets"
+PROJECT_ROOT = app_root()
+RESOURCE_ROOT = resource_root()
+PRESET_DIR = RESOURCE_ROOT / "half_frame_darkroom" / "presets"
 FILM_PRESET_DIR = PRESET_DIR / "film"
 DEVELOP_PRESET_DIR = PRESET_DIR / "develop"
 SCANNER_PRESET_DIR = PRESET_DIR / "scanner"
@@ -33,6 +41,13 @@ PADDING_RIGHT = 28
 PADDING_TOP = 42
 PADDING_BOTTOM = 54
 CHANNEL_COLORS = ((220, 70, 70), (70, 170, 85), (70, 110, 220))
+
+
+def _save_curve_image(image: Image.Image, output_path: Path) -> None:
+    """Publish one preview without exposing a partially encoded replacement."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_output_path(output_path) as temporary:
+        image.save(temporary)
 
 
 def _plot_area() -> tuple[int, int, int, int]:
@@ -78,8 +93,7 @@ def draw_hd_curve(config: DarkroomConfig, output_path: Path) -> None:
     for channel, color in enumerate(CHANNEL_COLORS):
         draw.line(_points(log_e, density[:, channel], -3.0, 1.0, 0.0, y_max), fill=color, width=3)
     draw.text((PADDING_LEFT, PADDING_TOP + 10), "red / green / blue layer display", fill=(92, 88, 78))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(output_path)
+    _save_curve_image(image, output_path)
 
 
 def draw_scan_curve(config: DarkroomConfig, output_path: Path) -> None:
@@ -98,8 +112,7 @@ def draw_scan_curve(config: DarkroomConfig, output_path: Path) -> None:
     for channel, color in enumerate(CHANNEL_COLORS):
         draw.line(_points(raw_d, mapped[:, 0, channel], 0.0, 2.6, 0.0, 1.0), fill=color, width=3)
     draw.text((PADDING_LEFT, PADDING_TOP + 10), f"mapping={config.scanner.print_mapping_mode}, sat={config.scanner.scan_saturation:.2f}", fill=(92, 88, 78))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(output_path)
+    _save_curve_image(image, output_path)
 
 
 def main() -> None:

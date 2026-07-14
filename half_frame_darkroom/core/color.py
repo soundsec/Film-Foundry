@@ -54,12 +54,16 @@ def ensure_rgb_float(image: Array) -> Array:
     image = np.asarray(image)
     if image.ndim not in {2, 3}:
         raise ValueError(f"Image array must be 2D grayscale or 3D color data, got shape {image.shape}.")
+    if image.size == 0 or image.shape[0] <= 0 or image.shape[1] <= 0:
+        raise ValueError(f"Image array must have non-zero width and height, got shape {image.shape}.")
 
     if np.issubdtype(image.dtype, np.integer):
         image = image.astype(np.float32) / max(float(np.iinfo(image.dtype).max), 1.0)
     else:
         image = image.astype(np.float32)
-        max_value = float(np.nanmax(image)) if image.size else 0.0
+        if not np.isfinite(image).all():
+            raise ValueError("Image array contains NaN or infinite values.")
+        max_value = float(np.max(image))
         if max_value > 1.0:
             image = image / 255.0
 
@@ -84,4 +88,7 @@ def ensure_rgb_float(image: Array) -> Array:
         raise ValueError(
             f"Unsupported channel count {channels}. Film Foundry currently accepts grayscale, RGB, or RGBA images."
         )
-    return np.clip(image, 0.0, 1.0).astype(np.float32)
+    image = np.clip(image, 0.0, 1.0).astype(np.float32)
+    if not np.isfinite(image).all():
+        raise ValueError("Image conversion produced NaN or infinite RGB values.")
+    return image

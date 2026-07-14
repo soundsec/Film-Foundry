@@ -1,5 +1,9 @@
 {
   "scanner": {
+    "interpreter_key": "negative_scan",
+    "target_medium_process": "negative",
+    "input_polarity": "negative",
+    "output_polarity": "positive",
     "scan_method": "negative_inversion",
     "scan_base_percentile": 99.5,
     "print_reference_density": [1.55, 1.55, 1.55],
@@ -10,7 +14,7 @@
     "highlight_color_bias": [1.0, 1.0, 1.0],
     "highlight_bias_threshold": 0.72,
     "highlight_bias_softness": 0.18,
-    "scan_saturation": 1.0,
+    "scan_saturation": 1.04,
     "scan_normalize": true,
     "scan_normalize_strength": 0.15,
     "scan_normalize_mode": "luma",

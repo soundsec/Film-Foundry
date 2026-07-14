@@ -1,0 +1,32 @@
+{
+  "scanner": {
+    "interpretation_mode": "positive",
+    "interpreter_key": "positive_transparency_scan",
+    "target_medium_process": "positive",
+    "input_polarity": "positive",
+    "output_polarity": "positive",
+    "scanner_light_color": [1.0, 1.0, 1.0],
+    "light_table_ev": 0.80,
+    "light_table_temperature_k": 5600.0,
+    "positive_scan_color_control_strength": 0.22,
+    "projection_white_softness": 0.30,
+    "projection_black_adaptation": 0.14,
+    "scan_method": "positive_transparency",
+    "print_gamma": 0.98,
+    "print_color_shift": [0.0, 0.0, 0.0],
+    "print_color_bias": [1.0, 1.0, 1.0],
+    "highlight_color_bias": [1.0, 1.0, 1.0],
+    "highlight_bias_threshold": 0.84,
+    "highlight_bias_softness": 0.18,
+    "scan_saturation": 1.06,
+    "scan_normalize": true,
+    "scan_normalize_strength": 0.10,
+    "scan_normalize_mode": "luma",
+    "scan_black_percentile": 0.20,
+    "scan_white_percentile": 99.75
+  },
+  "look": {
+    "print_contrast": 1.00,
+    "print_exposure_ev": 0.05
+  }
+}

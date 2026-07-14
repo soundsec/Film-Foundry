@@ -1,92 +1,96 @@
 {
   "film": {
-    "name": "Clean Digital Like Negative",
-    "halation_strength": 0.015,
-    "halation_threshold": 0.86,
-    "halation_softness": 0.12,
-    "halation_core_radius": 0.0025,
-    "halation_outer_radius": 0.01,
+    "name": "Clean Digital-Like Negative",
+    "medium_family": "film",
+    "medium_process": "negative",
+    "image_polarity": "negative",
+    "color_process": "color",
+    "halation_strength": 0.045,
+    "halation_threshold": 0.84,
+    "halation_softness": 0.15,
+    "halation_core_radius": 0.0030,
+    "halation_outer_radius": 0.012,
     "halation_color": [
       1.0,
       0.55,
       0.3
     ],
-    "base_fog": 0.004,
-    "emulsion_mtf_strength": 0.08,
-    "digital_artifact_suppression": 0.06,
-    "halation_gradient_suppression": 0.1,
+    "base_fog": 0.012,
+    "emulsion_mtf_strength": 0.14,
+    "digital_artifact_suppression": 0.18,
+    "halation_gradient_suppression": 0.16,
     "hd_gamma": [
-      0.78,
-      0.78,
-      0.78
+      0.54,
+      0.56,
+      0.53
     ],
     "density_min": [
-      0.035,
-      0.035,
-      0.035
+      0.07,
+      0.08,
+      0.07
     ],
     "density_max": [
-      2.25,
-      2.25,
-      2.25
+      2.05,
+      2.12,
+      1.98
     ],
     "log_exposure_toe": [
-      -2.65,
-      -2.65,
-      -2.65
+      -2.45,
+      -2.42,
+      -2.48
     ],
     "log_exposure_shoulder": [
       0.72,
-      0.72,
-      0.72
+      0.74,
+      0.70
     ],
-    "hd_toe_width": 0.13,
-    "hd_shoulder_width": 0.28,
+    "hd_toe_width": 0.22,
+    "hd_shoulder_width": 0.34,
     "layer_sensitivity_matrix": [
       [
-        0.96,
-        0.03,
-        0.01
+        0.88,
+        0.09,
+        0.03
       ],
       [
-        0.02,
-        0.96,
-        0.02
+        0.08,
+        0.84,
+        0.08
       ],
       [
-        0.01,
         0.04,
-        0.95
+        0.14,
+        0.82
       ]
     ],
     "dye_absorption_matrix": [
       [
-        0.98,
-        0.04,
-        0.02
+        1.0,
+        0.08,
+        0.03
+      ],
+      [
+        0.06,
+        1.0,
+        0.09
       ],
       [
         0.03,
-        0.98,
-        0.04
-      ],
-      [
-        0.02,
-        0.05,
-        0.98
+        0.12,
+        1.0
       ]
     ],
     "film_base_density_rgb": [
-      0.08,
-      0.08,
-      0.08
+      0.15,
+      0.45,
+      0.68
     ],
     "granularity_sigma": [
-      0.006,
-      0.006,
-      0.006
+      0.010,
+      0.009,
+      0.011
     ],
-    "grain_density_correlation_radius": 0.0008,
-    "halation_exponential_radius": 0.01
+    "grain_density_correlation_radius": 0.0010,
+    "halation_exponential_radius": 0.012
   }
 }

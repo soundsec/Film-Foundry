@@ -1,7 +1,7 @@
 {
   "develop": {
     "developer_name": "Accident Kelp Light Leak",
-    "developer_type": "exhausted",
+    "developer_type": "standard",
     "fixer_name": "Tired Fixer",
     "fixer_type": "monobath",
     "medium_process": "negative",
@@ -16,6 +16,7 @@
     "fixer_exhaustion": 0.82,
     "compensation": 0.15,
     "silver_retention": 0.68,
+    "silver_plating": 0.48,
     "light_leak_strength": 0.38,
     "chemical_stain": 0.78,
     "uneven_development": 0.65

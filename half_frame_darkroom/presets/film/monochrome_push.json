@@ -1,8 +1,15 @@
 {
   "film": {
     "name": "Monochrome Push",
+    "medium_family": "film",
+    "medium_process": "negative",
+    "image_polarity": "negative",
+    "color_process": "monochrome",
     "halation_strength": 0.05,
     "halation_threshold": 0.74,
+    "halation_softness": 0.16,
+    "halation_core_radius": 0.0030,
+    "halation_outer_radius": 0.012,
     "hd_gamma": [
       0.78,
       0.78,
@@ -35,11 +42,17 @@
       0.12,
       0.12
     ],
-    "granularity_sigma": [
-      0.04,
-      0.04,
-      0.04
+    "retained_halide_density_rgb": [
+      1.0,
+      1.0,
+      1.0
     ],
-    "grain_density_correlation_radius": 0.0016
+    "granularity_sigma": [
+      0.032,
+      0.032,
+      0.032
+    ],
+    "grain_density_correlation_radius": 0.0016,
+    "halation_exponential_radius": 0.012
   }
 }

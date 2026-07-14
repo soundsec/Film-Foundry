@@ -1,7 +1,7 @@
 {
   "develop": {
     "developer_name": "Push BW Developer",
-    "developer_type": "push",
+    "developer_type": "standard",
     "fixer_name": "Standard Fixer",
     "fixer_type": "standard",
     "process_mode": "normal_negative",

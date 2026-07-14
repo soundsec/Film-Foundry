@@ -1,0 +1,44 @@
+{
+  "film": {
+    "name": "Cyan Shadow Warm Highlight Negative",
+    "medium_family": "film",
+    "medium_process": "negative",
+    "image_polarity": "negative",
+    "color_process": "color",
+    "halation_strength": 0.090,
+    "halation_threshold": 0.76,
+    "halation_softness": 0.18,
+    "halation_core_radius": 0.0035,
+    "halation_outer_radius": 0.016,
+    "halation_core_mix": 0.64,
+    "halation_color": [1.0, 0.40, 0.16],
+    "emulsion_mtf_strength": 0.15,
+    "emulsion_blur_radius": 0.0012,
+    "high_frequency_threshold": 0.034,
+    "digital_artifact_suppression": 0.12,
+    "halation_gradient_suppression": 0.26,
+    "hd_gamma": [0.70, 0.62, 0.50],
+    "density_min": [0.08, 0.09, 0.08],
+    "density_max": [1.90, 1.80, 1.10],
+    "log_exposure_toe": [-2.00, -2.25, -2.80],
+    "log_exposure_shoulder": [0.70, 0.20, -0.20],
+    "hd_toe_width": 0.25,
+    "hd_shoulder_width": 0.08,
+    "layer_sensitivity_matrix": [
+      [0.86, 0.10, 0.04],
+      [0.09, 0.80, 0.11],
+      [0.04, 0.18, 0.78]
+    ],
+    "dye_absorption_matrix": [
+      [1.04, 0.10, 0.04],
+      [0.07, 1.00, 0.11],
+      [0.03, 0.14, 0.96]
+    ],
+    "film_base_density_rgb": [0.17, 0.53, 0.82],
+    "granularity_sigma": [0.021, 0.020, 0.023],
+    "grain_density_correlation_radius": 0.0013,
+    "halation_gaussian_amplitude": 0.62,
+    "halation_exponential_amplitude": 0.38,
+    "halation_exponential_radius": 0.017
+  }
+}

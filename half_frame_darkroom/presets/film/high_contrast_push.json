@@ -1,8 +1,20 @@
 {
   "film": {
     "name": "High Contrast Push",
+    "medium_family": "film",
+    "medium_process": "negative",
+    "image_polarity": "negative",
+    "color_process": "color",
     "halation_strength": 0.14,
     "halation_threshold": 0.7,
+    "halation_softness": 0.18,
+    "halation_core_radius": 0.0040,
+    "halation_outer_radius": 0.018,
+    "halation_color": [
+      1.0,
+      0.38,
+      0.14
+    ],
     "hd_gamma": [
       0.72,
       0.76,
@@ -30,11 +42,17 @@
     ],
     "hd_toe_width": 0.16,
     "hd_shoulder_width": 0.2,
-    "granularity_sigma": [
-      0.038,
-      0.036,
-      0.04
+    "film_base_density_rgb": [
+      0.19,
+      0.57,
+      0.87
     ],
-    "grain_density_correlation_radius": 0.0016
+    "granularity_sigma": [
+      0.036,
+      0.033,
+      0.038
+    ],
+    "grain_density_correlation_radius": 0.0018,
+    "halation_exponential_radius": 0.018
   }
 }

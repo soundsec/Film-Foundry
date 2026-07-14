@@ -14,7 +14,8 @@
     "developer_exhaustion": 0.05,
     "fixer_exhaustion": 0.12,
     "compensation": 0.20,
-    "silver_retention": 0.08
+    "silver_retention": 0.0,
+    "silver_plating": 0.0
   },
   "mode": "bw_negative",
   "look": {

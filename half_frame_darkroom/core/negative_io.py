@@ -6,9 +6,11 @@ from pathlib import Path
 from typing import Any
 import json
 import os
+import zipfile
 
 import numpy as np
 
+from half_frame_darkroom.core.atomic_io import strict_json_load, strict_json_loads
 from half_frame_darkroom.core.states import DevelopedNegative
 from half_frame_darkroom.model.config import DarkroomConfig
 
@@ -25,9 +27,24 @@ def _as_density_array(value: Any, key: str, path: Path) -> np.ndarray:
         if array.dtype == object:
             raise ValueError(f"{path} 中的 {key} 仍是 object 数据，无法安全解释为密度数组。")
     array = np.asarray(array, dtype=np.float32)
-    if array.ndim != 3 or array.shape[-1] != 3:
+    if array.ndim != 3 or array.shape[-1] != 3 or array.shape[0] <= 0 or array.shape[1] <= 0:
         raise ValueError(f"{path} 中的 {key} 形状应为 HxWx3，实际为 {array.shape}。")
+    if not np.isfinite(array).all():
+        raise ValueError(f"{path} 中的 {key} 包含 NaN 或 Infinity，不能作为介质密度读取。")
     return array
+
+
+def _validate_density_pair(
+    density_cmy: np.ndarray,
+    density_grain: np.ndarray,
+    path: Path,
+) -> tuple[np.ndarray, np.ndarray]:
+    if density_cmy.shape != density_grain.shape:
+        raise ValueError(
+            f"{path} 中的 density_cmy 与 density_grain 形状不一致："
+            f"{density_cmy.shape} != {density_grain.shape}。"
+        )
+    return density_cmy, density_grain
 
 
 def _negative_from_object(value: Any, path: Path) -> tuple[np.ndarray, np.ndarray] | None:
@@ -59,6 +76,86 @@ def _allow_legacy_pickle(value: bool | None) -> bool:
     return os.environ.get(LEGACY_PICKLE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _read_developed_medium_metadata_from_npz(path: Path) -> dict[str, Any]:
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            if "developed_medium_metadata" not in data.files:
+                return {}
+            raw = data["developed_medium_metadata"]
+            if raw.shape != ():
+                raise ValueError(
+                    f"{path} 中的 developed_medium_metadata 必须是单个 JSON 字符串。"
+                )
+            payload = strict_json_loads(str(raw.item()))
+            if not isinstance(payload, dict):
+                raise ValueError(f"{path} 中的 developed_medium_metadata 根节点必须是对象。")
+            return payload
+    except (OSError, EOFError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"无法读取介质 metadata；NPZ 可能已截断或损坏：{path}") from exc
+    except (json.JSONDecodeError, UnicodeError, ValueError, TypeError) as exc:
+        if isinstance(exc, ValueError) and str(path) in str(exc):
+            raise
+        raise ValueError(f"{path} 中的 developed_medium_metadata 不是有效 JSON：{exc}") from exc
+
+
+def _metadata_kwargs(payload: dict[str, Any], path: Path) -> dict[str, Any]:
+    keys = {
+        "medium_family",
+        "medium_process",
+        "image_polarity",
+        "view_mode",
+        "base_type",
+        "color_system",
+        "compatible_interpreters",
+    }
+    kwargs = {key: payload[key] for key in keys if key in payload}
+    if "compatible_interpreters" in kwargs:
+        interpreters = kwargs["compatible_interpreters"]
+        if not isinstance(interpreters, (list, tuple)) or isinstance(interpreters, str):
+            raise ValueError(f"{path} 中的 compatible_interpreters 必须是字符串列表。")
+        normalized = tuple(str(value).strip() for value in interpreters)
+        if not normalized or any(not value for value in normalized):
+            raise ValueError(f"{path} 中的 compatible_interpreters 不能为空。")
+        kwargs["compatible_interpreters"] = normalized
+    for key, value in list(kwargs.items()):
+        if key != "compatible_interpreters":
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{path} 中的介质 metadata 字段 '{key}' 必须是非空字符串。")
+            kwargs[key] = str(value)
+    polarity = str(kwargs.get("image_polarity", "")).lower()
+    compatible = tuple(kwargs.get("compatible_interpreters", ()))
+    if not polarity:
+        if "positive_transparency_scan" in compatible:
+            polarity = "positive"
+            kwargs["image_polarity"] = polarity
+        elif "negative_scan" in compatible:
+            polarity = "negative"
+            kwargs["image_polarity"] = polarity
+    if polarity and polarity not in {"negative", "positive"}:
+        raise ValueError(f"{path} 中的 image_polarity 必须是 negative 或 positive。")
+    if polarity == "positive":
+        kwargs.setdefault("medium_family", "film")
+        kwargs.setdefault("medium_process", "slide")
+        kwargs.setdefault("view_mode", "transmissive")
+        kwargs.setdefault("base_type", "clear_base")
+        kwargs.setdefault("color_system", "positive_dye")
+        kwargs.setdefault("compatible_interpreters", ("positive_transparency_scan",))
+        compatible = tuple(kwargs["compatible_interpreters"])
+    elif polarity == "negative":
+        kwargs.setdefault("medium_family", "film")
+        kwargs.setdefault("medium_process", "negative")
+        kwargs.setdefault("view_mode", "transmissive")
+        kwargs.setdefault("base_type", "orange_mask")
+        kwargs.setdefault("color_system", "color_negative_dye")
+        kwargs.setdefault("compatible_interpreters", ("negative_scan",))
+        compatible = tuple(kwargs["compatible_interpreters"])
+    if polarity == "positive" and compatible and "positive_transparency_scan" not in compatible:
+        raise ValueError(f"{path} 的正片 metadata 没有兼容的 positive_transparency_scan 解释器。")
+    if polarity == "negative" and compatible and "negative_scan" not in compatible:
+        raise ValueError(f"{path} 的负片 metadata 没有兼容的 negative_scan 解释器。")
+    return kwargs
+
+
 def load_negative_density_arrays(
     path: str | Path,
     *,
@@ -71,12 +168,19 @@ def load_negative_density_arrays(
     即便启用兼容读取，也只接受可转换为数值数组的密度数据。
     """
     path = Path(path)
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise ValueError(f"Developed-medium NPZ does not exist or is empty: {path}")
+    if not zipfile.is_zipfile(path):
+        raise ValueError(f"Developed-medium NPZ is truncated or not a valid ZIP/NPZ archive: {path}")
     legacy_reason: str | None = None
     try:
         with np.load(path, allow_pickle=False) as data:
-            return (
-                _as_density_array(data["density_cmy"], "density_cmy", path),
-                _as_density_array(data["density_grain"], "density_grain", path),
+            density_cmy = _as_density_array(data["density_cmy"], "density_cmy", path)
+            density_grain = _as_density_array(data["density_grain"], "density_grain", path)
+            return _validate_density_pair(
+                density_cmy,
+                density_grain,
+                path,
             )
     except KeyError as exc:
         # 旧实验文件可能把整个 DevelopedNegative/dict 存在单个 object key 里。
@@ -99,14 +203,15 @@ def load_negative_density_arrays(
     with np.load(path, allow_pickle=True) as data:
         files = set(data.files)
         if "density_cmy" in files and "density_grain" in files:
-            return (
+            return _validate_density_pair(
                 _as_density_array(data["density_cmy"], "density_cmy", path),
                 _as_density_array(data["density_grain"], "density_grain", path),
+                path,
             )
         for key in data.files:
             negative = _negative_from_object(data[key], path)
             if negative is not None:
-                return negative
+                return _validate_density_pair(*negative, path)
     raise ValueError(f"{path} 不是可识别的电子负片 .npz，缺少 density_cmy / density_grain。")
 
 
@@ -123,22 +228,48 @@ def load_developed_negative_npz(
     )
     empty = np.zeros_like(density_grain, dtype=np.float32)
     metadata: dict[str, Any] = {"negative_path": str(path)}
+    medium_payload = _read_developed_medium_metadata_from_npz(path)
     sidecar_path = path.with_suffix(path.suffix + ".json")
     if sidecar_path.exists():
         try:
-            with sidecar_path.open("r", encoding="utf-8") as handle:
-                sidecar = json.load(handle)
-            stored_config = sidecar.get("config")
-            if isinstance(stored_config, dict):
+            sidecar = strict_json_load(sidecar_path)
+            if not isinstance(sidecar, dict):
+                raise ValueError("sidecar root must be a JSON object")
+            if "config" in sidecar:
+                stored_config = sidecar["config"]
+                if not isinstance(stored_config, dict):
+                    raise ValueError("sidecar config must be a JSON object")
                 metadata["runtime_config"] = DarkroomConfig.from_dict(stored_config)
                 metadata["sidecar_path"] = str(sidecar_path)
+            if "developed_medium" in sidecar:
+                sidecar_medium = sidecar["developed_medium"]
+                if not isinstance(sidecar_medium, dict):
+                    raise ValueError("sidecar developed_medium must be a JSON object")
+                if not medium_payload:
+                    medium_payload = sidecar_medium
         except Exception as exc:
-            metadata["sidecar_load_error"] = str(exc)
+            raise ValueError(f"Invalid developed-medium sidecar '{sidecar_path}': {exc}") from exc
+    if not medium_payload and ".darkroom_positive" in path.stem.lower():
+        medium_payload = {
+            "medium_family": "film",
+            "medium_process": "slide",
+            "image_polarity": "positive",
+            "view_mode": "transmissive",
+            "base_type": "clear_base",
+            "color_system": "positive_dye",
+            "compatible_interpreters": ["positive_transparency_scan"],
+        }
+        metadata["medium_identity_source"] = "filename_fallback"
+    if medium_payload:
+        metadata["developed_medium"] = medium_payload
+        if isinstance(medium_payload.get("film_process_model"), dict):
+            metadata["film_process_model"] = medium_payload["film_process_model"]
     return DevelopedNegative(
         linear_input=empty,
         after_mtf=empty,
         after_halation=empty,
         density_cmy=density_cmy,
         density_grain=density_grain,
+        **_metadata_kwargs(medium_payload, path),
         metadata=metadata,
     )

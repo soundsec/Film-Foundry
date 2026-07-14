@@ -1,0 +1,30 @@
+{
+  "develop": {
+    "developer_name": "Standard BW Reversal Process",
+    "developer_type": "standard",
+    "fixer_name": "Standard Reversal Fixer",
+    "fixer_type": "standard",
+    "medium_process": "reversal",
+    "program_key": "bw_reversal",
+    "process_mode": "reversal",
+    "frame_size": "35mm",
+    "time_min": 8.0,
+    "temperature_c": 20.0,
+    "concentration": 1.0,
+    "agitation": 1.0,
+    "first_development_completion": 1.0,
+    "second_development_completion": 1.0,
+    "reversal_activation": 1.0,
+    "first_silver_removal": 1.0,
+    "halide_fixing_completion": 1.0,
+    "auxiliary_removal": 1.0
+  },
+  "mode": "bw_negative",
+  "look": {
+    "exposure_ev": -0.10,
+    "negative_contrast": 1.0,
+    "halation_multiplier": 0.55,
+    "grain_multiplier": 1.0,
+    "grain_size_multiplier": 1.0
+  }
+}

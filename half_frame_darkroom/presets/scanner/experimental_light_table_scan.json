@@ -1,0 +1,35 @@
+{
+  "scanner": {
+    "interpreter_key": "positive_transparency_scan",
+    "target_medium_process": "slide",
+    "input_polarity": "positive",
+    "output_polarity": "positive",
+    "scanner_light_color": [1.0, 1.0, 1.0],
+    "light_table_ev": 0.0,
+    "light_table_temperature_k": 5400.0,
+    "positive_scan_color_control_strength": 0.25,
+    "projection_white_softness": 0.22,
+    "projection_black_adaptation": 0.10,
+    "scanner_response_matrix": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    "scan_method": "positive_transparency",
+    "scan_base_percentile": 99.5,
+    "print_reference_density": [1.0, 1.0, 1.0],
+    "print_gamma": 1.00,
+    "print_mapping_mode": "printlike",
+    "print_color_bias": [1.0, 1.0, 1.0],
+    "print_color_shift": [0.0, 0.0, 0.0],
+    "highlight_color_bias": [1.0, 1.0, 1.0],
+    "highlight_bias_threshold": 0.82,
+    "highlight_bias_softness": 0.16,
+    "scan_saturation": 1.00,
+    "scan_normalize": true,
+    "scan_normalize_strength": 0.12,
+    "scan_normalize_mode": "luma",
+    "scan_black_percentile": 0.25,
+    "scan_white_percentile": 99.7
+  },
+  "look": {
+    "print_contrast": 1.04,
+    "print_exposure_ev": 0.0
+  }
+}

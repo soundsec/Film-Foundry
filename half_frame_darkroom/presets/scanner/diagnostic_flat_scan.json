@@ -1,5 +1,9 @@
 {
   "scanner": {
+    "interpreter_key": "negative_scan",
+    "target_medium_process": "negative",
+    "input_polarity": "negative",
+    "output_polarity": "positive",
     "scanner_light_color": [1.0, 1.0, 1.0],
     "scanner_response_matrix": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
     "scan_method": "negative_inversion",
