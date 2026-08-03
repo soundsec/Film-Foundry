@@ -95,6 +95,10 @@ def developed_medium_contract(config: DarkroomConfig) -> dict[str, object]:
     material_is_mono = is_monochrome_material(config)
     native_process = config_medium_process(config)
     clear_base_material = material_is_mono or native_process in {"slide", "reversal", "positive"}
+    experimental_clear_mask = (
+        not material_is_mono
+        and float(getattr(config.chemistry, "mask_bleach_completion", 0.0)) >= 0.98
+    )
 
     if process in NEGATIVE_PROCESSES or process.endswith("_negative"):
         return {
@@ -102,7 +106,7 @@ def developed_medium_contract(config: DarkroomConfig) -> dict[str, object]:
             "medium_process": "negative",
             "image_polarity": "negative",
             "view_mode": "transmissive",
-            "base_type": "clear_base" if clear_base_material else "orange_mask",
+            "base_type": "clear_base" if (clear_base_material or experimental_clear_mask) else "orange_mask",
             "color_system": (
                 "silver_bw"
                 if material_is_mono
@@ -117,7 +121,7 @@ def developed_medium_contract(config: DarkroomConfig) -> dict[str, object]:
             "medium_process": process,
             "image_polarity": "positive",
             "view_mode": "transmissive",
-            "base_type": "clear_base" if clear_base_material else "orange_mask",
+            "base_type": "clear_base" if (clear_base_material or experimental_clear_mask) else "orange_mask",
             "color_system": (
                 "silver_bw"
                 if material_is_mono

@@ -13,7 +13,8 @@ def rgb_exposure_to_layer_exposure(image: np.ndarray, film: FilmStockConfig) -> 
     image = np.asarray(image, dtype=np.float32)
     matrix = np.asarray(film.layer_sensitivity_matrix, dtype=np.float32).reshape(3, 3)
     exposure = np.einsum("...c,lc->...l", np.clip(image, 0.0, None), matrix)
-    return np.clip(exposure, 1e-6, None).astype(np.float32)
+    np.maximum(exposure, 1e-6, out=exposure)
+    return exposure.astype(np.float32, copy=False)
 
 
 def _softplus(x: np.ndarray, width: float) -> np.ndarray:

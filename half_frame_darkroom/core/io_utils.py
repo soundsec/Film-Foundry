@@ -276,7 +276,9 @@ def _quantize_rgb_rows(
     for y_start in range(0, height, tile_rows):
         y_end = min(y_start + tile_rows, height)
         source = np.asarray(image[y_start:y_end], dtype=np.float32)
-        if not np.isfinite(source).all():
+        minimum = float(np.min(source))
+        maximum = float(np.max(source))
+        if not np.isfinite(minimum) or not np.isfinite(maximum):
             raise ValueError("Output image contains NaN or infinite values and will not be saved.")
         block = apply_output_antibanding_region(
             image,
@@ -286,8 +288,12 @@ def _quantize_rgb_rows(
         )
         np.multiply(block, scale, out=block)
         np.rint(block, out=block)
-        converted = block.astype(dtype)
-        output[y_start:y_end] = converted[..., ::-1] if bgr else converted
+        target = output[y_start:y_end]
+        np.copyto(
+            target,
+            block[..., ::-1] if bgr else block,
+            casting="unsafe",
+        )
     return output
 
 
@@ -325,15 +331,27 @@ def quantize_unit_float_rows(
     for y_start in range(0, image.shape[0], tile_rows):
         y_end = min(y_start + tile_rows, image.shape[0])
         source = np.asarray(image[y_start:y_end], dtype=np.float32)
-        if not np.isfinite(source).all():
+        minimum = float(np.min(source))
+        maximum = float(np.max(source))
+        if not np.isfinite(minimum) or not np.isfinite(maximum):
             raise ValueError(f"{label} contains NaN or infinite values and will not be saved.")
         block = np.clip(source, 0.0, 1.0).astype(np.float32)
         np.multiply(block, scale, out=block)
         np.rint(block, out=block)
-        converted = block.astype(dtype)
-        if channel_order is not None:
-            converted = converted[..., channel_order]
-        output[y_start:y_end] = converted
+        target = output[y_start:y_end]
+        if channel_order is None:
+            np.copyto(target, block, casting="unsafe")
+        else:
+            if len(channel_order) != block.shape[-1]:
+                raise ValueError(
+                    f"{label} channel_order must contain {block.shape[-1]} entries."
+                )
+            for target_channel, source_channel in enumerate(channel_order):
+                np.copyto(
+                    target[..., target_channel],
+                    block[..., source_channel],
+                    casting="unsafe",
+                )
     return output
 
 

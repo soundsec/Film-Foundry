@@ -16,7 +16,7 @@
     "highlight_bias_softness": 0.22,
     "scan_saturation": 1.22,
     "scan_normalize": true,
-    "scan_normalize_strength": 0.28,
+    "scan_normalize_strength": 0.42,
     "scan_normalize_mode": "luma",
     "scan_black_percentile": 0.45,
     "scan_white_percentile": 99.75

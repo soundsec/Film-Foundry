@@ -51,6 +51,9 @@ outputs/*
 *.orig
 
 # Local collected reference / handoff scratch files
+/AGENTS.md
+/AGENTS.md
+/AGENTS.md
 HALF_FRAME_DARKROOM_COLLECTED_REFERENCE.py
 *_COLLECTED_REFERENCE.py
 ui设计_内部.txt

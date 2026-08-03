@@ -23,15 +23,15 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from half_frame_darkroom.core.engine import apply_optical_observation_snapshot, develop_negative, process_file, save_developed_medium_at_path, scan_medium_direct, scan_scanner_raw_direct, seed_from_path
+from half_frame_darkroom.core.engine import apply_optical_observation_snapshot, develop_negative, process_file, save_developed_medium_at_path, scan_medium_output, scan_scanner_raw_direct, seed_from_path
 from half_frame_darkroom.core.electronic_negative import (
     load_linear_rgb_tiff,
     split_scanner_raw_border,
 )
 from half_frame_darkroom.core.execution import processing_long_edge, resolve_execution_mode
 from half_frame_darkroom.core.io_utils import SUPPORTED_EXTENSIONS, assert_unique_output_stems, iter_images, load_image, output_target_is_file, save_image_bundle, scan_output_stem
-from half_frame_darkroom.core.negative_io import load_developed_negative_npz
-from half_frame_darkroom.core.preview import negative_visual_preview, resize_to_long_edge
+from half_frame_darkroom.core.negative_io import load_developed_medium_for_scan
+from half_frame_darkroom.core.preview import resize_to_long_edge
 from half_frame_darkroom.core.sidecar import (
     load_scanner_raw_sidecar,
     scanner_raw_border_width_from_sidecar,
@@ -412,23 +412,44 @@ def _resolved_seed_for(path: Path, config: DarkroomConfig) -> int | None:
 
 
 def _rng_for_develop(path: Path, config: DarkroomConfig) -> np.random.Generator:
+    rng, _ = _rng_and_resolved_seed_for_develop(path, config)
+    return rng
+
+
+def _rng_and_resolved_seed_for_develop(
+    path: Path,
+    config: DarkroomConfig,
+) -> tuple[np.random.Generator, int]:
     seed = _resolved_seed_for(path, config)
-    return np.random.default_rng(seed)
+    if seed is None:
+        seed = int(np.random.SeedSequence().generate_state(1, dtype=np.uint32)[0])
+    return np.random.default_rng(seed), seed
 
 
-def _save_negative(negative: DevelopedNegative, path: Path, input_path: Path, config: DarkroomConfig) -> None:
+def _save_negative(
+    negative: DevelopedNegative,
+    path: Path,
+    input_path: Path,
+    config: DarkroomConfig,
+    *,
+    resolved_seed: int | None = None,
+) -> None:
     """Compatibility name for the unified developed-medium exporter."""
     save_developed_medium_at_path(
         input_path,
         path,
         negative,
         config,
-        resolved_seed=_resolved_seed_for(input_path, config),
+        resolved_seed=(
+            _resolved_seed_for(input_path, config)
+            if resolved_seed is None
+            else int(resolved_seed)
+        ),
     )
 
 
 def _load_negative(path: Path) -> DevelopedNegative:
-    return load_developed_negative_npz(path)
+    return load_developed_medium_for_scan(path)
 
 
 def _scan_from_file(path: Path, config: DarkroomConfig):
@@ -502,7 +523,7 @@ def _scan_from_file(path: Path, config: DarkroomConfig):
     if path.suffix.lower() != ".npz":
         raise ValueError(f"不支持的底片文件：{path}。请选择 .npz 或 .scanner_raw.tiff，不要选择 sidecar .json。")
     negative = _load_negative(path)
-    return scan_medium_direct(negative, config, interpretation), "density_npz", path
+    return scan_medium_output(negative, config, interpretation), "density_npz", path
 
 
 def _iter_negative_files(path: Path) -> list[Path]:
@@ -569,14 +590,24 @@ def _run_develop(config: DarkroomConfig) -> None:
             else:
                 image = load_image(input_path)
             image = resize_to_long_edge(image, long_edge)
+            develop_rng, resolved_seed = _rng_and_resolved_seed_for_develop(
+                input_path,
+                runtime_config,
+            )
             negative = develop_negative(
                 image,
                 runtime_config,
-                rng=_rng_for_develop(input_path, runtime_config),
+                rng=develop_rng,
             )
             del image
             negative_path = _developed_path_for(input_path, NEGATIVE_PATH, negative)
-            _save_negative(negative, negative_path, input_path, runtime_config)
+            _save_negative(
+                negative,
+                negative_path,
+                input_path,
+                runtime_config,
+                resolved_seed=resolved_seed,
+            )
             print(f"已保存冲洗底片: {negative_path}")
             completed += 1
         except Exception as exc:

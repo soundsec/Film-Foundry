@@ -5,13 +5,11 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from half_frame_darkroom.core.color import luminance
+
 
 def _smooth_mask(image: np.ndarray) -> np.ndarray:
-    gray = (
-        image[..., 0].astype(np.float32) * 0.2126
-        + image[..., 1].astype(np.float32) * 0.7152
-        + image[..., 2].astype(np.float32) * 0.0722
-    )
+    gray = luminance(image)
     gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
     gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
     grad = np.sqrt(gx * gx + gy * gy)

@@ -4,9 +4,9 @@ Film Foundry is a physics-inspired virtual darkroom and electronic film-medium g
 
 The project is currently an early alpha. It is not a strict photochemical simulator and does not aim to clone a particular commercial film stock or scanner. Its focus is interpretable material behavior, darkroom controls, and creative flexibility.
 
-[中文说明](README.zh-CN.md)
+[中文说明](README.md)
 
-[v0.3.0 alpha release notes](https://github.com/soundsec/Film-Foundry/blob/main/docs/RELEASE_NOTES_0.3.md)
+[v0.3.1 alpha release notes](https://github.com/soundsec/Film-Foundry/blob/main/docs/RELEASE_NOTES_0.3.md)
 
 ## Features
 
@@ -14,7 +14,7 @@ The project is currently an early alpha. It is not a strict photochemical simula
 - Bleach bypass, cross processing, push/pull, retained silver, accidental silver plating, light leaks, chemistry exhaustion, uneven development, and material ageing controls.
 - Separate film-material, development-process, and scanner presets.
 - Independent Develop and Scan stages: a saved medium can be rescanned with different interpretations without changing the developed medium.
-- Negative base removal and inversion, positive light-table viewing, and optional channel compensation.
+- One shared transmission light table and scanner capture for negative and positive media; users independently control base removal, inversion, clear-base borders, and direct photographed-negative output.
 - Density-domain grain, frame-size behavior, halation, emulsion sharpness, and scan color controls.
 - Transparent-medium, physical-transmission TIFF, scanner/light-table raw, plate-layer, and Layer Pack exports.
 
@@ -131,13 +131,20 @@ See the [Preset Guide](https://github.com/soundsec/Film-Foundry/blob/main/docs/P
 
 ## Output Files
 
+In the main GUI, Full and Develop runs no longer write new generations back to fixed filenames. Every processing run creates a separate timestamped directory under the selected output root and stores a reloadable `film_foundry_run.json` snapshot of the complete settings.
+
+Develop-only runs place reusable medium masters in the run directory's `negative/` subfolder. Scan-only defaults to the parent of the selected medium folder: selecting `.../A/negative/` writes timestamped scan results and a scan settings snapshot to `.../A/`, so repeated scans do not overwrite earlier generations. This source-relative policy can be disabled in the GUI to use a manually selected output folder. The CLI continues to use its explicitly supplied output paths for predictable automation.
+
 The Full workflow normally creates a final PNG, JPEG, or TIFF and an optional sidecar.
 
-Develop writes media according to the final polarity:
+Develop writes media according to the final polarity inside the run's `negative/` folder:
 
 ```text
-outputs/negatives/*.darkroom_negative.npz
-outputs/positives/*.darkroom_positive.npz
+outputs/2026-07-15_15-42-08_develop/
+  film_foundry_run.json
+  negative/
+    *.darkroom_negative.npz
+    *.darkroom_positive.npz
 ```
 
 Depending on export settings, Film Foundry can also create:
@@ -179,3 +186,7 @@ AI agents have assisted with code organization, refactoring, documentation, and 
 ## Notice
 
 Film Foundry is not affiliated with, endorsed by, sponsored by, or officially authorized by any film manufacturer, scanner manufacturer, camera manufacturer, or commercial film-emulation software vendor.
+
+Author: **soundsec**
+
+Repository: [soundsec/Film-Foundry](https://github.com/soundsec/Film-Foundry)

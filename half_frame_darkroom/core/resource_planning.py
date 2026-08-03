@@ -14,6 +14,57 @@ import warnings
 
 _RGB_FLOAT32_BYTES_PER_PIXEL = 3 * 4
 _MIB = 1024 * 1024
+# Scheduling-only upper-bound heuristic for the pointwise material phase.
+# It deliberately includes the authoritative/compatibility outputs and common
+# NumPy temporaries; it is not presented as measured RSS and is never used to
+# weaken the explicit preflight memory-budget rejection policy.
+_UNTILED_MATERIAL_TRIGGER_RGB_UNITS = 22.0
+
+
+def estimated_untiled_material_peak_mib(width: int, height: int) -> float:
+    """Return a conservative trigger estimate for exact material tiling.
+
+    This helper selects between two numerically identical execution schedules.
+    It is intentionally separate from :func:`estimate_pipeline_memory`, which
+    remains the conservative whole-job capacity boundary used before decode.
+    """
+    width = int(width)
+    height = int(height)
+    if width <= 0 or height <= 0:
+        raise ValueError("Image dimensions must be positive.")
+    return (
+        width
+        * height
+        * _RGB_FLOAT32_BYTES_PER_PIXEL
+        * _UNTILED_MATERIAL_TRIGGER_RGB_UNITS
+        / _MIB
+    )
+
+
+def exact_material_tiling_required(
+    width: int,
+    height: int,
+    *,
+    threshold_megapixels: float,
+    memory_budget_mb: float | None = None,
+) -> bool:
+    """Choose the bounded exact material schedule without changing semantics."""
+    width = int(width)
+    height = int(height)
+    if width <= 0 or height <= 0:
+        raise ValueError("Image dimensions must be positive.")
+    threshold_megapixels = float(threshold_megapixels)
+    if not threshold_megapixels > 0.0:
+        raise ValueError("threshold_megapixels must be positive.")
+    megapixels = width * height / 1_000_000.0
+    if megapixels >= threshold_megapixels:
+        return True
+    if memory_budget_mb is None:
+        return False
+    memory_budget_mb = float(memory_budget_mb)
+    if not memory_budget_mb > 0.0:
+        raise ValueError("memory_budget_mb must be positive or None.")
+    return estimated_untiled_material_peak_mib(width, height) > memory_budget_mb
 
 
 def dimensions_for_long_edge(width: int, height: int, long_edge: int | None) -> tuple[int, int]:
@@ -47,7 +98,7 @@ class PipelineMemoryEstimate:
     retention_policy: str
     decoder_reduced: bool = False
     comfort_zone_megapixels: float = 30.0
-    model_version: str = "full_frame_v2"
+    model_version: str = "full_frame_v3_rgb_optical_master"
 
     @property
     def source_megapixels(self) -> float:
@@ -126,20 +177,22 @@ def estimate_pipeline_memory(
     work_unit = work_width * work_height * _RGB_FLOAT32_BYTES_PER_PIXEL
 
     if diagnostic:
-        # Five development masters plus retained scan diagnostics.
+        # Five compatibility/history masters, the authoritative RGB optical
+        # master, and retained scan diagnostics.
         retention_policy = "diagnostic_full_float32"
-        retained_units = 13.0
-        pipeline_peak_units = 26.0
+        retained_units = 14.0
+        pipeline_peak_units = 27.0
     elif retain_development_stages:
         retention_policy = "production_full_development_float32"
-        retained_units = 5.0
-        pipeline_peak_units = 22.0
+        retained_units = 6.0
+        pipeline_peak_units = 23.0
     else:
-        # Two authoritative density masters remain FP32.  Three consumed
-        # history images are cold FP16 storage (3 * 0.5 FP32 units).
+        # The formed CMY and grained CMY compatibility masters plus the
+        # authoritative RGB optical master remain FP32. Three consumed history
+        # images are cold FP16 storage (3 * 0.5 FP32 units).
         retention_policy = "production_mixed_precision_cold_history"
-        retained_units = 3.5
-        pipeline_peak_units = 16.0
+        retained_units = 4.5
+        pipeline_peak_units = 17.0
 
     retained_state = round(work_unit * retained_units)
     # Header probing is cheap, but the current decoder still materializes the

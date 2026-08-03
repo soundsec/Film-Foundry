@@ -31,6 +31,8 @@ def reduced_material_from_film_stock(film: FilmStockConfig) -> ReducedFilmMateri
         silver_density_per_layer=(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0),
         residual_halide_density_per_layer=(0.03, 0.03, 0.03),
         base_density_rgb=tuple(float(v) for v in film.film_base_density_rgb),
+        clear_support_density_rgb=None,
+        masking_coupler_density_rgb=None,
         medium_family=str(getattr(film, "medium_family", "film")),
         color_system="silver_bw" if is_monochrome else "color_coupler",
     )
@@ -70,6 +72,9 @@ def final_medium_from_legacy_density(
         silver_density_per_layer=(0.0, 0.0, 0.0),
         residual_halide_density_per_layer=(0.0, 0.0, 0.0),
         base_density_rgb=tuple(float(v) for v in film.film_base_density_rgb),
+        clear_support_density_rgb=None,
+        masking_coupler_density_rgb=None,
+        masking_coupler_remaining=1.0,
         auxiliary_density_rgb=(0.0, 0.0, 0.0),
         auxiliary_remaining=0.0,
         image_polarity=polarity,

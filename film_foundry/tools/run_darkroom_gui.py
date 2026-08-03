@@ -11,10 +11,12 @@ GUI 现在按阶段工作：
 from __future__ import annotations
 
 import copy
+from datetime import datetime
 from pathlib import Path
 import subprocess
 import sys
 from threading import Thread
+from time import perf_counter
 import tkinter as tk
 from tkinter import filedialog, ttk
 
@@ -31,7 +33,7 @@ from half_frame_darkroom.core.engine import (
     develop_negative,
     process_array,
     process_file,
-    scan_medium_direct,
+    scan_medium_output,
     scan_scanner_raw_direct,
     save_developed_medium_at_path,
     seed_from_path,
@@ -44,8 +46,12 @@ from half_frame_darkroom.core.electronic_negative import (
 )
 from half_frame_darkroom.core.execution import processing_long_edge, resolve_execution_mode
 from half_frame_darkroom.core.io_utils import SUPPORTED_EXTENSIONS, assert_unique_output_stems, iter_images, load_image, output_target_is_file, save_image_bundle, scan_output_stem
-from half_frame_darkroom.core.negative_io import load_developed_negative_npz
-from half_frame_darkroom.core.preview import negative_visual_preview, resize_to_long_edge
+from half_frame_darkroom.core.negative_io import load_developed_medium_for_scan
+from half_frame_darkroom.core.preview import (
+    negative_visual_preview,
+    optical_density_visual_preview,
+    resize_to_long_edge,
+)
 from half_frame_darkroom.core.sidecar import (
     final_positive_sidecar,
     load_scanner_raw_sidecar,
@@ -63,7 +69,7 @@ from film_foundry.tools.paths import app_root, resource_root
 
 PROJECT_ROOT = app_root()
 RESOURCE_ROOT = resource_root()
-APP_TITLE = "Film Foundry - Electronic Negative Factory"
+APP_TITLE = "Film Foundry - Imaging Medium Workflow"
 PRESET_DIR = RESOURCE_ROOT / "half_frame_darkroom" / "presets"
 FILM_PRESET_DIR = PRESET_DIR / "film"
 DEVELOP_PRESET_DIR = PRESET_DIR / "develop"
@@ -73,6 +79,16 @@ USER_FILM_PRESET_DIR = USER_PRESET_DIR / "film"
 USER_DEVELOP_PRESET_DIR = USER_PRESET_DIR / "develop"
 USER_SCANNER_PRESET_DIR = USER_PRESET_DIR / "scanner"
 INTERNAL_PRESET_PREFIXES = ("diagnostic_", "accident_", "experimental_")
+MAIN_GUI_BUILTIN_DEVELOP_PRESETS = {
+    "standard_color_negative",
+    "standard_bw_negative",
+    "standard_color_reversal",
+    "standard_bw_reversal",
+    # Deliberately exposed as an advanced, explicitly labelled experiment:
+    # color-negative stock run through reversal processing, followed by a
+    # separate mask/dye bleach. This is not a standard silver-bleach variant.
+    "experimental_color_negative_clear_reversal",
+}
 DEFAULT_INPUT_DIR = PROJECT_ROOT / "input_images"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
 DEFAULT_NEGATIVE_DIR = DEFAULT_OUTPUT_DIR / "negatives"
@@ -80,6 +96,7 @@ PREVIEW_PROCESS_LONG_EDGE = 900
 PREVIEW_DISPLAY_LONG_EDGE = 520
 NEGATIVE_SUFFIX = ".darkroom_negative.npz"
 POSITIVE_SUFFIX = ".darkroom_positive.npz"
+SEED_STRATEGY_KEYS = ("random", "fixed", "path")
 
 
 class Tooltip:
@@ -144,11 +161,148 @@ def ensure_user_dirs() -> None:
     USER_SCANNER_PRESET_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def output_path_for(input_path: Path, output_root: Path, output_format: str) -> Path:
+def output_path_for(
+    input_path: Path,
+    output_root: Path,
+    output_format: str,
+    *,
+    run_suffix: str | None = None,
+) -> Path:
     if output_target_is_file(output_root):
         return output_root
     suffix = "." + output_format.lower().lstrip(".")
-    return output_root / f"{scan_output_stem(input_path)}_darkroom{suffix}"
+    stem = f"{scan_output_stem(input_path)}_darkroom"
+    if run_suffix:
+        stem += f"_{run_suffix}"
+    return output_root / f"{stem}{suffix}"
+
+
+def run_timestamp(now: datetime | None = None) -> str:
+    """Return a filesystem-safe local run timestamp."""
+    return (now or datetime.now()).strftime("%Y-%m-%d_%H-%M-%S")
+
+
+def create_run_directory(
+    output_root: Path,
+    mode: str,
+    *,
+    timestamp: str | None = None,
+) -> tuple[Path, str]:
+    """Atomically reserve a non-overwriting directory for one GUI run."""
+    output_root = Path(output_root)
+    if output_target_is_file(output_root):
+        raise ValueError(f"运行输出位置必须是文件夹：{output_root}")
+    output_root.mkdir(parents=True, exist_ok=True)
+    base_id = f"{timestamp or run_timestamp()}_{mode}"
+    for index in range(1, 10_000):
+        run_id = base_id if index == 1 else f"{base_id}_{index:02d}"
+        candidate = output_root / run_id
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        return candidate, run_id
+    raise FileExistsError(f"无法创建唯一运行目录：{output_root / base_id}")
+
+
+def default_scan_output_root(developed_source: Path) -> Path:
+    """Place scan-only results one directory above the selected source folder."""
+    source = Path(developed_source)
+    if source.suffix.lower() in {".npz", ".tif", ".tiff"}:
+        containing_folder = source.parent
+        if containing_folder.name.lower() in {"negative", "negatives"}:
+            return containing_folder.parent
+        return containing_folder
+    return source.parent
+
+
+def unique_scan_run_id(
+    output_root: Path,
+    *,
+    timestamp: str | None = None,
+) -> str:
+    """Choose a scan generation id without replacing a previous run manifest."""
+    base_id = f"{timestamp or run_timestamp()}_scan"
+    for index in range(1, 10_000):
+        run_id = base_id if index == 1 else f"{base_id}_{index:02d}"
+        if not (Path(output_root) / f"film_foundry_{run_id}.json").exists():
+            return run_id
+    raise FileExistsError(f"无法创建唯一扫描运行标识：{output_root / base_id}")
+
+
+def batch_item_record(
+    input_path: Path,
+    output_path: Path | None,
+    elapsed_seconds: float,
+    error: BaseException | None = None,
+) -> dict[str, object]:
+    """Build one lightweight batch record without inspecting output files."""
+    record: dict[str, object] = {
+        "input": str(input_path),
+        "output": str(output_path) if output_path is not None else None,
+        "status": "failed" if error is not None else "completed",
+        "elapsed_seconds": round(max(float(elapsed_seconds), 0.0), 6),
+    }
+    if error is not None:
+        record["error"] = {
+            "type": type(error).__name__,
+            "message": str(error),
+        }
+    return record
+
+
+def finalize_batch_run(
+    payload: dict,
+    *,
+    operation: str,
+    started_at: str,
+    elapsed_seconds: float,
+    items: list[dict[str, object]],
+) -> None:
+    """Attach one in-memory batch summary before the final manifest write."""
+    completed = sum(item.get("status") == "completed" for item in items)
+    failed = len(items) - completed
+    status = "completed" if failed == 0 else ("failed" if completed == 0 else "completed_with_errors")
+    finished_at = datetime.now().isoformat(timespec="seconds")
+    payload["batch"] = {
+        "version": 1,
+        "operation": str(operation),
+        "status": status,
+        "started_at": str(started_at),
+        "finished_at": finished_at,
+        "elapsed_seconds": round(max(float(elapsed_seconds), 0.0), 6),
+        "completed": int(completed),
+        "failed": int(failed),
+        "items": items,
+        "recording_strategy": "memory_then_single_atomic_write",
+    }
+    run_record = payload.get("run")
+    if isinstance(run_record, dict):
+        run_record["status"] = status
+
+
+def save_batch_run_record(
+    path: Path,
+    payload: dict,
+    *,
+    operation: str,
+    started_at: str,
+    started_counter: float,
+    items: list[dict[str, object]],
+) -> Exception | None:
+    """Finalize and atomically save a batch record without failing image work."""
+    finalize_batch_run(
+        payload,
+        operation=operation,
+        started_at=started_at,
+        elapsed_seconds=perf_counter() - float(started_counter),
+        items=items,
+    )
+    try:
+        save_session(path, payload)
+    except Exception as exc:  # Recording must not invalidate completed outputs.
+        return exc
+    return None
 
 
 def developed_path_for(
@@ -256,8 +410,40 @@ def resolved_seed_for(path: Path, config: DarkroomConfig) -> int | None:
     return None
 
 
+def seed_strategy_labels() -> dict[str, str]:
+    return {
+        key: tr(f"seed.strategy.{key}")
+        for key in SEED_STRATEGY_KEYS
+    }
+
+
+def seed_strategy_label(key: str) -> str:
+    normalized = str(key).strip().lower()
+    return seed_strategy_labels().get(normalized, seed_strategy_labels()["random"])
+
+
+def seed_strategy_key_from_label(label: str) -> str:
+    requested = str(label)
+    for key, localized in seed_strategy_labels().items():
+        if requested == localized:
+            return key
+    normalized = requested.strip().lower()
+    return normalized if normalized in SEED_STRATEGY_KEYS else "random"
+
+
+def rng_and_resolved_seed_for_develop(
+    path: Path,
+    config: DarkroomConfig,
+) -> tuple[np.random.Generator, int]:
+    seed = resolved_seed_for(path, config)
+    if seed is None:
+        seed = int(np.random.SeedSequence().generate_state(1, dtype=np.uint32)[0])
+    return np.random.default_rng(seed), seed
+
+
 def rng_for_develop(path: Path, config: DarkroomConfig) -> np.random.Generator:
-    return np.random.default_rng(resolved_seed_for(path, config))
+    rng, _ = rng_and_resolved_seed_for_develop(path, config)
+    return rng
 
 
 def is_internal_preset_name(name: str) -> bool:
@@ -275,16 +461,13 @@ def public_builtin_preset_names(directory: Path) -> set[str]:
 
 def develop_preset_names() -> list[str]:
     # Keep the daily GUI concise. Specialized B&W recipes remain available in
-    # the process editor and CLI, while user presets are always shown.
+    # the process editor and CLI, while user presets are always shown. The one
+    # experimental clear-base reversal recipe is intentionally exposed because
+    # it represents a distinct, user-selectable color-negative reversal path.
     names = {
-        name
-        for name in public_builtin_preset_names(DEVELOP_PRESET_DIR)
-        if name in {
-            "standard_color_negative",
-            "standard_bw_negative",
-            "standard_color_reversal",
-            "standard_bw_reversal",
-        }
+        path.stem
+        for path in DEVELOP_PRESET_DIR.glob("*.json")
+        if path.stem in MAIN_GUI_BUILTIN_DEVELOP_PRESETS
     }
     names.update(path.stem for path in USER_DEVELOP_PRESET_DIR.glob("*.json"))
     return sorted(names)
@@ -471,7 +654,15 @@ def preset_source_text(value: str, user_dir: Path, builtin_dir: Path) -> str:
     return "未找到 / Missing"
 
 
-def save_developed_medium(negative: DevelopedNegative, path: Path, input_path: Path, config: DarkroomConfig, save_sidecar: bool) -> None:
+def save_developed_medium(
+    negative: DevelopedNegative,
+    path: Path,
+    input_path: Path,
+    config: DarkroomConfig,
+    save_sidecar: bool,
+    *,
+    resolved_seed: int | None = None,
+) -> None:
     """Save through the shared polarity-aware medium exporter."""
     config.save_sidecar = bool(save_sidecar)
     save_developed_medium_at_path(
@@ -479,12 +670,16 @@ def save_developed_medium(negative: DevelopedNegative, path: Path, input_path: P
         path,
         negative,
         config,
-        resolved_seed=resolved_seed_for(input_path, config),
+        resolved_seed=(
+            resolved_seed_for(input_path, config)
+            if resolved_seed is None
+            else int(resolved_seed)
+        ),
     )
 
 
 def load_developed_medium(path: Path) -> DevelopedNegative:
-    return load_developed_negative_npz(path)
+    return load_developed_medium_for_scan(path)
 
 
 # Compatibility aliases for the older electronic-negative-only GUI API.
@@ -567,11 +762,13 @@ def scan_from_file(path: Path, config: DarkroomConfig):
     if path.suffix.lower() != ".npz":
         raise ValueError(f"不支持的底片文件：{path}。请选择 .npz 或 .scanner_raw.tiff，不要选择 sidecar .json。")
     negative = load_developed_medium(path)
-    scanned = scan_medium_direct(negative, config, interpretation)
-    resolved_positive = str(scanned.input_polarity).strip().lower() == "positive"
+    scanned = scan_medium_output(negative, config, interpretation)
     runtime_config = scanned.metadata.get("runtime_config")
     preview_film = runtime_config.film if isinstance(runtime_config, DarkroomConfig) else config.film
-    preview = scanned.scanner_raw if resolved_positive else negative_visual_preview(negative.density_grain, preview_film)
+    if negative.optical_density_rgb is not None:
+        preview = optical_density_visual_preview(negative.optical_density_rgb)
+    else:
+        preview = negative_visual_preview(negative.density_grain, preview_film)
     return scanned, "density_npz", preview
 
 
@@ -588,6 +785,7 @@ class DarkroomPanel:
         self.input_path = tk.StringVar(value=str(DEFAULT_INPUT_DIR))
         self.negative_path = tk.StringVar(value=str(DEFAULT_NEGATIVE_DIR))
         self.output_path = tk.StringVar(value=str(DEFAULT_OUTPUT_DIR))
+        self.scan_output_near_source = tk.BooleanVar(value=True)
         self.film_preset = tk.StringVar(value="clear_modern_negative")
         self.material_polarity_display = tk.StringVar(value=material_polarity_label("negative"))
         self.film_preset_display = tk.StringVar(value="")
@@ -595,8 +793,11 @@ class DarkroomPanel:
         self.develop_preset_display = tk.StringVar(value="")
         self.scanner_preset = tk.StringVar(value="neutral_scan")
         self.scanner_preset_display = tk.StringVar(value="")
-        self.scan_interpretation = tk.StringVar(value="auto")
+        self.scan_interpretation = tk.StringVar(value="manual")
         self.scan_interpretation_display = tk.StringVar(value=tr("scan.mode.auto"))
+        self.scan_remove_base = tk.BooleanVar(value=True)
+        self.scan_invert = tk.BooleanVar(value=True)
+        self.scan_recommendation = tk.StringVar(value="")
         self.film_preset_source = tk.StringVar(value="")
         self.develop_preset_source = tk.StringVar(value="")
         self.scanner_preset_source = tk.StringVar(value="")
@@ -607,6 +808,9 @@ class DarkroomPanel:
         self.preview_long_edge = tk.IntVar(value=1600)
         self.fast_mode = tk.BooleanVar(value=True)
         self.quality_mode = tk.StringVar(value="standard")
+        self.seed_strategy = tk.StringVar(value="random")
+        self.seed_strategy_display = tk.StringVar(value=seed_strategy_label("random"))
+        self.random_seed = tk.StringVar(value="0")
 
         self.exposure_ev = tk.DoubleVar(value=-0.35)
         self.negative_contrast = tk.DoubleVar(value=1.05)
@@ -626,6 +830,8 @@ class DarkroomPanel:
         self.light_leak = tk.DoubleVar(value=0.0)
         self.chemical_stain = tk.DoubleVar(value=0.0)
         self.uneven_development = tk.DoubleVar(value=0.0)
+        self.development_adjacency_strength = tk.DoubleVar(value=0.0)
+        self.development_adjacency_radius = tk.DoubleVar(value=0.0025)
         self.process_variation = tk.DoubleVar(value=0.0)
         self.halation = tk.DoubleVar(value=0.90)
         self.halation_sensitivity = tk.DoubleVar(value=0.0)
@@ -644,7 +850,7 @@ class DarkroomPanel:
         self.print_exposure = tk.DoubleVar(value=0.0)
         self.saturation = tk.DoubleVar(value=1.00)
         self.scan_normalize = tk.BooleanVar(value=True)
-        self.scan_strength = tk.DoubleVar(value=0.15)
+        self.scan_strength = tk.DoubleVar(value=0.45)
         self.anti_banding = tk.DoubleVar(value=0.18)
         self.print_shift_r = tk.DoubleVar(value=0.06)
         self.print_shift_g = tk.DoubleVar(value=0.00)
@@ -665,6 +871,7 @@ class DarkroomPanel:
         self.save_sidecar = tk.BooleanVar(value=True)
         self.save_scanner_raw = tk.BooleanVar(value=True)
         self.scanner_raw_border = tk.DoubleVar(value=4.0)
+        self.include_clear_base_border = tk.BooleanVar(value=False)
         self.export_layer_pack = tk.BooleanVar(value=False)
         self.export_transparent_plate = tk.BooleanVar(value=True)
         self.export_plate_set = tk.BooleanVar(value=False)
@@ -727,6 +934,12 @@ class DarkroomPanel:
         self._path_row(self.paths_frame, tr("label.input_image"), self.input_path, self._choose_input_file, self._choose_input_folder, 0)
         self._path_row(self.paths_frame, tr("label.negative_npz"), self.negative_path, self._choose_negative_file, self._choose_negative_folder, 1)
         self._path_row(self.paths_frame, tr("label.output"), self.output_path, None, self._choose_output_folder, 2)
+        self.scan_output_follow_check = ttk.Checkbutton(
+            self.paths_frame,
+            text=tr("label.scan_output_near_source"),
+            variable=self.scan_output_near_source,
+        )
+        self.scan_output_follow_check.grid(row=3, column=1, columnspan=3, sticky="w", pady=3)
 
         common = ttk.LabelFrame(outer, text=tr("section.common"), padding=10)
         common.pack(fill="x", pady=8)
@@ -772,15 +985,35 @@ class DarkroomPanel:
 
         self.scan_interpretation_label = ttk.Label(common, text=tr("label.scan_interpretation"))
         self.scan_interpretation_label.grid(row=3, column=0, sticky="w", pady=4)
-        self.scan_interpretation_combo = ttk.Combobox(
+        self.scan_interpretation_controls = ttk.Frame(
             common,
-            textvariable=self.scan_interpretation_display,
-            values=(),
-            state="readonly",
-            width=22,
         )
-        self.scan_interpretation_combo.grid(row=3, column=1, sticky="w", pady=4)
-        self.scan_interpretation_combo.bind("<<ComboboxSelected>>", self._on_scan_interpretation_display_selected)
+        self.scan_interpretation_controls.grid(
+            row=3,
+            column=1,
+            columnspan=2,
+            sticky="ew",
+            pady=4,
+        )
+        self.scan_remove_base_check = ttk.Checkbutton(
+            self.scan_interpretation_controls,
+            text=tr("label.scan_remove_base"),
+            variable=self.scan_remove_base,
+            command=self._sync_manual_scan_controls,
+        )
+        self.scan_remove_base_check.pack(side="left")
+        self.scan_invert_check = ttk.Checkbutton(
+            self.scan_interpretation_controls,
+            text=tr("label.scan_invert"),
+            variable=self.scan_invert,
+            command=self._sync_manual_scan_controls,
+        )
+        self.scan_invert_check.pack(side="left", padx=(12, 0))
+        ttk.Label(
+            self.scan_interpretation_controls,
+            textvariable=self.scan_recommendation,
+            foreground="#555555",
+        ).pack(side="left", padx=(14, 0))
 
         self.scanner_preset_label = ttk.Label(common, text=tr("label.scanner_preset"))
         self.scanner_preset_combo = ttk.Combobox(
@@ -819,10 +1052,32 @@ class DarkroomPanel:
         )
         ttk.Button(common, text=tr("button.save_session"), command=self._save_session).grid(row=10, column=0, sticky="w", pady=4)
         ttk.Button(common, text=tr("button.load_session"), command=self._load_session).grid(row=10, column=1, sticky="w", pady=4)
-        ttk.Label(common, text=tr("label.language")).grid(row=11, column=0, sticky="w", pady=4)
+
+        ttk.Label(common, text=tr("label.seed_strategy")).grid(row=11, column=0, sticky="w", pady=4)
+        self.seed_strategy_display.set(seed_strategy_label(self.seed_strategy.get()))
+        self.seed_strategy_combo = ttk.Combobox(
+            common,
+            textvariable=self.seed_strategy_display,
+            values=tuple(seed_strategy_labels().values()),
+            width=22,
+            state="readonly",
+        )
+        self.seed_strategy_combo.grid(row=11, column=1, sticky="w", pady=4)
+        self.seed_strategy_combo.bind("<<ComboboxSelected>>", self._on_seed_strategy_selected)
+        ttk.Label(common, text=tr("label.random_seed")).grid(row=11, column=2, sticky="e", padx=(8, 4), pady=4)
+        self.random_seed_entry = ttk.Entry(common, textvariable=self.random_seed, width=14)
+        self.random_seed_entry.grid(row=11, column=3, sticky="w", pady=4)
+        ttk.Label(
+            common,
+            text=tr("seed.strategy.note"),
+            wraplength=820,
+        ).grid(row=12, column=0, columnspan=4, sticky="w", pady=(0, 4))
+        self._update_seed_strategy_state()
+
+        ttk.Label(common, text=tr("label.language")).grid(row=13, column=0, sticky="w", pady=4)
         self.language.set(language_label(current_language()))
         language_combo = ttk.Combobox(common, textvariable=self.language, values=language_options(), width=14, state="readonly")
-        language_combo.grid(row=11, column=1, sticky="w", pady=4)
+        language_combo.grid(row=13, column=1, sticky="w", pady=4)
         language_combo.bind("<<ComboboxSelected>>", self._change_language)
         common.columnconfigure(1, weight=1)
         common.columnconfigure(2, weight=2)
@@ -868,17 +1123,19 @@ class DarkroomPanel:
         self._slider(self.develop_frame, tr("label.light_leak"), self.light_leak, 0.00, 1.00, 15, help_key="help.light_leak")
         self._slider(self.develop_frame, tr("label.chemical_stain"), self.chemical_stain, 0.00, 1.00, 16, help_key="help.chemical_stain")
         self._slider(self.develop_frame, tr("label.uneven_development"), self.uneven_development, 0.00, 1.00, 17, help_key="help.uneven_development")
-        self._slider(self.develop_frame, tr("label.process_variation"), self.process_variation, 0.00, 1.00, 18, help_key="help.process_variation")
-        self._slider(self.develop_frame, tr("label.halation"), self.halation, 0.00, 2.00, 19, expert_min=0.0, expert_max=5.0, help_key="help.halation")
-        self._slider(self.develop_frame, tr("label.halation_sensitivity"), self.halation_sensitivity, -1.00, 1.00, 20, help_key="help.halation_sensitivity")
-        self._slider(self.develop_frame, tr("label.halation_edge"), self.halation_edge, 0.00, 1.00, 21, help_key="help.halation_edge")
-        ttk.Checkbutton(self.develop_frame, text="MTF", variable=self.enable_mtf).grid(row=22, column=0, sticky="w", pady=4)
-        ttk.Checkbutton(self.develop_frame, text=tr("label.enable_halation"), variable=self.enable_halation).grid(row=22, column=1, sticky="w", pady=4)
-        ttk.Checkbutton(self.develop_frame, text=tr("label.enable_grain"), variable=self.enable_grain).grid(row=22, column=2, sticky="w", pady=4)
-        ttk.Checkbutton(self.develop_frame, text=tr("label.bw_negative"), variable=self.force_bw).grid(row=22, column=3, sticky="w", pady=4)
+        self._slider(self.develop_frame, tr("label.development_adjacency_strength"), self.development_adjacency_strength, 0.00, 1.00, 18, help_key="help.development_adjacency_strength")
+        self._slider(self.develop_frame, tr("label.development_adjacency_radius"), self.development_adjacency_radius, 0.0002, 0.02, 19, help_key="help.development_adjacency_radius", decimals=4)
+        self._slider(self.develop_frame, tr("label.process_variation"), self.process_variation, 0.00, 1.00, 20, help_key="help.process_variation")
+        self._slider(self.develop_frame, tr("label.halation"), self.halation, 0.00, 2.00, 21, expert_min=0.0, expert_max=5.0, help_key="help.halation")
+        self._slider(self.develop_frame, tr("label.halation_sensitivity"), self.halation_sensitivity, -1.00, 1.00, 22, help_key="help.halation_sensitivity")
+        self._slider(self.develop_frame, tr("label.halation_edge"), self.halation_edge, 0.00, 1.00, 23, help_key="help.halation_edge")
+        ttk.Checkbutton(self.develop_frame, text="MTF", variable=self.enable_mtf).grid(row=24, column=0, sticky="w", pady=4)
+        ttk.Checkbutton(self.develop_frame, text=tr("label.enable_halation"), variable=self.enable_halation).grid(row=24, column=1, sticky="w", pady=4)
+        ttk.Checkbutton(self.develop_frame, text=tr("label.enable_grain"), variable=self.enable_grain).grid(row=24, column=2, sticky="w", pady=4)
+        ttk.Checkbutton(self.develop_frame, text=tr("label.bw_negative"), variable=self.force_bw).grid(row=24, column=3, sticky="w", pady=4)
 
-        ttk.Checkbutton(self.develop_frame, text=tr("label.save_scanner_raw"), variable=self.save_scanner_raw).grid(row=23, column=0, sticky="w", pady=4)
-        self._slider(self.develop_frame, tr("label.scanner_raw_border"), self.scanner_raw_border, 0.0, 12.0, 24, expert_min=0.0, expert_max=30.0)
+        ttk.Checkbutton(self.develop_frame, text=tr("label.save_scanner_raw"), variable=self.save_scanner_raw).grid(row=25, column=0, sticky="w", pady=4)
+        self._slider(self.develop_frame, tr("label.scanner_raw_border"), self.scanner_raw_border, 0.0, 12.0, 26, expert_min=0.0, expert_max=30.0)
         self.transparent_export_check = ttk.Checkbutton(self.develop_frame, text=tr("label.export_transparent_plate"), variable=self.export_transparent_plate)
         self.plate_set_export_check = ttk.Checkbutton(self.develop_frame, text=tr("label.export_plate_set"), variable=self.export_plate_set)
         self.layer_pack_export_check = ttk.Checkbutton(
@@ -887,9 +1144,9 @@ class DarkroomPanel:
             variable=self.export_layer_pack,
             command=self._update_export_option_state,
         )
-        self.transparent_export_check.grid(row=25, column=0, sticky="w", pady=4)
-        self.plate_set_export_check.grid(row=25, column=1, sticky="w", pady=4)
-        self.layer_pack_export_check.grid(row=25, column=2, sticky="w", pady=4)
+        self.transparent_export_check.grid(row=27, column=0, sticky="w", pady=4)
+        self.plate_set_export_check.grid(row=27, column=1, sticky="w", pady=4)
+        self.layer_pack_export_check.grid(row=27, column=2, sticky="w", pady=4)
         self._update_export_option_state()
 
         self.scan_frame = ttk.LabelFrame(outer, text=tr("section.scan"), padding=10)
@@ -935,6 +1192,29 @@ class DarkroomPanel:
             18,
             help_key="help.negative_channel_compensation_strength",
         )
+        self.clear_base_border_check = ttk.Checkbutton(
+            self.scan_frame,
+            text=tr("label.include_clear_base_border"),
+            variable=self.include_clear_base_border,
+        )
+        self.clear_base_border_check.grid(
+            row=19,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=4,
+        )
+        attach_tooltip(self.clear_base_border_check, "help.include_clear_base_border")
+        self._slider(
+            self.scan_frame,
+            tr("label.clear_base_border_width"),
+            self.scanner_raw_border,
+            0.0,
+            12.0,
+            20,
+            expert_min=0.0,
+            expert_max=30.0,
+        )
 
         buttons = ttk.Frame(self.root, padding=(12, 8))
         buttons.pack(fill="x", side="bottom")
@@ -972,6 +1252,20 @@ class DarkroomPanel:
         self._refresh_scanner_catalog()
         self._update_mode_visibility()
 
+    def _on_seed_strategy_selected(self, _event=None) -> None:
+        self.seed_strategy.set(
+            seed_strategy_key_from_label(self.seed_strategy_display.get())
+        )
+        self._update_seed_strategy_state()
+
+    def _update_seed_strategy_state(self) -> None:
+        if not hasattr(self, "random_seed_entry"):
+            return
+        if self.seed_strategy.get() == "random":
+            self.random_seed_entry.state(["disabled"])
+        else:
+            self.random_seed_entry.state(["!disabled"])
+
     def _path_row(self, parent: ttk.Frame, label: str, var: tk.StringVar, file_cmd, folder_cmd, row: int) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
         ttk.Entry(parent, textvariable=var).grid(row=row, column=1, columnspan=2, sticky="ew", pady=3)
@@ -994,6 +1288,7 @@ class DarkroomPanel:
         expert_min: float | None = None,
         expert_max: float | None = None,
         help_key: str | None = None,
+        decimals: int = 2,
     ) -> None:
         label_widget = ttk.Label(parent, text=label)
         label_widget.grid(row=row, column=0, sticky="w", pady=4)
@@ -1007,7 +1302,9 @@ class DarkroomPanel:
 
         def update_value(*_) -> None:
             value = var.get()
-            value_text.set(str(int(value)) if integer else f"{value:.2f}")
+            value_text.set(
+                str(int(value)) if integer else f"{value:.{max(0, int(decimals))}f}"
+            )
 
         def commit_value(_event=None) -> None:
             try:
@@ -1148,9 +1445,6 @@ class DarkroomPanel:
             self.scan_interpretation.set(mode)
 
     def _expected_scan_polarity(self) -> str:
-        mode = self.scan_interpretation.get()
-        if mode in {"negative", "positive"}:
-            return mode
         path = develop_preset_path(self.develop_preset.get())
         if path.exists():
             config = DarkroomConfig.from_json(path)
@@ -1163,15 +1457,8 @@ class DarkroomPanel:
         return film["polarity"] if film is not None else "negative"
 
     def _refresh_scanner_catalog(self) -> None:
-        polarity = self._expected_scan_polarity()
-        records = scanner_preset_catalog(polarity)
+        records = scanner_preset_catalog()
         current = scanner_preset_record(self.scanner_preset.get())
-        if current is None or current["polarity"] != polarity:
-            preferred = "positive_transparency_scan" if polarity == "positive" else "neutral_scan"
-            selected = next((record for record in records if record["key"] == preferred), records[0] if records else None)
-            if selected is not None and selected["key"] != self.scanner_preset.get():
-                self.scanner_preset.set(selected["key"])
-                return
         if current is not None and all(record["key"] != current["key"] for record in records):
             records.insert(0, current)
         self._scanner_display_key_map = {record["label"]: record["key"] for record in records}
@@ -1191,6 +1478,11 @@ class DarkroomPanel:
         self._set_scan_interpretation_display()
         if hasattr(self, "scanner_preset_combo"):
             self._refresh_scanner_catalog()
+        self._update_scan_parameter_visibility()
+
+    def _sync_manual_scan_controls(self) -> None:
+        self.scan_interpretation.set("manual")
+        self._update_scan_parameter_visibility()
 
     def _update_expert_visibility(self) -> None:
         if not hasattr(self, "develop_frame"):
@@ -1214,17 +1506,35 @@ class DarkroomPanel:
     def _update_scan_parameter_visibility(self, expert: bool | None = None) -> None:
         if not hasattr(self, "scan_frame"):
             return
-        positive = self._expected_scan_polarity() == "positive"
         expert_visible = bool(self.expert_mode.get()) if expert is None else expert
-        self.scan_frame.configure(text=tr("scan.panel.positive" if positive else "scan.panel.negative"))
-        self._set_grid_rows_visible(self.scan_frame, {11, 12}, True)
-        self._set_grid_rows_visible(self.scan_frame, {13}, positive)
-        self._set_grid_rows_visible(self.scan_frame, {14, 15}, positive and expert_visible)
-        self._set_grid_rows_visible(self.scan_frame, {17}, not positive)
-        self._set_grid_rows_visible(self.scan_frame, {18}, (not positive) and expert_visible)
-        self.scan_pipeline_description.set(
-            tr("scan.pipeline.positive" if positive else "scan.pipeline.negative")
+        self.scan_frame.configure(text=tr("scan.panel.shared"))
+        self._set_grid_rows_visible(
+            self.scan_frame,
+            {11, 12, 13, 17, 19, 20},
+            True,
         )
+        self._set_grid_rows_visible(self.scan_frame, {14, 15, 18}, expert_visible)
+        formed_negative = self._expected_scan_polarity() == "negative"
+        self.scan_recommendation.set(
+            tr(
+                "scan.recommendation.negative"
+                if formed_negative
+                else "scan.recommendation.positive"
+            )
+        )
+        if self.scan_invert.get():
+            pipeline_key = (
+                "scan.pipeline.manual.remove_invert"
+                if self.scan_remove_base.get()
+                else "scan.pipeline.manual.preserve_invert"
+            )
+        else:
+            pipeline_key = (
+                "scan.pipeline.manual.remove_direct"
+                if self.scan_remove_base.get()
+                else "scan.pipeline.manual.preserve_direct"
+            )
+        self.scan_pipeline_description.set(tr(pipeline_key))
 
     def _sync_film_preset_controls(self) -> None:
         self._set_material_ui_from_key(self.film_preset.get())
@@ -1283,6 +1593,8 @@ class DarkroomPanel:
         self.light_leak.set(float(config.chemistry.light_leak_strength))
         self.chemical_stain.set(float(config.chemistry.chemical_stain))
         self.uneven_development.set(float(config.chemistry.uneven_development))
+        self.development_adjacency_strength.set(float(config.chemistry.development_adjacency_strength))
+        self.development_adjacency_radius.set(float(config.chemistry.development_adjacency_radius))
         self.process_variation.set(float(config.chemistry.process_variation))
         self.force_bw.set(str(config.mode).lower() == "bw_negative")
         self._refresh_scanner_catalog()
@@ -1295,7 +1607,7 @@ class DarkroomPanel:
             return
         config = DarkroomConfig.from_json(path)
         source = preset_source_text(self.scanner_preset.get(), USER_SCANNER_PRESET_DIR, SCANNER_PRESET_DIR)
-        self.scanner_preset_source.set(f"{source} · {config.scanner.interpreter_key}")
+        self.scanner_preset_source.set(source)
         self.print_contrast.set(float(config.look.print_contrast))
         self.print_exposure.set(float(config.look.print_exposure_ev))
         self.saturation.set(float(config.scanner.scan_saturation))
@@ -1311,12 +1623,22 @@ class DarkroomPanel:
         self.highlight_blue.set(highlight[2])
         positive = scanner_preset_polarity(config) == "positive"
         self.light_table_ev.set(float(
-            config.scanner.light_table_ev if positive else config.scanner.negative_backlight_ev
+            config.scanner.transmission_light_ev
+            if config.scanner.transmission_light_ev is not None
+            else (
+                config.scanner.light_table_ev
+                if positive
+                else config.scanner.negative_backlight_ev
+            )
         ))
         self.light_table_temperature.set(float(
-            config.scanner.light_table_temperature_k
-            if positive
-            else config.scanner.negative_backlight_temperature_k
+            config.scanner.transmission_light_temperature_k
+            if config.scanner.transmission_light_temperature_k is not None
+            else (
+                config.scanner.light_table_temperature_k
+                if positive
+                else config.scanner.negative_backlight_temperature_k
+            )
         ))
         self.positive_color_control.set(float(config.scanner.positive_scan_color_control_strength))
         self.projection_white_softness.set(float(config.scanner.projection_white_softness))
@@ -1357,18 +1679,19 @@ class DarkroomPanel:
                 widget.grid()
             else:
                 widget.grid_remove()
-        for widget in (self.scan_interpretation_label, self.scan_interpretation_combo):
+        for widget in (
+            self.scan_interpretation_label,
+            self.scan_interpretation_controls,
+        ):
             if mode in ("full", "scan"):
                 widget.grid()
             else:
                 widget.grid_remove()
         if mode == "scan":
-            self.scan_interpretation_combo.configure(values=(tr("scan.mode.negative"), tr("scan.mode.positive")))
-            if self.scan_interpretation.get() not in {"negative", "positive"}:
-                self.scan_interpretation.set("negative")
+            self.scan_output_follow_check.grid()
         else:
-            self.scan_interpretation_combo.configure(values=tuple(self._scan_mode_labels().values()))
-        self._set_scan_interpretation_display()
+            self.scan_output_follow_check.grid_remove()
+        self.scan_interpretation.set("manual")
         self._refresh_scanner_catalog()
         self._update_expert_visibility()
 
@@ -1386,18 +1709,7 @@ class DarkroomPanel:
             self.input_path.set(path)
 
     def _open_scanner_editor(self) -> None:
-        mode = self.scan_interpretation.get()
-        if mode == "auto":
-            path = scanner_preset_path(self.scanner_preset.get())
-            if path.exists():
-                preset = DarkroomConfig.from_json(path)
-                mode = "positive" if preset.scanner.interpreter_key == "positive_transparency_scan" else "negative"
-        script = (
-            "film_foundry.tools.run_positive_scanner_editor"
-            if mode == "positive"
-            else "film_foundry.tools.run_scanner_render_editor"
-        )
-        self._open_editor(script)
+        self._open_editor("film_foundry.tools.run_scanner_render_editor")
 
     def _choose_input_folder(self) -> None:
         path = filedialog.askdirectory()
@@ -1429,7 +1741,7 @@ class DarkroomPanel:
         }
 
     def _session_payload(self) -> dict:
-        return session_payload(
+        payload = session_payload(
             config=self._config(),
             pipeline_mode=self.pipeline_mode.get(),
             input_path=self.input_path.get(),
@@ -1437,6 +1749,26 @@ class DarkroomPanel:
             output_path=self.output_path.get(),
             presets=self._preset_references(),
         )
+        payload["ui_options"] = {
+            "scan_output_near_source": bool(self.scan_output_near_source.get()),
+            "run_as_preview": bool(self.run_as_preview.get()),
+        }
+        return payload
+
+    def _session_payload_for_config(self, config: DarkroomConfig) -> dict:
+        payload = session_payload(
+            config=config,
+            pipeline_mode=self.pipeline_mode.get(),
+            input_path=self.input_path.get(),
+            negative_path=self.negative_path.get(),
+            output_path=self.output_path.get(),
+            presets=self._preset_references(),
+        )
+        payload["ui_options"] = {
+            "scan_output_near_source": bool(self.scan_output_near_source.get()),
+            "run_as_preview": bool(self.run_as_preview.get()),
+        }
+        return payload
 
     def _save_session(self) -> None:
         path = filedialog.asksaveasfilename(
@@ -1454,12 +1786,16 @@ class DarkroomPanel:
             self.status.set(f"{tr('status.session_save_failed')}: {exc}")
 
     def _apply_loaded_config(self, config: DarkroomConfig) -> None:
-        interpretation = str(config.scanner.interpretation_mode or "auto").lower()
-        self.scan_interpretation.set(
-            interpretation if interpretation in {"auto", "negative", "positive"} else "auto"
-        )
+        self.scan_interpretation.set("manual")
+        self.scan_remove_base.set(bool(config.scanner.remove_base_mask))
+        self.scan_invert.set(bool(config.scanner.invert_transmission))
         self.fast_mode.set(bool(config.fast_mode))
         self.quality_mode.set(str(config.processing.quality_mode))
+        strategy = str(config.seed_strategy).strip().lower()
+        self.seed_strategy.set(strategy if strategy in SEED_STRATEGY_KEYS else "random")
+        self.seed_strategy_display.set(seed_strategy_label(self.seed_strategy.get()))
+        self.random_seed.set("0" if config.random_seed is None else str(int(config.random_seed)))
+        self._update_seed_strategy_state()
         self.exposure_ev.set(float(config.look.exposure_ev))
         self.print_contrast.set(float(config.look.print_contrast))
         self.print_exposure.set(float(config.look.print_exposure_ev))
@@ -1467,6 +1803,9 @@ class DarkroomPanel:
         self.preview_long_edge.set(0 if config.output.preview_long_edge is None else int(config.output.preview_long_edge))
         self.save_scanner_raw.set(bool(config.output.save_scanner_raw))
         self.scanner_raw_border.set(float(config.output.scanner_raw_border_percent) * 100.0)
+        self.include_clear_base_border.set(
+            bool(config.scanner.include_clear_base_border)
+        )
         self.export_layer_pack.set(bool(config.output.export_layer_pack))
         self.export_transparent_plate.set(bool(config.output.export_transparent_plate))
         self.export_plate_set.set(bool(config.output.export_plate_set))
@@ -1504,6 +1843,8 @@ class DarkroomPanel:
         self.light_leak.set(float(config.chemistry.light_leak_strength))
         self.chemical_stain.set(float(config.chemistry.chemical_stain))
         self.uneven_development.set(float(config.chemistry.uneven_development))
+        self.development_adjacency_strength.set(float(config.chemistry.development_adjacency_strength))
+        self.development_adjacency_radius.set(float(config.chemistry.development_adjacency_radius))
         self.process_variation.set(float(config.chemistry.process_variation))
 
         self.scan_normalize.set(bool(config.scanner.scan_normalize))
@@ -1517,17 +1858,24 @@ class DarkroomPanel:
         highlight = tuple(float(v) for v in config.scanner.highlight_color_bias)
         self.highlight_green.set(highlight[1])
         self.highlight_blue.set(highlight[2])
-        positive = (
-            interpretation == "positive"
-            or (interpretation == "auto" and config.scanner.interpreter_key == "positive_transparency_scan")
-        )
+        positive = not bool(config.scanner.invert_transmission)
         self.light_table_ev.set(float(
-            config.scanner.light_table_ev if positive else config.scanner.negative_backlight_ev
+            config.scanner.transmission_light_ev
+            if config.scanner.transmission_light_ev is not None
+            else (
+                config.scanner.light_table_ev
+                if positive
+                else config.scanner.negative_backlight_ev
+            )
         ))
         self.light_table_temperature.set(float(
-            config.scanner.light_table_temperature_k
-            if positive
-            else config.scanner.negative_backlight_temperature_k
+            config.scanner.transmission_light_temperature_k
+            if config.scanner.transmission_light_temperature_k is not None
+            else (
+                config.scanner.light_table_temperature_k
+                if positive
+                else config.scanner.negative_backlight_temperature_k
+            )
         ))
         self.positive_color_control.set(float(config.scanner.positive_scan_color_control_strength))
         self.projection_white_softness.set(float(config.scanner.projection_white_softness))
@@ -1566,6 +1914,14 @@ class DarkroomPanel:
             config_data = payload.get("config")
             if isinstance(config_data, dict):
                 self._apply_loaded_config(DarkroomConfig.from_dict(config_data))
+            ui_options = payload.get("ui_options")
+            if isinstance(ui_options, dict):
+                self.scan_output_near_source.set(
+                    bool(ui_options.get("scan_output_near_source", True))
+                )
+                self.run_as_preview.set(
+                    bool(ui_options.get("run_as_preview", self.run_as_preview.get()))
+                )
             self.pipeline_mode.set(str(payload.get("pipeline_mode", self.pipeline_mode.get())))
             self._update_mode_visibility()
             self.status.set(f"{tr('status.session_loaded')}: {path}")
@@ -1588,6 +1944,15 @@ class DarkroomPanel:
             "reduced_fast" if config.fast_mode else "quality"
         )
         config.processing.quality_mode = str(self.quality_mode.get())
+        config.seed_strategy = str(self.seed_strategy.get())
+        if config.seed_strategy == "random":
+            config.random_seed = None
+        else:
+            seed_text = self.random_seed.get().strip()
+            try:
+                config.random_seed = int(seed_text or "0")
+            except ValueError as exc:
+                raise ValueError(tr("error.random_seed_integer")) from exc
         config.look.exposure_ev = float(self.exposure_ev.get())
         config.look.print_contrast = float(self.print_contrast.get())
         config.look.print_exposure_ev = float(self.print_exposure.get())
@@ -1597,6 +1962,9 @@ class DarkroomPanel:
         config.output.save_scanner_raw = bool(self.save_scanner_raw.get())
         config.output.scanner_raw_border_percent = float(self.scanner_raw_border.get()) / 100.0
         config.output.scanner_raw_border_min_px = 32
+        config.scanner.include_clear_base_border = bool(
+            self.include_clear_base_border.get()
+        )
         config.output.export_layer_pack = bool(self.export_layer_pack.get())
         config.output.export_transparent_plate = bool(self.export_transparent_plate.get())
         config.output.export_plate_set = bool(self.export_plate_set.get())
@@ -1635,9 +2003,13 @@ class DarkroomPanel:
             config.chemistry.light_leak_strength = float(self.light_leak.get())
             config.chemistry.chemical_stain = float(self.chemical_stain.get())
             config.chemistry.uneven_development = float(self.uneven_development.get())
+            config.chemistry.development_adjacency_strength = float(self.development_adjacency_strength.get())
+            config.chemistry.development_adjacency_radius = float(self.development_adjacency_radius.get())
             config.chemistry.process_variation = float(self.process_variation.get())
         if mode in ("full", "scan"):
-            configure_scan_interpretation(config, self.scan_interpretation.get())
+            config.scanner.remove_base_mask = bool(self.scan_remove_base.get())
+            config.scanner.invert_transmission = bool(self.scan_invert.get())
+            configure_scan_interpretation(config, "manual")
             config.scanner.scan_normalize = bool(self.scan_normalize.get())
             config.scanner.scan_normalize_strength = float(self.scan_strength.get())
             config.scanner.scan_normalize_mode = "luma"
@@ -1654,12 +2026,19 @@ class DarkroomPanel:
                 float(self.highlight_green.get()),
                 float(self.highlight_blue.get()),
             )
-            if self._expected_scan_polarity() == "positive":
-                config.scanner.light_table_ev = float(self.light_table_ev.get())
-                config.scanner.light_table_temperature_k = float(self.light_table_temperature.get())
-            else:
-                config.scanner.negative_backlight_ev = float(self.light_table_ev.get())
-                config.scanner.negative_backlight_temperature_k = float(self.light_table_temperature.get())
+            config.scanner.transmission_light_ev = float(self.light_table_ev.get())
+            config.scanner.transmission_light_temperature_k = float(
+                self.light_table_temperature.get()
+            )
+            # Keep legacy field banks synchronized for older presets/tools.
+            config.scanner.light_table_ev = float(self.light_table_ev.get())
+            config.scanner.light_table_temperature_k = float(
+                self.light_table_temperature.get()
+            )
+            config.scanner.negative_backlight_ev = float(self.light_table_ev.get())
+            config.scanner.negative_backlight_temperature_k = float(
+                self.light_table_temperature.get()
+            )
             config.scanner.positive_scan_color_control_strength = float(self.positive_color_control.get())
             config.scanner.projection_white_softness = float(self.projection_white_softness.get())
             config.scanner.projection_black_adaptation = float(self.projection_black_adaptation.get())
@@ -1810,6 +2189,8 @@ class DarkroomPanel:
             negative_root = Path(self.negative_path.get())
             input_root = Path(self.input_path.get())
             preview = bool(self.run_as_preview.get())
+            scan_output_near_source = bool(self.scan_output_near_source.get())
+            settings_snapshot = self._session_payload_for_config(config)
         except Exception as exc:
             self.status.set(f"{tr('status.process_failed')}: {exc}")
             return
@@ -1820,7 +2201,16 @@ class DarkroomPanel:
         self.status.set(tr("status.processing"))
         Thread(
             target=self._process,
-            args=(mode, config, input_root, negative_root, output_root, preview),
+            args=(
+                mode,
+                config,
+                input_root,
+                negative_root,
+                output_root,
+                preview,
+                scan_output_near_source,
+                settings_snapshot,
+            ),
             daemon=True,
         ).start()
 
@@ -1840,6 +2230,8 @@ class DarkroomPanel:
         negative_root: Path,
         output_root: Path,
         preview: bool,
+        scan_output_near_source: bool,
+        settings_snapshot: dict,
     ) -> None:
         try:
             if mode == "full":
@@ -1848,16 +2240,57 @@ class DarkroomPanel:
                     self._post_status(tr("status.no_input"))
                     return
                 assert_unique_output_stems(inputs, "Full workflow")
+                run_root, run_id = create_run_directory(output_root, "full")
+                run_settings = self._run_settings_payload(
+                    settings_snapshot,
+                    run_id=run_id,
+                    run_root=run_root,
+                    output_root=run_root,
+                    developed_root=None,
+                )
+                manifest_path = run_root / "film_foundry_run.json"
+                save_session(manifest_path, run_settings)
+                batch_started_at = datetime.now().isoformat(timespec="seconds")
+                batch_started_counter = perf_counter()
+                item_records: list[dict[str, object]] = []
                 completed = 0
                 failures: list[tuple[Path, Exception]] = []
                 for input_path in inputs:
+                    item_started_counter = perf_counter()
+                    output_path = output_path_for(input_path, run_root, config.output.format)
                     try:
-                        output_path = output_path_for(input_path, output_root, config.output.format)
                         process_file(input_path, output_path, config, preview=preview)
                         completed += 1
                     except Exception as exc:
                         failures.append((input_path, exc))
-                self._post_status(self._batch_status("full", completed, failures, output_root))
+                        item_records.append(
+                            batch_item_record(
+                                input_path,
+                                output_path,
+                                perf_counter() - item_started_counter,
+                                exc,
+                            )
+                        )
+                    else:
+                        item_records.append(
+                            batch_item_record(
+                                input_path,
+                                output_path,
+                                perf_counter() - item_started_counter,
+                            )
+                        )
+                record_error = save_batch_run_record(
+                    manifest_path,
+                    run_settings,
+                    operation="full",
+                    started_at=batch_started_at,
+                    started_counter=batch_started_counter,
+                    items=item_records,
+                )
+                message = self._batch_status("full", completed, failures, run_root)
+                if record_error is not None:
+                    message += f" {tr('status.session_save_failed')}: {record_error}"
+                self._post_status(message)
                 return
 
             if mode == "develop":
@@ -1866,9 +2299,26 @@ class DarkroomPanel:
                     self._post_status(tr("status.no_input"))
                     return
                 assert_unique_output_stems(inputs, "Develop workflow")
+                run_root, run_id = create_run_directory(output_root, "develop")
+                developed_root = run_root / "negative"
+                developed_root.mkdir()
+                run_settings = self._run_settings_payload(
+                    settings_snapshot,
+                    run_id=run_id,
+                    run_root=run_root,
+                    output_root=run_root,
+                    developed_root=developed_root,
+                )
+                manifest_path = run_root / "film_foundry_run.json"
+                save_session(manifest_path, run_settings)
+                batch_started_at = datetime.now().isoformat(timespec="seconds")
+                batch_started_counter = perf_counter()
+                item_records = []
                 completed = 0
                 failures = []
                 for input_path in inputs:
+                    item_started_counter = perf_counter()
+                    developed_path: Path | None = None
                     try:
                         execution_mode = resolve_execution_mode(
                             config,
@@ -1886,23 +2336,57 @@ class DarkroomPanel:
                         else:
                             image = load_image(input_path)
                         image = resize_to_long_edge(image, long_edge)
+                        develop_rng, resolved_seed = rng_and_resolved_seed_for_develop(
+                            input_path,
+                            runtime_config,
+                        )
                         negative = develop_negative(
                             image,
                             runtime_config,
-                            rng=rng_for_develop(input_path, runtime_config),
+                            rng=develop_rng,
                         )
                         del image
+                        developed_path = developed_path_for(input_path, developed_root, negative)
                         save_developed_medium(
                             negative,
-                            developed_path_for(input_path, negative_root, negative),
+                            developed_path,
                             input_path,
                             runtime_config,
                             config.save_sidecar,
+                            resolved_seed=resolved_seed,
                         )
                         completed += 1
                     except Exception as exc:
                         failures.append((input_path, exc))
-                self._post_status(self._batch_status("develop", completed, failures, negative_root))
+                        item_records.append(
+                            batch_item_record(
+                                input_path,
+                                developed_path,
+                                perf_counter() - item_started_counter,
+                                exc,
+                            )
+                        )
+                    else:
+                        item_records.append(
+                            batch_item_record(
+                                input_path,
+                                developed_path,
+                                perf_counter() - item_started_counter,
+                            )
+                        )
+                record_error = save_batch_run_record(
+                    manifest_path,
+                    run_settings,
+                    operation="develop",
+                    started_at=batch_started_at,
+                    started_counter=batch_started_counter,
+                    items=item_records,
+                )
+                self.root.after(0, lambda value=str(developed_root): self.negative_path.set(value))
+                message = self._batch_status("develop", completed, failures, run_root)
+                if record_error is not None:
+                    message += f" {tr('status.session_save_failed')}: {record_error}"
+                self._post_status(message)
                 return
 
             negative_paths = iter_developed_medium_files(negative_root)
@@ -1910,14 +2394,41 @@ class DarkroomPanel:
                 self._post_status(tr("status.no_negative"))
                 return
             assert_unique_output_stems(negative_paths, "Scan workflow")
+            scan_output_root = (
+                default_scan_output_root(negative_root)
+                if scan_output_near_source
+                else output_root
+            )
+            if output_target_is_file(scan_output_root):
+                raise ValueError(f"扫描输出位置必须是文件夹：{scan_output_root}")
+            scan_output_root.mkdir(parents=True, exist_ok=True)
+            run_id = unique_scan_run_id(scan_output_root)
+            run_settings = self._run_settings_payload(
+                settings_snapshot,
+                run_id=run_id,
+                run_root=scan_output_root,
+                output_root=scan_output_root,
+                developed_root=negative_root,
+            )
+            manifest_path = scan_output_root / f"film_foundry_{run_id}.json"
+            save_session(manifest_path, run_settings)
+            batch_started_at = datetime.now().isoformat(timespec="seconds")
+            batch_started_counter = perf_counter()
+            item_records = []
             completed = 0
             failures = []
             for negative_path in negative_paths:
+                item_started_counter = perf_counter()
+                output_path = output_path_for(
+                    negative_path,
+                    scan_output_root,
+                    config.output.format,
+                    run_suffix=run_id,
+                )
                 try:
                     scanned, scan_source, _preview = scan_from_file(negative_path, config)
                     scan_source_value = scanned.metadata.get("source_path")
                     scan_source_path = Path(scan_source_value) if isinstance(scan_source_value, str) and scan_source_value else negative_path
-                    output_path = output_path_for(negative_path, output_root, config.output.format)
                     sidecar = (
                         final_positive_sidecar(
                                 negative_path=negative_path,
@@ -1940,11 +2451,68 @@ class DarkroomPanel:
                     completed += 1
                 except Exception as exc:
                     failures.append((negative_path, exc))
-            self._post_status(self._batch_status("scan", completed, failures, output_root))
+                    item_records.append(
+                        batch_item_record(
+                            negative_path,
+                            output_path,
+                            perf_counter() - item_started_counter,
+                            exc,
+                        )
+                    )
+                else:
+                    item_records.append(
+                        batch_item_record(
+                            negative_path,
+                            output_path,
+                            perf_counter() - item_started_counter,
+                        )
+                    )
+            record_error = save_batch_run_record(
+                manifest_path,
+                run_settings,
+                operation="scan",
+                started_at=batch_started_at,
+                started_counter=batch_started_counter,
+                items=item_records,
+            )
+            message = self._batch_status("scan", completed, failures, scan_output_root)
+            if record_error is not None:
+                message += f" {tr('status.session_save_failed')}: {record_error}"
+            self._post_status(message)
         except Exception as exc:
             self._post_status(f"{tr('status.process_failed')}: {exc}")
         finally:
             self.root.after(0, self._finish_process)
+
+    @staticmethod
+    def _run_settings_payload(
+        snapshot: dict,
+        *,
+        run_id: str,
+        run_root: Path,
+        output_root: Path,
+        developed_root: Path | None,
+    ) -> dict:
+        payload = copy.deepcopy(snapshot)
+        payload["created_at"] = datetime.now().isoformat(timespec="seconds")
+        run_record = {
+            "id": str(run_id),
+            "directory": str(run_root),
+            "actual_output": str(output_root),
+            "status": "running",
+        }
+        if developed_root is not None:
+            run_record["developed_medium"] = str(developed_root)
+        payload["run"] = run_record
+        paths = payload.setdefault("paths", {})
+        if isinstance(paths, dict) and developed_root is not None:
+            # Keep the user-selected output base in ``paths.output`` so loading
+            # this snapshot creates a sibling generation instead of nesting a
+            # new run inside the completed run. Actual destinations live in
+            # the explicit ``run`` record above.
+            paths["developed_medium"] = str(developed_root)
+            paths["negative"] = str(developed_root)
+        return payload
 
     @staticmethod
     def _batch_status(

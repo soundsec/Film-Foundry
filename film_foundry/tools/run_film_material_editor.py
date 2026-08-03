@@ -72,9 +72,37 @@ POSITIVE_MATERIAL_FIELDS = (
     "positive_shadow_toe_width",
     "positive_highlight_shoulder",
     "positive_highlight_shoulder_width",
+    "positive_highlight_chroma_retention",
+    "positive_shadow_chroma_retention",
 )
+HALATION_RETURN_MODE_LABELS = {
+    ui("兼容暖色 RGB 回注", "Compatible Warm RGB Return"): "compatibility_rgb",
+    ui("实验性材料层回流", "Experimental Material-Layer Return"): "layer_selective",
+}
+LIGHT_PIPING_EDGE_LABELS = {
+    ui("关闭", "Off"): "none",
+    ui("上边缘", "Top Edge"): "top",
+    ui("右边缘", "Right Edge"): "right",
+    ui("下边缘", "Bottom Edge"): "bottom",
+    ui("左边缘", "Left Edge"): "left",
+    ui("两条长边", "Both Long Edges"): "long_edges",
+    ui("两条短边", "Both Short Edges"): "short_edges",
+    ui("全部边缘", "All Edges"): "all_edges",
+}
 
 MATERIAL_EDITOR_EN = {
+    "研究性极端曝光潜影尾部（默认关闭）": "Research Extreme-Exposure Latent Tail (Off by Default)",
+    "极端曝光潜影回落强度": "Extreme-Exposure Latent Decline Strength",
+    "回落起点 logE RGB": "Tail Start logE RGB",
+    "回落过渡宽度": "Tail Transition Width",
+    "片基边缘光导（实验）": "Support Edge Light Piping (Experimental)",
+    "片基光导强度": "Support Light-Piping Strength",
+    "向内传播深度": "Inward Propagation Depth",
+    "入光边缘": "Entry Edges",
+    "光导材料层权重": "Light-Piping Material-Layer Weights",
+    "实验性金属银颗粒强度": "Experimental Metallic-Silver Grain Strength",
+    "金属银颗粒相关半径": "Metallic-Silver Grain Radius",
+    "金属银粗团聚混合": "Metallic-Silver Coarse-Clump Mix",
     "银盐胶片材料预设（分类共享外壳）": "Silver-Halide Film Material Presets",
     "基准材料": "Base material",
     "加载": "Load",
@@ -99,6 +127,8 @@ MATERIAL_EDITOR_EN = {
     "正片暗部 toe 宽度": "Positive Shadow Toe Width",
     "正片高光 shoulder": "Positive Highlight Shoulder",
     "正片高光 shoulder 宽度": "Positive Highlight Shoulder Width",
+    "正片高光端色度保留": "Positive Highlight Chroma Retention",
+    "正片暗部端色度保留": "Positive Shadow Chroma Retention",
     "非原生程序兼容性（仅逆冲/跨材料程序启用）": "Non-Native Process Compatibility",
     "逆冲银显影效率": "Cross-Process Silver Development",
     "逆冲染料偶合效率": "Cross-Process Dye Coupling",
@@ -110,7 +140,11 @@ MATERIAL_EDITOR_EN = {
     "逆冲附加层去除能力": "Cross-Process Auxiliary Removal",
     "逆冲层间反应平衡": "Cross-Process Layer Balance",
     "片基 / 颗粒 / 解析力": "Base / Grain / Resolution",
-    "片基 RGB 密度": "Film Base RGB Density",
+    "综合色罩 / 片基 RGB 光学密度（可自定义颜色）": "Combined Mask / Base RGB Optical Density (Custom Color)",
+    "透明片基 RGB 密度下限": "Clear Support RGB Density Floor",
+    "片基—染料光谱耦合强度": "Base–Dye Spectral Interaction Strength",
+    "实验性色罩漂白敏感度": "Experimental Mask-Bleach Susceptibility",
+    "实验性色罩漂白染料损伤": "Experimental Mask-Bleach Dye Damage",
     "定影不足残留银盐 RGB 密度权重": "Residual Halide RGB Density",
     "附加层初始量": "Initial Auxiliary Layer Amount",
     "附加层 RGB 光学密度": "Auxiliary Layer RGB Density",
@@ -132,6 +166,9 @@ MATERIAL_EDITOR_EN = {
     "长程散射半径": "Long-Range Scatter Radius",
     "短程/长程混合": "Short/Long-Range Mix",
     "光晕颜色 RGB": "Halation Color RGB",
+    "回流模型": "Return Model",
+    "材料层回流相对权重": "Material-Layer Return Weights",
+    "传播尺度权重（紧邻 / 主回流 / 宽域）": "Spread Scale Weights (Compact / Main / Wide)",
     "光源预模糊半径": "Source Pre-Blur Radius",
     "边缘梯度抑制": "Edge Gradient Suppression",
     "局部峰值半径": "Local Peak Radius",
@@ -143,7 +180,7 @@ MATERIAL_EDITOR_EN = {
     "高斯散射幅度": "Gaussian Scatter Amplitude",
     "指数散射幅度": "Exponential Scatter Amplitude",
     "指数尾半径": "Exponential Tail Radius",
-    "三层感光 / 染料吸收矩阵": "Three-Layer Sensitivity / Dye Matrices",
+    "三层感光 / 染料吸收 / 片基光谱耦合矩阵": "Sensitivity / Dye / Base Spectral Matrices",
     "曲线预览": "Curve Preview",
     "刷新曲线": "Refresh Curve",
 }
@@ -266,6 +303,8 @@ class FilmMaterialEditor:
         self.image_polarity = tk.StringVar(value="negative")
         self.color_process = tk.StringVar(value="color")
         self.identity_summary = tk.StringVar(value="film / negative / negative polarity / color")
+        self.halation_return_display = tk.StringVar(value="")
+        self.light_piping_edge_display = tk.StringVar(value="")
         self.status = tk.StringVar(value=ui("加载银盐胶片材料预设，调整后保存到 user_presets/film。", "Load a silver-halide material preset, adjust it, then save to user_presets/film."))
         self.curve_photo = None
 
@@ -329,6 +368,32 @@ class FilmMaterialEditor:
         row = self._scalar(controls, "hd_toe_width", "toe 宽度", 0.04, 0.60, row)
         row = self._scalar(controls, "hd_shoulder_width", "shoulder 宽度", 0.04, 0.70, row)
 
+        row = self._section(controls, "研究性极端曝光潜影尾部（默认关闭）", row)
+        row = self._scalar(
+            controls,
+            "extreme_exposure_reversal_strength",
+            "极端曝光潜影回落强度",
+            0.00,
+            1.00,
+            row,
+        )
+        row = self._vector(
+            controls,
+            "extreme_exposure_reversal_start_loge",
+            "回落起点 logE RGB",
+            0.30,
+            1.50,
+            row,
+        )
+        row = self._scalar(
+            controls,
+            "extreme_exposure_reversal_width",
+            "回落过渡宽度",
+            0.03,
+            0.80,
+            row,
+        )
+
         row = self._section(controls, "反转片原生正像曲线（负片材料中保留但不参与原生负片曲线）", row)
         row = self._scalar(controls, "positive_density_contrast", "正片密度反差", 0.50, 2.00, row)
         row = self._scalar(controls, "positive_density_bias", "正片密度偏移", -0.25, 0.25, row)
@@ -339,20 +404,26 @@ class FilmMaterialEditor:
         row = self._scalar(controls, "positive_shadow_toe_width", "正片暗部 toe 宽度", 0.02, 0.80, row)
         row = self._scalar(controls, "positive_highlight_shoulder", "正片高光 shoulder", 0.00, 1.00, row)
         row = self._scalar(controls, "positive_highlight_shoulder_width", "正片高光 shoulder 宽度", 0.02, 0.80, row)
+        row = self._scalar(controls, "positive_highlight_chroma_retention", "正片高光端色度保留", 0.00, 1.00, row)
+        row = self._scalar(controls, "positive_shadow_chroma_retention", "正片暗部端色度保留", 0.00, 1.00, row)
 
         row = self._section(controls, "非原生程序兼容性（仅逆冲/跨材料程序启用）", row)
-        row = self._scalar(controls, "cross_process_silver_development", "逆冲银显影效率", 0.00, 1.50, row)
+        row = self._scalar(controls, "cross_process_silver_development", "逆冲银显影兼容效率", 0.00, 1.00, row)
         row = self._scalar(controls, "cross_process_dye_coupling", "逆冲染料偶合效率", 0.00, 1.50, row)
-        row = self._scalar(controls, "cross_process_activation", "逆冲剩余卤化银激活", 0.00, 1.50, row)
-        row = self._scalar(controls, "cross_process_silver_bleach", "逆冲银漂白能力", 0.00, 1.50, row)
-        row = self._scalar(controls, "cross_process_halide_fixing", "逆冲定影能力", 0.00, 1.50, row)
-        row = self._scalar(controls, "cross_process_silver_removal", "逆冲直接去银能力", 0.00, 1.50, row)
+        row = self._scalar(controls, "cross_process_activation", "逆冲激活兼容效率", 0.00, 1.00, row)
+        row = self._scalar(controls, "cross_process_silver_bleach", "逆冲银漂白兼容效率", 0.00, 1.00, row)
+        row = self._scalar(controls, "cross_process_halide_fixing", "逆冲定影兼容效率", 0.00, 1.00, row)
+        row = self._scalar(controls, "cross_process_silver_removal", "逆冲直接去银兼容效率", 0.00, 1.00, row)
         row = self._scalar(controls, "cross_process_dye_stability", "逆冲染料稳定性", 0.00, 1.00, row)
-        row = self._scalar(controls, "cross_process_auxiliary_removal", "逆冲附加层去除能力", 0.00, 1.50, row)
-        row = self._vector(controls, "cross_process_layer_balance", "逆冲层间反应平衡", 0.00, 2.00, row)
+        row = self._scalar(controls, "cross_process_auxiliary_removal", "逆冲附加层去除兼容效率", 0.00, 1.00, row)
+        row = self._vector(controls, "cross_process_layer_balance", "非原生材料额外层兼容倍率（与程序倍率相乘）", 0.00, 2.00, row)
 
         row = self._section(controls, "片基 / 颗粒 / 解析力", row)
-        row = self._vector(controls, "film_base_density_rgb", "片基 RGB 密度", 0.00, 1.30, row)
+        row = self._vector(controls, "film_base_density_rgb", "综合色罩 / 片基 RGB 光学密度（可自定义颜色）", 0.00, 1.30, row)
+        row = self._vector(controls, "clear_support_density_rgb", "透明片基 RGB 密度下限", 0.00, 0.50, row)
+        row = self._scalar(controls, "base_dye_interaction_strength", "片基—染料光谱耦合强度", 0.00, 1.00, row)
+        row = self._scalar(controls, "experimental_mask_bleach_susceptibility", "实验性色罩漂白敏感度", 0.00, 1.00, row)
+        row = self._scalar(controls, "experimental_mask_bleach_dye_damage", "实验性色罩漂白染料损伤", 0.00, 1.00, row)
         row = self._vector(controls, "retained_halide_density_rgb", "定影不足残留银盐 RGB 密度权重", 0.00, 1.50, row)
         row = self._scalar(controls, "auxiliary_layer_amount", "附加层初始量", 0.00, 1.00, row)
         row = self._vector(controls, "auxiliary_layer_density_rgb", "附加层 RGB 光学密度", 0.00, 0.50, row)
@@ -362,10 +433,39 @@ class FilmMaterialEditor:
         row = self._vector(controls, "degradation_layer_balance", "满强度退化层间感度平衡", 0.00, 1.50, row)
         row = self._vector(controls, "granularity_sigma", "颗粒密度 sigma RGB", 0.00, 0.08, row)
         row = self._scalar(controls, "grain_density_correlation_radius", "颗粒相关半径", 0.0003, 0.0040, row)
+        row = self._scalar(controls, "silver_grain_strength", "实验性金属银颗粒强度", 0.00, 0.20, row)
+        row = self._scalar(controls, "silver_grain_radius", "金属银颗粒相关半径", 0.0001, 0.0040, row)
+        row = self._scalar(controls, "silver_grain_clump_mix", "金属银粗团聚混合", 0.00, 1.00, row)
         row = self._scalar(controls, "emulsion_mtf_strength", "乳剂 MTF 强度", 0.00, 0.70, row)
         row = self._scalar(controls, "emulsion_blur_radius", "乳剂模糊半径", 0.0002, 0.0050, row)
         row = self._scalar(controls, "high_frequency_threshold", "高频响应阈值", 0.00, 0.20, row)
         row = self._scalar(controls, "digital_artifact_suppression", "数字锐化抑制", 0.00, 0.60, row)
+
+        row = self._section(controls, "片基边缘光导（实验）", row)
+        row = self._scalar(controls, "light_piping_strength", "片基光导强度", 0.00, 0.50, row)
+        row = self._scalar(controls, "light_piping_depth", "向内传播深度", 0.002, 0.25, row)
+        ttk.Label(controls, text=ui("入光边缘", "Entry Edges")).grid(
+            row=row,
+            column=0,
+            sticky="w",
+            pady=2,
+        )
+        ttk.Combobox(
+            controls,
+            textvariable=self.light_piping_edge_display,
+            values=tuple(LIGHT_PIPING_EDGE_LABELS),
+            state="readonly",
+            width=30,
+        ).grid(row=row, column=1, columnspan=3, sticky="ew", pady=2)
+        row += 1
+        row = self._vector(
+            controls,
+            "light_piping_layer_weights",
+            "光导材料层权重",
+            0.00,
+            2.00,
+            row,
+        )
 
         row = self._section(controls, "Halation 基准", row)
         row = self._scalar(controls, "halation_strength", "halation 强度", 0.00, 0.40, row)
@@ -375,6 +475,36 @@ class FilmMaterialEditor:
         row = self._scalar(controls, "halation_outer_radius", "长程散射半径", 0.0030, 0.0500, row)
         row = self._scalar(controls, "halation_core_mix", "短程/长程混合", 0.00, 1.00, row)
         row = self._vector(controls, "halation_color", "光晕颜色 RGB", 0.00, 1.50, row)
+        ttk.Label(controls, text=ui("回流模型", "Return Model")).grid(
+            row=row,
+            column=0,
+            sticky="w",
+            pady=2,
+        )
+        ttk.Combobox(
+            controls,
+            textvariable=self.halation_return_display,
+            values=tuple(HALATION_RETURN_MODE_LABELS),
+            state="readonly",
+            width=30,
+        ).grid(row=row, column=1, columnspan=3, sticky="ew", pady=2)
+        row += 1
+        row = self._vector(
+            controls,
+            "halation_layer_return_weights",
+            "材料层回流相对权重",
+            0.00,
+            2.00,
+            row,
+        )
+        row = self._vector(
+            controls,
+            "halation_spread_scale_weights",
+            "传播尺度权重（紧邻 / 主回流 / 宽域）",
+            0.00,
+            1.00,
+            row,
+        )
         row = self._scalar(controls, "halation_source_blur_radius", "光源预模糊半径", 0.0001, 0.0060, row)
         row = self._scalar(controls, "halation_gradient_suppression", "边缘梯度抑制", 0.00, 1.00, row)
         row = self._scalar(controls, "halation_peak_radius", "局部峰值半径", 0.0010, 0.0300, row)
@@ -387,9 +517,10 @@ class FilmMaterialEditor:
         row = self._scalar(controls, "halation_exponential_amplitude", "指数散射幅度", 0.00, 1.50, row)
         row = self._scalar(controls, "halation_exponential_radius", "指数尾半径", 0.0030, 0.0600, row)
 
-        row = self._section(controls, "三层感光 / 染料吸收矩阵", row)
+        row = self._section(controls, "三层感光 / 染料吸收 / 片基光谱耦合矩阵", row)
         row = self._matrix(controls, "layer_sensitivity_matrix", "layer sensitivity", 0.0, 1.4, row)
         row = self._matrix(controls, "dye_absorption_matrix", "dye absorption", 0.0, 1.6, row)
+        row = self._matrix(controls, "base_dye_interaction_matrix", "base / dye spectral overlap", 0.0, 1.0, row)
 
         preview = ttk.LabelFrame(shell, text="曲线预览", padding=10)
         preview.grid(row=1, column=1, sticky="nsew")
@@ -531,6 +662,28 @@ class FilmMaterialEditor:
         self.material_name.set(str(config.film.name))
         self.material_class.set(material_class_for_config(config))
         self._apply_material_class()
+        return_model = str(config.film.halation_return_model).strip().lower()
+        self.halation_return_display.set(
+            next(
+                (
+                    label
+                    for label, value in HALATION_RETURN_MODE_LABELS.items()
+                    if value == return_model
+                ),
+                next(iter(HALATION_RETURN_MODE_LABELS)),
+            )
+        )
+        light_piping_mode = str(config.film.light_piping_edge_mode).strip().lower()
+        self.light_piping_edge_display.set(
+            next(
+                (
+                    label
+                    for label, value in LIGHT_PIPING_EDGE_LABELS.items()
+                    if value == light_piping_mode
+                ),
+                next(iter(LIGHT_PIPING_EDGE_LABELS)),
+            )
+        )
         for key, var in self.scalar_vars.items():
             var.set(float(getattr(config.film, key)))
         for key, vars_ in self.vector_vars.items():
@@ -555,6 +708,14 @@ class FilmMaterialEditor:
         config.film.medium_process = identity["medium_process"]
         config.film.image_polarity = identity["image_polarity"]
         config.film.color_process = identity["color_process"]
+        config.film.halation_return_model = HALATION_RETURN_MODE_LABELS.get(
+            self.halation_return_display.get(),
+            "compatibility_rgb",
+        )
+        config.film.light_piping_edge_mode = LIGHT_PIPING_EDGE_LABELS.get(
+            self.light_piping_edge_display.get(),
+            "none",
+        )
         for key, var in self.scalar_vars.items():
             setattr(config.film, key, float(var.get()))
         for key, vars_ in self.vector_vars.items():

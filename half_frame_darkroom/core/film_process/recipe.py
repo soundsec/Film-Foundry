@@ -92,6 +92,22 @@ def program_from_develop_recipe(
             ),
         )
     program = _base_program(key, recipe)
+    mask_bleach_completion = float(np.clip(recipe.mask_bleach_completion, 0.0, 1.0))
+    if key == "color_reversal" and mask_bleach_completion > 1e-6:
+        steps: list[FilmProcessStep] = []
+        inserted = False
+        for existing_step in program.steps:
+            if existing_step.action == FilmProcessAction.DESTROY_DYE and not inserted:
+                steps.append(
+                    FilmProcessStep(
+                        FilmProcessAction.BLEACH_MASK_DYE,
+                        strength=mask_bleach_completion,
+                        label="experimental_mask_dye_bleach",
+                    )
+                )
+                inserted = True
+            steps.append(existing_step)
+        program = replace(program, steps=tuple(steps))
     effective = build_effective_development(recipe)
     development_completion = float(np.clip(effective.progress_ratio, 0.0, 1.0))
     first_development_completion = development_completion * float(
@@ -132,11 +148,24 @@ def program_from_develop_recipe(
                 stage_completion = first_development_completion
             elif step.label in {"second_development", "color_development"}:
                 stage_completion = second_development_completion
+            exposure_selective_stage = step.label in {
+                "exposure_selective_development",
+                "color_coupling_development",
+                "first_development",
+            }
             step = replace(
                 step,
                 strength=stage_completion,
                 layer_selectivity=layer_balance,
                 dye_coupling_ratio=dye_ratio if step.action == FilmProcessAction.DEVELOP_COLOR else None,
+                developability_gamma=(
+                    float(effective.gamma_factor) if exposure_selective_stage else 1.0
+                ),
+                highlight_compensation=(
+                    float(effective.highlight_compensation)
+                    if exposure_selective_stage
+                    else 0.0
+                ),
             )
         elif step.action == FilmProcessAction.ACTIVATE_REMAINING_HALIDE:
             step = replace(step, strength=float(np.clip(recipe.reversal_activation, 0.0, 1.0)))
@@ -144,6 +173,11 @@ def program_from_develop_recipe(
             step = replace(step, strength=float(np.clip(recipe.first_silver_removal, 0.0, 1.0)))
         elif step.action == FilmProcessAction.BLEACH_SILVER:
             step = replace(step, strength=bleach_completion)
+        elif step.action == FilmProcessAction.BLEACH_MASK_DYE:
+            step = replace(
+                step,
+                strength=mask_bleach_completion,
+            )
         elif step.action == FilmProcessAction.FIX_HALIDE:
             step = replace(step, strength=fixing_completion)
         elif step.action == FilmProcessAction.REMOVE_AUXILIARY:

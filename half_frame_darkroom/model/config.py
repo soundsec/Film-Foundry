@@ -42,6 +42,23 @@ class FilmStockConfig:
     halation_outer_radius: float = 0.018
     halation_core_mix: float = 0.62
     halation_color: Vector3 = (1.0, 0.42, 0.16)
+    # Compatibility presets inject a warm RGB exposure before layer mapping.
+    # Experimental layer-selective materials instead couple one scalar return
+    # field directly into material-layer exposure using relative weights.
+    halation_return_model: str = "compatibility_rgb"
+    halation_layer_return_weights: Vector3 = (1.0, 0.42, 0.16)
+    # Experimental layer-selective spread mixture: compact emulsion, existing
+    # main base-return PSF, and wide low-frequency veil. Relative weights are
+    # normalized during execution; compatibility RGB ignores this field.
+    halation_spread_scale_weights: Vector3 = (0.0, 1.0, 0.0)
+
+    # Default-off reduced support light piping. Unlike the random light-leak
+    # accident, this material response reads only explicitly declared frame
+    # edges and couples its geometric exposure directly to emulsion layers.
+    light_piping_strength: float = 0.0
+    light_piping_depth: float = 0.035
+    light_piping_edge_mode: str = "none"
+    light_piping_layer_weights: Vector3 = (1.0, 0.45, 0.18)
 
     # Legacy RGB-response fields.
     # The current electronic-negative pipeline uses sensitometry.py
@@ -91,6 +108,14 @@ class FilmStockConfig:
     hd_toe_width: float = 0.18
     hd_shoulder_width: float = 0.22
 
+    # Research-only latent-response tail for exceptional emulsions. Ordinary
+    # stocks keep strength zero: normal gross overexposure is a shoulder/D-max
+    # condition, not automatic solarization. The optional tail begins
+    # continuously above the declared material log-exposure threshold.
+    extreme_exposure_reversal_strength: float = 0.0
+    extreme_exposure_reversal_start_loge: Vector3 = (0.56, 0.56, 0.56)
+    extreme_exposure_reversal_width: float = 0.18
+
     layer_sensitivity_matrix: Matrix3 = (
         (0.82, 0.14, 0.04),
         (0.10, 0.78, 0.12),
@@ -102,8 +127,26 @@ class FilmStockConfig:
         (0.03, 0.16, 1.00),
     )
 
-    # 彩色负片片基/橙色 mask 的 RGB 光学密度。
+    # Three-band reduction of the otherwise spectral interaction between a
+    # coloured support/mask and broad dye/scanner response bands.  The matrix
+    # is row-normalized at observation time. A neutral base or zero strength
+    # is exactly equivalent to the legacy additive-density model.
+    base_dye_interaction_strength: float = 0.42
+    base_dye_interaction_matrix: Matrix3 = (
+        (0.90, 0.08, 0.02),
+        (0.06, 0.88, 0.06),
+        (0.02, 0.10, 0.88),
+    )
+
+    # Processed support + any integral coloured-coupler mask, expressed as
+    # RGB optical density.  ``clear_support_density_rgb`` separates the
+    # non-bleachable support floor from the mask for the experimental
+    # mask/dye-bleach operator; old presets remain valid because their total
+    # base density is still authoritative.
     film_base_density_rgb: Vector3 = (0.18, 0.55, 0.85)
+    clear_support_density_rgb: Vector3 = (0.03, 0.03, 0.035)
+    experimental_mask_bleach_susceptibility: float = 1.0
+    experimental_mask_bleach_dye_damage: float = 0.16
     # Reduced RGB optical-density tendency of silver halide left by incomplete
     # fixing.  This belongs to the material because color stocks, sensitizing
     # dyes, and monochrome emulsions do not produce the same retained-salt veil.
@@ -125,6 +168,13 @@ class FilmStockConfig:
 
     granularity_sigma: Vector3 = (0.030, 0.028, 0.032)
     grain_density_correlation_radius: float = 0.0014
+    # Experimental component-specific metallic-silver grain. Zero keeps the
+    # established layer-grain path bit-for-bit unchanged. When enabled, this
+    # neutral density field is derived from actual retained silver and added
+    # directly to the RGB optical master, never through the dye matrix.
+    silver_grain_strength: float = 0.0
+    silver_grain_radius: float = 0.0008
+    silver_grain_clump_mix: float = 0.22
 
     # Positive transparency prototype controls. These are material-side,
     # reduced-order equivalents for slide/reversal characteristics.
@@ -137,6 +187,10 @@ class FilmStockConfig:
     positive_shadow_toe_width: float = 0.22
     positive_highlight_shoulder: float = 0.0
     positive_highlight_shoulder_width: float = 0.18
+    # Retained chroma at the thin/highlight and dense/shadow endpoints of a
+    # formed dye positive.  These are material controls, not scanner looks.
+    positive_highlight_chroma_retention: float = 0.22
+    positive_shadow_chroma_retention: float = 0.28
 
     # Material-side response when a non-native silver-halide program is used.
     cross_process_silver_development: float = 1.0
@@ -187,12 +241,21 @@ class DevelopRecipeConfig:
     light_leak_strength: float = 0.0
     chemical_stain: float = 0.0
     uneven_development: float = 0.0
+    # Default-off reduced adjacency kinetics. A single provisional first-
+    # development estimate generates one bounded, near-zero-mean local rate
+    # correction; formal material pools are still consumed only once.
+    development_adjacency_strength: float = 0.0
+    development_adjacency_radius: float = 0.0025
     process_variation: float = 0.0
     first_development_completion: float = 1.0
     second_development_completion: float = 1.0
     reversal_activation: float = 1.0
     first_silver_removal: float = 1.0
     silver_bleach_completion: float = 1.0
+    # Experimental, non-standard coloured-mask/dye bleach.  This must never be
+    # conflated with silver bleach, which only prepares metallic silver for
+    # fixing.  A value of zero preserves all standard process topologies.
+    mask_bleach_completion: float = 0.0
     halide_fixing_completion: float = 1.0
     dye_coupling_efficiency: float = 1.0
     auxiliary_removal: float = 1.0
@@ -210,11 +273,21 @@ class ScannerConfig:
     """扫描/打印解释。"""
 
     interpretation_mode: str = "auto"
+    # New scanner controls are orthogonal to the developed-medium identity.
+    # ``auto`` remains a legacy/session compatibility mode; the main GUI writes
+    # ``manual`` and treats the medium contract as a recommendation only.
+    remove_base_mask: bool = True
+    invert_transmission: bool = True
+    include_clear_base_border: bool = False
     interpreter_key: str = "negative_scan"
     target_medium_process: str = "negative"
     input_polarity: str = "negative"
     output_polarity: str = "positive"
     scanner_light_color: Vector3 = (1.0, 1.0, 1.0)
+    # Canonical shared light source. ``None`` preserves old presets by falling
+    # back to their negative-backlight or positive-light-table fields.
+    transmission_light_ev: float | None = None
+    transmission_light_temperature_k: float | None = None
     negative_backlight_ev: float = 0.0
     negative_backlight_temperature_k: float = 5500.0
     light_table_ev: float = 0.0
@@ -252,7 +325,10 @@ class ScannerConfig:
     scan_saturation: float = 1.05
 
     scan_normalize: bool = True
-    scan_normalize_strength: float = 0.15
+    # A normal negative scan should establish a useful display black/white
+    # range after inversion.  Low values are still available for flat/log-like
+    # diagnostics, but they leave the print-like mapping visibly grey.
+    scan_normalize_strength: float = 0.45
     scan_normalize_mode: str = "luma"
     scan_black_percentile: float = 0.3
     scan_white_percentile: float = 99.7
@@ -333,17 +409,28 @@ class ProcessingConfig:
     # high=native). A positive value is an explicit per-module override.
     halation_work_long_edge: int | None = None
     grain_work_long_edge: int | None = None
+    # Adjacency is an explicitly reduced global chemistry field even in high
+    # quality mode; None selects draft=1200, standard=1800, high=3200.
+    adjacency_work_long_edge: int | None = None
     # Exact pointwise material-pool processing switches to bounded row tiles
     # above this frame size. Zero rows disables tiling for diagnostics.
     material_tile_rows: int = 256
     material_tile_threshold_megapixels: float = 8.0
     scan_tile_rows: int = 512
-    scan_tile_threshold_megapixels: float = 48.0
+    scan_tile_threshold_megapixels: float = 8.0
+    # Process-wide native-library worker budget. Four avoids the severe
+    # oversubscription commonly observed when OpenCV defaults to every logical
+    # CPU while unrelated background work is active. Zero restores the native
+    # library's startup default. This changes scheduling only.
+    native_thread_limit: int = 4
     # Runtime ownership policy. Public develop/diagnostic paths keep full;
-    # production output may set cold_fp16 on its private config snapshot.
+    # persisted production media may use cold_fp16. The private output-only
+    # array path may temporarily select discard; public validation rejects it.
     history_storage_policy: str = "full"
-    # Optional explicit capacity boundary. It only warns or rejects work; it
-    # never changes resolution, process operators, precision, or scan meaning.
+    # Optional explicit capacity boundary. In allow/warn mode it may activate
+    # the existing exact material-row schedule earlier; it never changes
+    # resolution, process operators, precision, or scan meaning. Error policy
+    # remains a conservative pre-decode rejection boundary.
     memory_budget_mb: float | None = None
     memory_budget_policy: str = "warn"
 
@@ -442,12 +529,17 @@ class DarkroomConfig:
         # the same immutable shape to both formation and scan code.
         film_vector_fields = {
             "halation_color",
+            "halation_layer_return_weights",
+            "halation_spread_scale_weights",
+            "light_piping_layer_weights",
             "hd_gamma",
             "density_min",
             "density_max",
             "log_exposure_toe",
             "log_exposure_shoulder",
+            "extreme_exposure_reversal_start_loge",
             "film_base_density_rgb",
+            "clear_support_density_rgb",
             "retained_halide_density_rgb",
             "auxiliary_layer_density_rgb",
             "degradation_fog_density_rgb",
@@ -459,6 +551,7 @@ class DarkroomConfig:
             "color_matrix",
             "layer_sensitivity_matrix",
             "dye_absorption_matrix",
+            "base_dye_interaction_matrix",
         }
         for key in film_vector_fields:
             if key in film_data:
@@ -498,6 +591,36 @@ class DarkroomConfig:
                 tuple(float(value) for value in row)
                 for row in scanner_data["negative_channel_matrix"]
             )
+
+        # Scanner interpretation used to be a three-way pipeline selector.
+        # Keep those presets readable while making mask removal and inversion
+        # explicit, independent user controls in new sessions.
+        legacy_interpretation = str(
+            scanner_data.get("interpretation_mode", "")
+        ).strip().lower()
+        legacy_interpreter = str(
+            scanner_data.get("interpreter_key", "")
+        ).strip().lower()
+        legacy_positive = (
+            legacy_interpretation == "positive"
+            or legacy_interpreter == "positive_transparency_scan"
+        )
+        scanner_data.setdefault("remove_base_mask", not legacy_positive)
+        scanner_data.setdefault("invert_transmission", not legacy_positive)
+        if "transmission_light_ev" not in scanner_data:
+            legacy_ev_key = "light_table_ev" if legacy_positive else "negative_backlight_ev"
+            if legacy_ev_key in scanner_data:
+                scanner_data["transmission_light_ev"] = float(scanner_data[legacy_ev_key])
+        if "transmission_light_temperature_k" not in scanner_data:
+            legacy_temp_key = (
+                "light_table_temperature_k"
+                if legacy_positive
+                else "negative_backlight_temperature_k"
+            )
+            if legacy_temp_key in scanner_data:
+                scanner_data["transmission_light_temperature_k"] = float(
+                    scanner_data[legacy_temp_key]
+                )
 
         # 旧 preset 迁移：这些字段过去混在 film 中。
         scanner_keys = {

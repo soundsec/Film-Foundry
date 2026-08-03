@@ -22,7 +22,7 @@ from half_frame_darkroom.core.engine import (
     configure_scan_interpretation,
     develop_negative,
     process_file,
-    scan_medium_direct,
+    scan_medium_output,
     scan_scanner_raw_direct,
     save_developed_medium_at_path,
     seed_from_path,
@@ -33,8 +33,8 @@ from half_frame_darkroom.core.electronic_negative import (
 )
 from half_frame_darkroom.core.execution import processing_long_edge, resolve_execution_mode
 from half_frame_darkroom.core.io_utils import SUPPORTED_EXTENSIONS, assert_unique_output_stems, iter_images, load_image, output_target_is_file, probe_image_dimensions, save_image_bundle, scan_output_stem
-from half_frame_darkroom.core.negative_io import load_developed_negative_npz
-from half_frame_darkroom.core.preview import negative_visual_preview, resize_to_long_edge
+from half_frame_darkroom.core.negative_io import load_developed_medium_for_scan
+from half_frame_darkroom.core.preview import resize_to_long_edge
 from half_frame_darkroom.core.resource_planning import (
     enforce_memory_budget,
     estimate_pipeline_memory,
@@ -156,11 +156,22 @@ def _resolved_seed_for(path: Path, config: DarkroomConfig) -> int | None:
 
 
 def _rng_for_develop(path: Path, config: DarkroomConfig) -> np.random.Generator:
-    return np.random.default_rng(_resolved_seed_for(path, config))
+    rng, _ = _rng_and_resolved_seed_for_develop(path, config)
+    return rng
+
+
+def _rng_and_resolved_seed_for_develop(
+    path: Path,
+    config: DarkroomConfig,
+) -> tuple[np.random.Generator, int]:
+    seed = _resolved_seed_for(path, config)
+    if seed is None:
+        seed = int(np.random.SeedSequence().generate_state(1, dtype=np.uint32)[0])
+    return np.random.default_rng(seed), seed
 
 
 def _load_negative(path: Path) -> DevelopedNegative:
-    return load_developed_negative_npz(path)
+    return load_developed_medium_for_scan(path)
 
 
 def _save_negative(
@@ -168,6 +179,8 @@ def _save_negative(
     path: Path,
     input_path: Path,
     config: DarkroomConfig,
+    *,
+    resolved_seed: int | None = None,
 ) -> dict[str, str]:
     """Compatibility name for the unified developed-medium exporter."""
     return save_developed_medium_at_path(
@@ -175,7 +188,11 @@ def _save_negative(
         path,
         negative,
         config,
-        resolved_seed=_resolved_seed_for(input_path, config),
+        resolved_seed=(
+            _resolved_seed_for(input_path, config)
+            if resolved_seed is None
+            else int(resolved_seed)
+        ),
     )
 
 
@@ -255,7 +272,7 @@ def _scan_from_file(path: Path, config: DarkroomConfig):
     if path.suffix.lower() != ".npz":
         raise ValueError(f"Unsupported negative file: {path}. Use .npz or .scanner_raw.tiff, not sidecar .json.")
     negative = _load_negative(path)
-    return scan_medium_direct(negative, config, interpretation), "density_npz", path
+    return scan_medium_output(negative, config, interpretation), "density_npz", path
 
 
 def _add_common_config_args(parser: argparse.ArgumentParser) -> None:
@@ -332,7 +349,7 @@ def _add_scan_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--scanner-preset", help="Scanner/render preset name or JSON path.")
     parser.add_argument(
         "--interpretation",
-        choices=("auto", "negative", "positive"),
+        choices=("auto", "negative", "positive", "direct"),
         help="Interpretation mode. Default auto follows NPZ/raw medium identity.",
     )
     parser.add_argument("--print-contrast", type=float, help="Scan/render contrast multiplier.")
@@ -627,14 +644,24 @@ def _run_develop(args: argparse.Namespace, config: DarkroomConfig) -> int:
             else:
                 image = load_image(input_path)
             image = resize_to_long_edge(image, long_edge)
+            develop_rng, resolved_seed = _rng_and_resolved_seed_for_develop(
+                input_path,
+                runtime_config,
+            )
             negative = develop_negative(
                 image,
                 runtime_config,
-                rng=_rng_for_develop(input_path, runtime_config),
+                rng=develop_rng,
             )
             del image
             negative_path = _developed_path_for(input_path, args.negative_output, negative)
-            paths = _save_negative(negative, negative_path, input_path, runtime_config)
+            paths = _save_negative(
+                negative,
+                negative_path,
+                input_path,
+                runtime_config,
+                resolved_seed=resolved_seed,
+            )
             print(f"[develop] {input_path} -> {negative_path}")
             if "scanner_raw_path" in paths:
                 print(f"          scanner raw: {paths['scanner_raw_path']}")

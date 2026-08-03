@@ -7,7 +7,7 @@
     "scanner_light_color": [1.0, 1.0, 1.0],
     "light_table_ev": 0.0,
     "light_table_temperature_k": 5400.0,
-    "positive_scan_color_control_strength": 0.25,
+    "positive_scan_color_control_strength": 0.12,
     "projection_white_softness": 0.22,
     "projection_black_adaptation": 0.10,
     "scanner_response_matrix": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],

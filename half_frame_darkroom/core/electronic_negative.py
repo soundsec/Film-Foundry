@@ -27,7 +27,12 @@ from half_frame_darkroom.core.io_utils import (
     quantize_linear_rgb16,
     quantize_unit_float_rows,
 )
-from half_frame_darkroom.core.scanner import render_negative_image
+from half_frame_darkroom.core.scanner import (
+    capture_optical_density,
+    negative_backlight_illuminant_rgb,
+    render_negative_image,
+    transmission_illuminant_rgb,
+)
 from half_frame_darkroom.core.sidecar import PROJECT_NAME, created_at
 from half_frame_darkroom.core.states import developed_medium_metadata
 from half_frame_darkroom.model.config import FilmStockConfig, ScannerConfig
@@ -131,10 +136,22 @@ def transparent_negative_rgba(density_cmy: np.ndarray, film: FilmStockConfig) ->
     return transparent_medium_rgba(density_cmy, film)
 
 
-def grain_alpha(density_cmy: np.ndarray, density_grain: np.ndarray) -> np.ndarray:
-    """颗粒层：密度域 grain 与无 grain 密度的差异强度。"""
+def postprocess_density_delta_alpha(
+    density_cmy: np.ndarray,
+    density_grain: np.ndarray,
+) -> np.ndarray:
+    """Visualize the combined legacy layer-density delta.
+
+    This includes emulsion grain and layer-space proxies for some post-process
+    accidents. It must not be interpreted as a pure grain field.
+    """
     delta = np.mean(np.abs(np.asarray(density_grain, dtype=np.float32) - np.asarray(density_cmy, dtype=np.float32)), axis=-1)
     return _normalize_channel(delta)
+
+
+def grain_alpha(density_cmy: np.ndarray, density_grain: np.ndarray) -> np.ndarray:
+    """Compatibility alias for the historical combined-delta visualization."""
+    return postprocess_density_delta_alpha(density_cmy, density_grain)
 
 
 def _halation_luma(after_mtf: np.ndarray, after_halation: np.ndarray) -> np.ndarray:
@@ -168,6 +185,8 @@ def export_transparent_plate_set(
     output_dir: str | Path,
     *,
     polarity: str = "negative",
+    optical_density_rgb: np.ndarray | None = None,
+    clear_base_optical_density_rgb: np.ndarray | tuple[float, float, float] | None = None,
     _transactional: bool = True,
 ) -> dict[str, str]:
     """导出透明片基电子负片和 density alpha。"""
@@ -179,6 +198,8 @@ def export_transparent_plate_set(
                 film,
                 staging,
                 polarity=polarity,
+                optical_density_rgb=optical_density_rgb,
+                clear_base_optical_density_rgb=clear_base_optical_density_rgb,
                 _transactional=False,
             )
         return _published_paths(staged_paths, staging, output_dir)
@@ -187,11 +208,31 @@ def export_transparent_plate_set(
     # Reuse one dye-density transform for RGBA, alpha, and physical
     # transmission. These were previously three identical full-frame matrix
     # transforms; sharing the result does not change the optical formulas.
-    dye_density = np.clip(_dye_density_rgb(density_cmy, film), 0.0, None)
+    if optical_density_rgb is None:
+        image_density = np.clip(_dye_density_rgb(density_cmy, film), 0.0, None)
+        physical_density = image_density + np.asarray(
+            film.film_base_density_rgb,
+            dtype=np.float32,
+        ).reshape(1, 1, 3)
+    else:
+        physical_density = np.clip(
+            np.asarray(optical_density_rgb, dtype=np.float32),
+            0.0,
+            None,
+        )
+        if physical_density.shape != np.asarray(density_cmy).shape:
+            raise ValueError("optical_density_rgb must match density_cmy geometry")
+        if clear_base_optical_density_rgb is None:
+            clear = np.asarray(film.film_base_density_rgb, dtype=np.float32)
+        else:
+            clear = np.asarray(clear_base_optical_density_rgb, dtype=np.float32)
+        if clear.size != 3 or not np.all(np.isfinite(clear)) or np.any(clear < 0.0):
+            raise ValueError("clear_base_optical_density_rgb must contain three finite nonnegative values")
+        image_density = np.clip(physical_density - clear.reshape(1, 1, 3), 0.0, None)
     density_luma = (
-        dye_density[..., 0] * 0.2126
-        + dye_density[..., 1] * 0.7152
-        + dye_density[..., 2] * 0.0722
+        image_density[..., 0] * 0.2126
+        + image_density[..., 1] * 0.7152
+        + image_density[..., 2] * 0.0722
     )
     alpha = _normalize_channel(density_luma, low=0.0)
     del density_luma
@@ -199,7 +240,7 @@ def export_transparent_plate_set(
     # Encode both transparent renditions before allocating the additional
     # physical-transmission RGB array.  This shortens the lifetime overlap of
     # full-frame buffers without changing any optical formula or pixel value.
-    transmittance = np.power(10.0, -dye_density).astype(np.float32)
+    transmittance = np.power(10.0, -image_density).astype(np.float32)
     rgba = np.dstack((np.clip(transmittance, 0.0, 1.0), alpha)).astype(np.float32)
     paths: dict[str, str] = {}
     paths[f"{prefix}_transparent_png"] = str(
@@ -210,15 +251,14 @@ def export_transparent_plate_set(
     )
     del rgba, transmittance
 
-    base_density = np.asarray(film.film_base_density_rgb, dtype=np.float32).reshape(1, 1, 3)
-    physical_transmission = np.power(10.0, -(dye_density + base_density)).astype(np.float32)
+    physical_transmission = np.power(10.0, -physical_density).astype(np.float32)
     paths[f"{prefix}_transmission_16bit_tiff"] = str(
         save_linear_rgb_tiff(
             physical_transmission,
             output_dir / f"{prefix}_transmission_16bit.tiff",
         )
     )
-    del physical_transmission, dye_density
+    del physical_transmission, physical_density, image_density
     paths["density_alpha_png"] = str(_save_gray_png(alpha, output_dir / "density_alpha.png"))
     return paths
 
@@ -262,9 +302,15 @@ def export_plate_set(
     )
     del total_density, density_norm
 
-    grain = grain_alpha(density_cmy, density_grain)
-    paths["grain_layer"] = str(_save_gray_png(grain, output_dir / "grain_layer.png"))
-    del grain
+    density_delta = postprocess_density_delta_alpha(density_cmy, density_grain)
+    legacy_delta_path = str(
+        _save_gray_png(density_delta, output_dir / "grain_layer.png")
+    )
+    # Preserve the old key and filename while exposing the truthful semantic
+    # alias in new manifests and sidecars.
+    paths["grain_layer"] = legacy_delta_path
+    paths["postprocess_density_delta_layer"] = legacy_delta_path
+    del density_delta
 
     # Preview and fixed-scale plates are two interpretations of the same
     # halation luma map; compute the full-frame RGB difference only once.
@@ -319,14 +365,24 @@ def export_layer_pack(
     if source_negative_path is not None and Path(source_negative_path).exists():
         atomic_copy2(source_negative_path, npz_path)
     else:
-        atomic_savez_compressed(
-            npz_path,
-            density_cmy=np.asarray(negative.density_cmy, dtype=np.float32),
-            density_grain=np.asarray(negative.density_grain, dtype=np.float32),
-            developed_medium_metadata=np.asarray(
+        medium_arrays = {
+            "density_cmy": np.asarray(negative.density_cmy, dtype=np.float32),
+            "density_grain": np.asarray(negative.density_grain, dtype=np.float32),
+            "developed_medium_metadata": np.asarray(
                 json.dumps(developed_medium_metadata(negative), ensure_ascii=False, allow_nan=False)
             ),
-        )
+        }
+        if getattr(negative, "optical_density_rgb", None) is not None:
+            medium_arrays["optical_density_rgb"] = np.asarray(
+                negative.optical_density_rgb,
+                dtype=np.float32,
+            )
+        if getattr(negative, "clear_base_optical_density_rgb", None) is not None:
+            medium_arrays["clear_base_optical_density_rgb"] = np.asarray(
+                negative.clear_base_optical_density_rgb,
+                dtype=np.float32,
+            )
+        atomic_savez_compressed(npz_path, **medium_arrays)
     paths[f"electronic_{prefix}_npz"] = str(npz_path)
 
     if source_negative_path is not None and Path(source_negative_path).exists():
@@ -345,6 +401,12 @@ def export_layer_pack(
         film,
         output_dir,
         polarity=resolved_polarity,
+        optical_density_rgb=getattr(negative, "optical_density_rgb", None),
+        clear_base_optical_density_rgb=getattr(
+            negative,
+            "clear_base_optical_density_rgb",
+            None,
+        ),
         _transactional=False,
     ))
     paths.update(
@@ -385,9 +447,63 @@ def scanner_raw_with_clear_border(
     scanner: ScannerConfig,
     border_percent: float = 0.04,
     border_min_px: int = 32,
+    *,
+    optical_density_rgb: np.ndarray | None = None,
+    clear_base_optical_density_rgb: np.ndarray | tuple[float, float, float] | None = None,
 ) -> np.ndarray:
     """生成带未曝光片基边框的 scanner raw 负片图像。"""
-    scanner_raw = render_negative_image(density_cmy, film, scanner)
+    if optical_density_rgb is None:
+        scanner_raw = render_negative_image(density_cmy, film, scanner)
+    else:
+        scanner_raw = capture_optical_density(
+            np.asarray(optical_density_rgb, dtype=np.float32),
+            scanner,
+            illuminant_rgb=transmission_illuminant_rgb(scanner),
+        )
+    if clear_base_optical_density_rgb is None:
+        clear_density = np.asarray(film.density_min, dtype=np.float32).reshape(1, 1, 3)
+        clear_raw = render_negative_image(clear_density, film, scanner)[0, 0]
+    else:
+        clear_density = np.asarray(clear_base_optical_density_rgb, dtype=np.float32).reshape(1, 1, 3)
+        clear_raw = capture_optical_density(
+            clear_density,
+            scanner,
+            illuminant_rgb=transmission_illuminant_rgb(scanner),
+        )[0, 0]
+    return scanner_raw_with_reference_border(
+        scanner_raw,
+        clear_raw,
+        border_percent=border_percent,
+        border_min_px=border_min_px,
+    )
+
+
+def scanner_raw_with_reference_border(
+    scanner_raw: np.ndarray,
+    clear_base_raw_rgb: np.ndarray | tuple[float, float, float],
+    *,
+    border_percent: float = 0.04,
+    border_min_px: int = 32,
+) -> np.ndarray:
+    """Place captured transmission inside a synthetic clear-base reference.
+
+    The border is an observation aid. It is derived after the immutable final
+    medium has been composed and therefore cannot alter process state or the
+    authoritative RGB optical-density master.
+    """
+    scanner_raw = np.asarray(scanner_raw, dtype=np.float32)
+    if (
+        scanner_raw.ndim != 3
+        or scanner_raw.shape[-1] != 3
+        or scanner_raw.shape[0] <= 0
+        or scanner_raw.shape[1] <= 0
+    ):
+        raise ValueError(
+            f"Scanner raw must have non-empty HxWx3 shape, got {scanner_raw.shape}."
+        )
+    clear_raw = np.asarray(clear_base_raw_rgb, dtype=np.float32)
+    if clear_raw.size != 3 or not np.all(np.isfinite(clear_raw)):
+        raise ValueError("clear_base_raw_rgb must contain three finite values.")
     height, width = scanner_raw.shape[:2]
     border = scanner_raw_export_border_width(
         scanner_raw.shape,
@@ -396,9 +512,6 @@ def scanner_raw_with_clear_border(
     )
     if border <= 0:
         return scanner_raw
-
-    clear_density = np.asarray(film.density_min, dtype=np.float32).reshape(1, 1, 3)
-    clear_raw = render_negative_image(clear_density, film, scanner)[0, 0]
     canvas = np.empty((height + border * 2, width + border * 2, 3), dtype=np.float32)
     canvas[...] = clear_raw.reshape(1, 1, 3)
     canvas[border : border + height, border : border + width] = scanner_raw
@@ -452,11 +565,11 @@ def load_linear_rgb_tiff(path: str | Path) -> np.ndarray:
         result = (image.astype(np.float32) / 255.0).clip(0.0, 1.0)
     else:
         result = np.asarray(image, dtype=np.float32)
-        if not np.isfinite(result).all():
+        minimum = float(np.min(result))
+        maximum = float(np.max(result))
+        if not np.isfinite(minimum) or not np.isfinite(maximum):
             raise ValueError(f"Scanner raw TIFF contains NaN or infinite values: {path}")
         result = result.clip(0.0, 1.0)
-    if not np.isfinite(result).all():
-        raise ValueError(f"Scanner raw TIFF contains NaN or infinite values: {path}")
     return result
 
 
@@ -490,7 +603,9 @@ def split_scanner_raw_border(
     scanner_raw = np.asarray(scanner_raw, dtype=np.float32)
     if scanner_raw.ndim != 3 or scanner_raw.shape[-1] != 3 or scanner_raw.shape[0] <= 0 or scanner_raw.shape[1] <= 0:
         raise ValueError(f"Scanner raw must have non-empty HxWx3 shape, got {scanner_raw.shape}.")
-    if not np.isfinite(scanner_raw).all():
+    minimum = float(np.min(scanner_raw))
+    maximum = float(np.max(scanner_raw))
+    if not np.isfinite(minimum) or not np.isfinite(maximum):
         raise ValueError("Scanner raw contains NaN or infinite values.")
     if border_width_px is None:
         border = scanner_raw_border_width(scanner_raw.shape, border_percent, border_min_px)

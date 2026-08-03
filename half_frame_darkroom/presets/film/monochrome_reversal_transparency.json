@@ -10,6 +10,7 @@
     "halation_softness": 0.14,
     "halation_core_radius": 0.0022,
     "halation_outer_radius": 0.008,
+    "halation_exponential_radius": 0.008,
     "halation_color": [1.0, 1.0, 1.0],
     "hd_gamma": [0.82, 0.82, 0.82],
     "density_min": [0.045, 0.045, 0.045],

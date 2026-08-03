@@ -55,3 +55,16 @@ def negative_visual_preview(
     if white > 1e-6:
         preview = preview * (0.92 / white)
     return np.clip(preview, 0.0, 1.0).astype(np.float32)
+
+
+def optical_density_visual_preview(optical_density_rgb: np.ndarray) -> np.ndarray:
+    """Display an authoritative final RGB optical-density field as transmission."""
+    density = np.asarray(optical_density_rgb, dtype=np.float32)
+    if density.ndim != 3 or density.shape[-1] != 3:
+        raise ValueError(f"optical_density_rgb must have HxWx3 shape, got {density.shape}")
+    preview = np.power(10.0, -np.clip(density, 0.0, None)).astype(np.float32)
+    luma = preview[..., 0] * 0.2126 + preview[..., 1] * 0.7152 + preview[..., 2] * 0.0722
+    white = float(np.percentile(luma, 99.5))
+    if white > 1e-6:
+        preview *= 0.92 / white
+    return np.clip(preview, 0.0, 1.0).astype(np.float32)

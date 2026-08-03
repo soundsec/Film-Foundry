@@ -8,9 +8,9 @@
 
 独立的材料、冲洗和透射扫描编辑器会继承启动器或主界面的当前语言。三个编辑器的内置 preset 名称和界面标签会同步切换；数值参数同时支持滑条调整与直接输入。
 
-develop preset 的官方显示名明确包含彩色/黑白与负片/反转正片语义。scanner preset 按解释器分类：`negative_scan` 只进入负片扫描目录，`positive_transparency_scan` 只进入正片扫描目录。两类 preset 由同一个透射扫描/解释编辑器的模式切换分别保存；列表仍按当前解释过滤，不会把另一类 preset 混入造成误解。
+develop preset 的官方显示名明确包含彩色/黑白与负片/反转正片语义。scanner preset 现在共用一个透射扫描目录和编辑器；旧 `negative_scan` / `positive_transparency_scan` 身份只用于兼容旧 preset 并初始化建议组合，不再代表两台不同扫描器，也不会禁止用户加载另一类 preset。
 
-主 GUI 只列出 `standard_color_negative`、`standard_bw_negative`、`standard_color_reversal`、`standard_bw_reversal` 四个内置冲洗流程。其他黑白流程不是删除：它们仍由银盐工艺程序编辑器和 CLI 读取，也可以另存为用户 preset 后重新进入主列表。
+主 GUI 列出 `standard_color_negative`、`standard_bw_negative`、`standard_color_reversal`、`standard_bw_reversal` 四个标准内置冲洗流程，并额外列出明确标记为实验性的 `experimental_color_negative_clear_reversal`。其他专用黑白流程不是删除：它们仍由银盐工艺程序编辑器和 CLI 读取，也可以另存为用户 preset 后重新进入主列表。
 
 当前公开正片材料：`color_reversal_transparency`（标准）、`color_reversal_soft`（柔和宽容）、`color_reversal_vivid`（高饱和高反差）、`monochrome_reversal_transparency`（黑白细颗粒）。当前公开正片灯台：`positive_transparency_scan`（中性，`+0.35 EV`）、`positive_transparency_bright`（明亮，`+0.80 EV`）、`positive_transparency_warm`（暖调，`+0.50 EV / 4800 K`）。
 
@@ -18,7 +18,7 @@ develop preset 的官方显示名明确包含彩色/黑白与负片/反转正片
 
 输出配置中，`export_transparent_plate` 表示 standalone 透明/透射介质，默认开启；`export_plate_set` 表示 standalone 密度与效果辅助层；`export_layer_pack` 表示包含前两者以及 NPZ、预览/raw 和 manifest 的完整归档。Layer Pack 开启时，前两个布尔值不再决定包内是否包含对应内容，也不会另外生成重复目录。
 
-公开负片 film preset 的 `granularity_sigma` 当前较早期值约降低一成。这只降低材料本底；`build_effective_development()` 仍根据 developer profile、push、overdevelopment、temperature、developer/fixer exhaustion、retained silver、chemical stain、uneven development 和 frame size 生成实际 `grain_factor` 与 `grain_radius_factor`。scanner preset 的 `scan_saturation` 已小幅提高，但该字段仍只属于扫描观察。
+公开负片 film preset 的 `granularity_sigma` 当前较早期值约降低一成。这只降低材料本底；`build_effective_development()` 仍根据 developer profile、push、overdevelopment、temperature、developer/fixer exhaustion、retained silver、chemical stain、uneven development 和 frame size 生成实际 `grain_factor` 与 `grain_radius_factor`。反转片预设使用独立、较细且更紧密的密度域颗粒参数；颗粒强度仍随形成密度变化。正片灯台预设的 `scan_saturation` 已收回接近中性，色彩主要由材料与冲洗形成。
 
 这份说明用于解释预设的用途。不是每个 preset 都应该被理解成“正常照片输出”，有些是调试基准，有些是扫描风格，有些更接近材料母版。
 
@@ -64,17 +64,19 @@ half_frame_darkroom/presets/scanner/
 
 `first_silver_removal` 只作用于当前黑白反转程序。彩色反转的第一次银像保留至末段，与第二次显影形成的银一起由 `silver_bleach_completion` 和定影步骤去除；不要用该字段伪造彩色反转的实际去银顺序。
 
+`experimental_color_negative_clear_reversal` 是主 GUI、编辑器与 CLI 均可见的实验流程。它在彩色负片的 `color_reversal` 后段使用 `mask_bleach_completion` 插入独立的色罩/染料漂白，使橙色色罩趋近透明支撑体，同时允许产生材料定义的成像染料损伤。该字段不是“更强的银漂白”，不会漂除透明塑料支撑体，也不代表 C-41/E-6 标准流程；默认标准流程中它始终为 `0`。
+
 黑白 `program_key` 描述银显影拓扑，不重定义 film preset 的材料身份。将彩色 film preset 与 `bw_negative` 组合会得到保留彩色材料三层感色和橙色片基的银像负片；使用真正的黑白 film preset 才会得到单层、通常为透明片基的黑白材料。两者不应靠修改 scanner preset 相互伪装。
 
 材料 preset 的原生 `medium_process` / `image_polarity` 与 develop preset 的 `program_key` 可以交叉组合。彩负 + `color_reversal` 和反转片 + `color_negative` 都是有效逆冲；最终 NPZ 的 `cross_process` 会同时记录材料与程序极性。`first_development_completion` / `second_development_completion` 只区分反转程序内两次显影，并继续乘以由时间、温度、浓度、搅动和疲劳推导的全局完成度。
 
-film preset 的 `cross_process_silver_development`、`cross_process_dye_coupling`、`cross_process_activation`、`cross_process_silver_bleach`、`cross_process_halide_fixing`、`cross_process_silver_removal`、`cross_process_dye_stability`、`cross_process_auxiliary_removal` 和 `cross_process_layer_balance` 只在材料类别与程序不匹配时生效。默认均为中性值，保证旧 preset 兼容；不应把它们放进 scanner preset。
+film preset 的 `cross_process_silver_development`、`cross_process_dye_coupling`、`cross_process_activation`、`cross_process_silver_bleach`、`cross_process_halide_fixing`、`cross_process_silver_removal`、`cross_process_dye_stability`、`cross_process_auxiliary_removal` 和 `cross_process_layer_balance` 只在材料类别与程序不匹配时生效。银显影、激活、漂白、定影、去银及附加层清除使用 0–1 的兼容效率；`cross_process_dye_coupling` 与 `cross_process_layer_balance` 是可大于 1 的比率，但仍受材料容量和反应上限约束。`cross_process_layer_balance` 会与 develop preset 的程序自身 `process_layer_balance` 相乘，请勿在两处重复填写同一偏色意图。默认均为中性值，保证旧 preset 兼容；这些字段不应进入 scanner preset。
 
 显式 `program_key` 是形成流水线路由的权威来源。负片程序形成负像介质并声明 `negative_scan`；反转程序形成正像透明介质并声明 `positive_transparency_scan`。`auto` 根据材料 preset 的原生 `medium_process`、模式和旧式 develop 标记解析为同一套正式算子程序，不再回退 legacy。交叉冲洗应通过“材料 preset + 非原生 program preset”的组合表达，而不是修改 scanner preset 来伪造极性。
 
 scanner preset 只拥有扫描和观看字段。即使完整 JSON 中出现 `film` 字段，新格式电子底片/正片在 scan-only 时也会优先使用自身 `optical_observation` 快照；scanner preset 不能借此改变片基、染料吸收或密度上下限。想改变这些材料属性必须重新冲洗并生成新的介质母版。
 
-主 GUI 的 `scanner.interpretation_mode` 支持 `auto`、`negative`、`positive`。scan-only 隐藏 `auto`，要求用户明确按负片或正片处理，并允许有意忽略 NPZ 记录极性；full 默认 `auto`，也允许手动覆盖。该字段只选观察算法，不能覆盖 `optical_observation`。底层严格 API 仍保留兼容性校验。
+主 GUI 不再要求选择“负片扫描器”或“正片扫描器”。物理阶段始终是“透明介质 → 透射光源 → 传感器 raw”，用户分别控制 `remove_base_mask`（去片基/色罩）和 `invert_transmission`（反相）。介质契约只显示建议：负片通常开启两项，正片通常关闭两项；保留片基且不反相可直接得到灯台上的负片翻拍。`interpretation_mode=auto|negative|positive` 继续用于读取旧 preset/session，新的 GUI 会保存为 `manual`。
 
 当前五种显式程序与 `auto` 均驱动正式材料池像素计算：负片与反转共享潜影和材料池，程序顺序决定最终正负极性。内置旧创作 preset 即使没有 `program_key` 也会通过默认 `auto` 进入统一路径；只有明确选择 `legacy_density` 才运行旧 H-D/正片代理对照。该模型仍是降阶状态转换，不应等同于严格化学仿真。
 
@@ -88,7 +90,7 @@ scanner preset 只拥有扫描和观看字段。即使完整 JSON 中出现 `fil
 
 - H-D 曲线有温和 toe / shoulder。
 - RGB 三层只轻微分离。
-- scan/render 曲线保持中性，不用强通道分离制造风格。
+- scan/render 曲线保持中性，并以 luma 全局黑白点建立正常显示范围，不用强通道分离制造风格。
 - 适合作为 GUI 和 `film_foundry/tools/run_darkroom.py` 默认 preset。
 
 ## 高宽容干净负片类
@@ -159,20 +161,18 @@ scanner preset 只拥有扫描和观看字段。即使完整 JSON 中出现 `fil
 
 ## 风格扫描类
 
-所有负片 scanner preset 都遵循同一阶段顺序：透射背光与
-`scanner_response_matrix` 先形成 `scanner_raw`，随后用已知片基/边框去色罩，
-再进入 `negative_channel_matrix` / `negative_channel_gamma` 和正像映射。前一个矩阵描述采样器，后一个矩阵描述去罩后的通道重建，不能互相代替。内置旧 preset 未显式提供新字段时按恒等重建加载，以保持兼容；只有经过材料/扫描组合校准的 preset 才应写入非恒等蓝绿校正。
+所有 scanner preset 先由共享透射光源与 `scanner_response_matrix` 形成 `scanner_raw`。只有用户启用去片基/色罩时才使用已知片基、明确边框样本或兜底估计；只有用户启用反相时才进入密度反相、`negative_channel_matrix` / `negative_channel_gamma` 和正像映射。前一个矩阵描述采样器，后一个矩阵描述反相后的通道重建，不能互相代替。内置旧 preset 未显式提供新字段时会迁移到旧行为，以保持兼容。
 
 ### `scanner/color_restored_scan`
 
-用途：材料感知的彩色负片染料通道补偿。
+用途：扫描解释侧的彩色负片蓝绿通道补偿；只读取已经合成的 RGB 总光学密度，不反演材料组分。
 
 特点：
 
 - 影调、归一化和饱和度保持接近 `neutral_scan`，便于单独比较通道补偿作用。
 - 显式开启 `negative_channel_compensation_enabled`，强度为 0.35。
-- 补偿矩阵来自当前最终介质保存的 `dye_absorption_matrix`，不是 preset 写死的蓝绿增益。
-- 黑白介质自动关闭该步骤；缺少材料快照的任意外部 raw 只能使用当前配置的通用材料矩阵。
+- 补偿矩阵是固定有界的 scanner-side 蓝绿响应，由强度控制；它不读取 `dye_absorption_matrix`，避免把残银或银盐误当成染料分离。
+- 黑白介质自动关闭该步骤；外部 raw 与项目内部介质使用同一扫描侧规则。
 
 ### `scanner/rich_color_scan`
 
@@ -191,7 +191,8 @@ scanner preset 只拥有扫描和观看字段。即使完整 JSON 中出现 `fil
 特点：
 
 - 更像扫描器/软件的中性解释，而不是胶片材料 preset。
-- 只保留轻微黑白点归一化、很弱的高光偏色和接近中性的饱和度。
+- 使用中等强度的 luma 黑白点标定，避免负片反相后黑位和白位都停在灰区；三个通道按同一像素倍率缩放，不会逐通道自动白平衡，也不会抹掉扫描侧已有的色温或整体色偏。
+- 只保留很弱的高光偏色和接近中性的饱和度。
 - 适合 scan-only 阶段测试。
 
 ### `scanner/warm_consumer_scan`
@@ -304,14 +305,13 @@ Scanner presets should declare their interpreter role explicitly:
 }
 ```
 
-Most bundled scanner presets are `negative_scan`: negative base removal,
-inversion, and positive rendering. Experimental positive-transparency presets
-use `positive_transparency_scan`: virtual light-table illumination, no negative
-base removal, and no inversion. Reflective scan and plate-view presets should
-also use distinct interpreter keys instead of being hidden inside ordinary
-negative scanner presets.
+Legacy bundled scanner presets still declare `negative_scan` or
+`positive_transparency_scan`, but new sessions use explicit
+`remove_base_mask` and `invert_transmission` controls. Both observe the same
+transmission light and sensor capture. `transmission_scan` denotes a direct
+non-inverted observation when metadata needs an explicit role.
 
-负片 scanner preset 使用 `negative_scan`，也就是“透射采样 + 已知片基去罩 + 密度反相 + 通道重建 + 正像映射”。正片透明片 preset 使用 `positive_transparency_scan`：同样先做透射采样，但随后直接进入灯台/正片观看解释，不做负片去罩与反相。统一扫描编辑器按当前模式严格过滤两类 preset；兼容入口只是预选正片模式，不代表存在第二套扫描器实现。
+旧负片 preset 会迁移为“去片基 + 反相”，旧正片透明片 preset 会迁移为“保留片基 + 不反相”。统一扫描编辑器同时列出两类 preset，并允许用户任意组合去片基与反相；材料的正负极性只用于建议，不再作为执行许可。
 
 Experimental slide presets currently use separate material-side density controls
 and light-table viewing controls:

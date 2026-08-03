@@ -123,10 +123,8 @@ def scanner_preset_names(interpretation: str = "negative") -> list[str]:
     for name in sorted(names):
         path = scanner_preset_path(name)
         try:
-            config = DarkroomConfig.from_json(path)
-            supported_config = is_supported_positive_scanner(config) if interpretation == "positive" else is_supported_negative_scanner(config)
-            if supported_config:
-                supported.append(name)
+            DarkroomConfig.from_json(path)
+            supported.append(name)
         except Exception:
             continue
     return supported
@@ -173,6 +171,9 @@ class ScannerRenderEditor:
         self.scan_method = tk.StringVar(value="positive_transparency" if self.is_positive else "negative_inversion")
         self.print_mapping_mode = tk.StringVar(value="printlike")
         self.scan_normalize = tk.BooleanVar(value=True)
+        self.remove_base_mask = tk.BooleanVar(value=not self.is_positive)
+        self.invert_transmission = tk.BooleanVar(value=not self.is_positive)
+        self.include_clear_base_border = tk.BooleanVar(value=False)
         self.negative_channel_compensation = tk.BooleanVar(value=False)
         self.scan_normalize_mode = tk.StringVar(value="luma")
         self.status = tk.StringVar(value=ui(
@@ -187,16 +188,14 @@ class ScannerRenderEditor:
             "print_contrast": tk.DoubleVar(value=1.10),
             "print_exposure_ev": tk.DoubleVar(value=0.0),
             "scan_saturation": tk.DoubleVar(value=1.0),
-            "scan_normalize_strength": tk.DoubleVar(value=0.15),
+            "scan_normalize_strength": tk.DoubleVar(value=0.45),
             "scan_black_percentile": tk.DoubleVar(value=0.3),
             "scan_white_percentile": tk.DoubleVar(value=99.7),
             "highlight_bias_threshold": tk.DoubleVar(value=0.72),
             "highlight_bias_softness": tk.DoubleVar(value=0.18),
-            "negative_backlight_ev": tk.DoubleVar(value=0.0),
-            "negative_backlight_temperature_k": tk.DoubleVar(value=5500.0),
+            "transmission_light_ev": tk.DoubleVar(value=0.0),
+            "transmission_light_temperature_k": tk.DoubleVar(value=5500.0),
             "negative_channel_compensation_strength": tk.DoubleVar(value=0.35),
-            "light_table_ev": tk.DoubleVar(value=0.0),
-            "light_table_temperature_k": tk.DoubleVar(value=5400.0),
             "positive_scan_color_control_strength": tk.DoubleVar(value=0.25),
             "projection_white_softness": tk.DoubleVar(value=0.22),
             "projection_black_adaptation": tk.DoubleVar(value=0.10),
@@ -253,19 +252,35 @@ class ScannerRenderEditor:
 
         header = ttk.LabelFrame(shell, text="透射扫描 / 解释预设", padding=10)
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        ttk.Label(header, text="解释模式").grid(row=0, column=0, sticky="w", pady=3)
-        interpretation_combo = ttk.Combobox(
+        ttk.Label(header, text="解释控制").grid(row=0, column=0, sticky="w", pady=3)
+        interpretation_controls = ttk.Frame(
             header,
-            textvariable=self.interpretation_display,
-            values=(ui("负片解释", "Negative Interpretation"), ui("正片解释", "Positive Interpretation")),
-            state="readonly",
-            width=24,
         )
-        interpretation_combo.grid(row=0, column=1, sticky="w", padx=(8, 8), pady=3)
-        interpretation_combo.bind("<<ComboboxSelected>>", self._on_interpretation_selected)
+        interpretation_controls.grid(row=0, column=1, sticky="w", padx=(8, 8), pady=3)
+        ttk.Checkbutton(
+            interpretation_controls,
+            text=ui("去片基 / 色罩", "Remove base / mask"),
+            variable=self.remove_base_mask,
+            command=self._refresh_curve,
+        ).pack(side="left")
+        ttk.Checkbutton(
+            interpretation_controls,
+            text=ui("反相输出", "Invert output"),
+            variable=self.invert_transmission,
+            command=self._refresh_curve,
+        ).pack(side="left", padx=(12, 0))
+        ttk.Checkbutton(
+            interpretation_controls,
+            text=ui("片基边框", "Clear-base border"),
+            variable=self.include_clear_base_border,
+            command=self._refresh_curve,
+        ).pack(side="left", padx=(12, 0))
         ttk.Label(
             header,
-            text="共享透射采样；这里只切换去罩/反相或正片观看解释。",
+            text=ui(
+                "同一灯台与传感器完成透射采集；介质类型只提供建议，不锁定用户选择。",
+                "One light table and sensor perform capture; medium identity only provides a recommendation.",
+            ),
             wraplength=500,
         ).grid(row=0, column=2, columnspan=2, sticky="w", pady=3)
 
@@ -274,15 +289,23 @@ class ScannerRenderEditor:
         self.preset_combo.grid(row=1, column=1, sticky="ew", padx=(8, 8), pady=3)
         self.preset_combo.bind("<<ComboboxSelected>>", self._on_preset_selected)
         ttk.Button(header, text="加载", command=self._load_selected_preset).grid(row=1, column=2, padx=(0, 8))
-        ttk.Button(header, text=(ui("保存为用户正片解释", "Save User Positive Interpretation") if self.is_positive else ui("保存为用户负片解释", "Save User Negative Interpretation")), command=self._save_user_preset).grid(row=1, column=3)
-        ttk.Label(header, text="介质解释").grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Button(header, text=ui("保存为用户扫描预设", "Save User Scan Preset"), command=self._save_user_preset).grid(row=1, column=3)
+        ttk.Label(header, text=ui("说明", "Note")).grid(row=2, column=0, sticky="w", pady=3)
         medium_row = ttk.Frame(header)
         medium_row.grid(row=2, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=3)
-        identity = ui("正片透明片扫描 / 正片输入", "Positive transparency scan / positive input") if self.is_positive else ui("负片扫描 / 负片输入 / 正像输出", "Negative scan / negative input / positive output")
-        ttk.Label(medium_row, text=identity).pack(side="left", padx=(0, 10))
         ttk.Label(
             medium_row,
-            text=(ui("当前编辑器只保存正片透明片扫描预设。", "This editor saves positive-transparency scan presets only.") if self.is_positive else ui("当前编辑器只保存负片扫描预设。", "This editor saves negative-scan presets only.")),
+            text=ui(
+                "负片常用：去片基 + 反相；正片常用：保留片基 + 不反相。",
+                "Typical negative: remove base + invert; typical positive: preserve base + no inversion.",
+            ),
+        ).pack(side="left", padx=(0, 10))
+        ttk.Label(
+            medium_row,
+            text=ui(
+                "也可保留片基且不反相，输出灯台上的负片翻拍。",
+                "Preserve the base and disable inversion for a photographed negative on the light table.",
+            ),
             wraplength=520,
         ).pack(side="left")
         header.columnconfigure(1, weight=1)
@@ -307,47 +330,37 @@ class ScannerRenderEditor:
         row = self._section(controls, "共享透射采样", row)
         row = self._vector(controls, "scanner_light_color", "扫描光源 RGB", 0.50, 1.50, row)
         row = self._matrix(controls, "scanner_response_matrix", "扫描器 RGB 响应矩阵", -0.25, 1.50, row)
-        if self.is_positive:
-            row = self._slider(controls, "透射光源亮度 EV", "light_table_ev", -3.0, 3.0, row)
-            row = self._slider(controls, "透射光源色温 K", "light_table_temperature_k", 2800.0, 9000.0, row)
-        else:
-            row = self._slider(controls, "透射光源亮度 EV", "negative_backlight_ev", -3.0, 3.0, row)
-            row = self._slider(controls, "透射光源色温 K", "negative_backlight_temperature_k", 2800.0, 9000.0, row)
+        row = self._slider(controls, "透射光源亮度 EV", "transmission_light_ev", -3.0, 3.0, row)
+        row = self._slider(controls, "透射光源色温 K", "transmission_light_temperature_k", 2800.0, 9000.0, row)
 
-        row = self._section(controls, ("正片观看解释" if self.is_positive else "负片去罩 / 反相 / 通道重建"), row)
-        scan_methods = ("positive_transparency",) if self.is_positive else ("negative_inversion",)
-        row = self._combo(controls, "解释方法", self.scan_method, scan_methods, row)
-        if self.is_positive:
-            row = self._slider(controls, "正片滤色控制强度", "positive_scan_color_control_strength", 0.0, 1.0, row)
-        else:
-            compensation_check = ttk.Checkbutton(
-                controls,
-                text="启用负片蓝绿 / 染料通道补偿",
-                variable=self.negative_channel_compensation,
-                command=self._refresh_curve,
-            )
-            compensation_check.grid(row=row, column=0, columnspan=4, sticky="w", pady=4)
-            row += 1
-            row = self._slider(
-                controls,
-                "负片通道补偿强度",
-                "negative_channel_compensation_strength",
-                0.0,
-                1.0,
-                row,
-            )
-            row = self._slider(controls, "外部 raw 片基估计 percentile（兜底）", "scan_base_percentile", 90.0, 100.0, row)
-            row = self._matrix(controls, "negative_channel_matrix", "负片通道重建矩阵", -0.35, 1.50, row)
-            row = self._vector(controls, "negative_channel_gamma", "负片通道曲线 RGB", 0.65, 1.45, row)
+        row = self._section(controls, "透射解释 / 通道重建", row)
+        compensation_check = ttk.Checkbutton(
+            controls,
+            text="启用反相后的蓝绿 / 扫描通道补偿",
+            variable=self.negative_channel_compensation,
+            command=self._refresh_curve,
+        )
+        compensation_check.grid(row=row, column=0, columnspan=4, sticky="w", pady=4)
+        row += 1
+        row = self._slider(
+            controls,
+            "反相通道补偿强度",
+            "negative_channel_compensation_strength",
+            0.0,
+            1.0,
+            row,
+        )
+        row = self._slider(controls, "外部 raw 片基估计 percentile（兜底）", "scan_base_percentile", 90.0, 100.0, row)
+        row = self._matrix(controls, "negative_channel_matrix", "反相通道重建矩阵", -0.35, 1.50, row)
+        row = self._vector(controls, "negative_channel_gamma", "反相通道曲线 RGB", 0.65, 1.45, row)
+        row = self._slider(controls, "直接透射色彩控制强度", "positive_scan_color_control_strength", 0.0, 1.0, row)
 
         row = self._section(controls, "输出影调 / 滤色", row)
-        if not self.is_positive:
-            row = self._vector(controls, "print_reference_density", "参考密度 RGB", 0.60, 2.40, row)
+        row = self._vector(controls, "print_reference_density", "反相参考密度 RGB", 0.60, 2.40, row)
         row = self._slider(controls, "print gamma", "print_gamma", 0.45, 1.60, row)
         row = self._slider(controls, "打印反差倍率", "print_contrast", 0.60, 1.80, row)
         row = self._slider(controls, "打印曝光 EV", "print_exposure_ev", -2.0, 2.0, row)
-        if not self.is_positive:
-            row = self._combo(controls, "映射曲线", self.print_mapping_mode, ("printlike", "sigmoid"), row)
+        row = self._combo(controls, "映射曲线", self.print_mapping_mode, ("printlike", "sigmoid"), row)
         row = self._vector(controls, "print_color_shift", "log 域滤色 shift RGB", -0.18, 0.18, row)
         row = self._vector(controls, "print_color_bias", "RGB 增益 bias", 0.75, 1.25, row)
 
@@ -355,9 +368,8 @@ class ScannerRenderEditor:
         row = self._vector(controls, "highlight_color_bias", "高光偏色 RGB", 0.75, 1.25, row)
         row = self._slider(controls, "高光偏色阈值", "highlight_bias_threshold", 0.30, 0.95, row)
         row = self._slider(controls, "高光偏色软化", "highlight_bias_softness", 0.02, 0.45, row)
-        if self.is_positive:
-            row = self._slider(controls, "白点软滚降", "projection_white_softness", 0.0, 0.75, row)
-            row = self._slider(controls, "黑位观看适应", "projection_black_adaptation", 0.0, 0.75, row)
+        row = self._slider(controls, "直接透射白点软滚降", "projection_white_softness", 0.0, 0.75, row)
+        row = self._slider(controls, "直接透射黑位观看适应", "projection_black_adaptation", 0.0, 0.75, row)
         row = self._slider(controls, "扫描饱和度", "scan_saturation", 0.40, 1.80, row)
         ttk.Checkbutton(controls, text="扫描黑白点归一化", variable=self.scan_normalize, command=self._refresh_curve).grid(
             row=row, column=0, sticky="w", pady=4
@@ -370,7 +382,7 @@ class ScannerRenderEditor:
         row = self._slider(controls, "黑点 percentile", "scan_black_percentile", 0.0, 5.0, row)
         row = self._slider(controls, "白点 percentile", "scan_white_percentile", 95.0, 100.0, row)
 
-        preview = ttk.LabelFrame(shell, text=("正片透射扫描预览" if self.is_positive else "scan/render 曲线预览"), padding=10)
+        preview = ttk.LabelFrame(shell, text="scan/render 曲线预览", padding=10)
         preview.grid(row=1, column=1, sticky="nsew")
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(0, weight=1)
@@ -483,11 +495,6 @@ class ScannerRenderEditor:
             self.status.set(ui(f"找不到扫描预设：{path}", f"Scan preset not found: {path}"))
             return
         config = DarkroomConfig.from_json(path)
-        supported = is_supported_positive_scanner(config) if self.is_positive else is_supported_negative_scanner(config)
-        if not supported:
-            kind = ui("正片透明片", "positive-transparency") if self.is_positive else ui("负片", "negative")
-            self.status.set(ui(f"当前编辑器只支持{kind}扫描预设：{path.name}", f"The current editor supports {kind} scan presets only: {path.name}"))
-            return
         self._set_controls_from_config(config)
         source = "用户" if path.parent == USER_SCANNER_PRESET_DIR else "内置"
         self.status.set(ui(
@@ -504,6 +511,11 @@ class ScannerRenderEditor:
         self.scan_method.set(str(scanner.scan_method))
         self.print_mapping_mode.set(str(scanner.print_mapping_mode))
         self.scan_normalize.set(bool(scanner.scan_normalize))
+        self.remove_base_mask.set(bool(scanner.remove_base_mask))
+        self.invert_transmission.set(bool(scanner.invert_transmission))
+        self.include_clear_base_border.set(
+            bool(scanner.include_clear_base_border)
+        )
         self.negative_channel_compensation.set(
             bool(scanner.negative_channel_compensation_enabled)
         )
@@ -511,6 +523,24 @@ class ScannerRenderEditor:
         for key in self.vars:
             if key in SCAN_LOOK_FIELDS:
                 self.vars[key].set(float(getattr(config.look, key)))
+            elif key == "transmission_light_ev":
+                value = scanner.transmission_light_ev
+                if value is None:
+                    value = (
+                        scanner.negative_backlight_ev
+                        if scanner.invert_transmission
+                        else scanner.light_table_ev
+                    )
+                self.vars[key].set(float(value))
+            elif key == "transmission_light_temperature_k":
+                value = scanner.transmission_light_temperature_k
+                if value is None:
+                    value = (
+                        scanner.negative_backlight_temperature_k
+                        if scanner.invert_transmission
+                        else scanner.light_table_temperature_k
+                    )
+                self.vars[key].set(float(value))
             else:
                 self.vars[key].set(float(getattr(scanner, key)))
         for key, vars_ in self.vector_vars.items():
@@ -527,12 +557,29 @@ class ScannerRenderEditor:
         base_path = scanner_preset_path(self.preset_name.get())
         config = DarkroomConfig.from_json(base_path) if base_path.exists() else DarkroomConfig()
         scanner = config.scanner
-        scanner.interpretation_mode = self.interpretation
-        scanner.interpreter_key = self.interpreter_key
-        scanner.target_medium_process = self.target_process
-        scanner.input_polarity = self.input_polarity_value
-        scanner.output_polarity = SUPPORTED_OUTPUT_POLARITY
-        scanner.scan_method = str(self.scan_method.get())
+        scanner.interpretation_mode = "manual"
+        scanner.remove_base_mask = bool(self.remove_base_mask.get())
+        scanner.invert_transmission = bool(self.invert_transmission.get())
+        scanner.include_clear_base_border = bool(
+            self.include_clear_base_border.get()
+        )
+        scanner.interpreter_key = (
+            SUPPORTED_INTERPRETER_KEY
+            if scanner.invert_transmission
+            else "transmission_scan"
+        )
+        scanner.target_medium_process = "transmissive"
+        scanner.input_polarity = "user_selected"
+        scanner.output_polarity = (
+            SUPPORTED_OUTPUT_POLARITY
+            if scanner.invert_transmission
+            else "same_as_input"
+        )
+        scanner.scan_method = (
+            "negative_inversion"
+            if scanner.invert_transmission
+            else "direct_transmission"
+        )
         scanner.print_mapping_mode = str(self.print_mapping_mode.get())
         scanner.scan_normalize = bool(self.scan_normalize.get())
         scanner.negative_channel_compensation_enabled = bool(
@@ -544,6 +591,14 @@ class ScannerRenderEditor:
                 setattr(config.look, key, float(var.get()))
             else:
                 setattr(scanner, key, float(var.get()))
+        scanner.negative_backlight_ev = float(scanner.transmission_light_ev)
+        scanner.negative_backlight_temperature_k = float(
+            scanner.transmission_light_temperature_k
+        )
+        scanner.light_table_ev = float(scanner.transmission_light_ev)
+        scanner.light_table_temperature_k = float(
+            scanner.transmission_light_temperature_k
+        )
         for key, vars_ in self.vector_vars.items():
             setattr(scanner, key, tuple(float(var.get()) for var in vars_))
         for key, vars_ in self.matrix_vars.items():
@@ -583,7 +638,7 @@ class ScannerRenderEditor:
             draw.line((x, y0, x, y1), fill=(226, 222, 212))
             draw.line((x0, y, x1, y), fill=(226, 222, 212))
 
-        if self.is_positive:
+        if not bool(config.scanner.invert_transmission):
             raw_d = np.linspace(0.0, 1.0, 420, dtype=np.float32)
             positive_raw = np.repeat(raw_d[:, None, None], 3, axis=2)
             mapped = render_positive_transparency_scan(
@@ -621,9 +676,21 @@ class ScannerRenderEditor:
             points = [(int(round(x)), int(round(y))) for x, y in zip(xs, ys)]
             draw.line(points, fill=color, width=3)
 
-        title = "positive transparency" if self.is_positive else f"mapping={config.scanner.print_mapping_mode}"
+        title = (
+            "direct transmission"
+            if not config.scanner.invert_transmission
+            else f"inverted, mapping={config.scanner.print_mapping_mode}"
+        )
         draw.text((x0, 12), f"{title}, norm={config.scanner.scan_normalize_mode}", fill=(42, 38, 34))
-        draw.text((x0, height - 29), ("transmission" if self.is_positive else "raw positive density"), fill=(70, 66, 58))
+        draw.text(
+            (x0, height - 29),
+            (
+                "transmission"
+                if not config.scanner.invert_transmission
+                else "raw positive density"
+            ),
+            fill=(70, 66, 58),
+        )
         draw.text((12, y0 - 4), "positive", fill=(70, 66, 58))
         return image
 

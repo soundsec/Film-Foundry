@@ -31,6 +31,39 @@ NEGATIVE_DIR = OUTPUT_DIR / "negatives"
 USER_PRESET_DIR = PROJECT_ROOT / "user_presets"
 
 
+def _windows_extended_path(path: Path) -> str:
+    """Return a Win32 extended path without changing the represented file."""
+    value = str(path.resolve())
+    if value.startswith("\\\\?\\"):
+        return value
+    if value.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + value[2:]
+    return "\\\\?\\" + value
+
+
+def configure_frozen_tcl_libraries() -> None:
+    """Keep bundled Tcl/Tk readable from Windows user special folders.
+
+    Tcl 8.6 can incorrectly normalize paths below folders such as Desktop or
+    AppData on some Windows installations.  The Win32 extended-path spelling
+    bypasses that lossy normalization.  Limit the workaround to frozen builds;
+    source runs continue to use the selected Python environment unchanged.
+    """
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return
+    frozen_root_value = getattr(sys, "_MEIPASS", "")
+    if not frozen_root_value:
+        return
+    frozen_root = Path(frozen_root_value)
+    libraries = (
+        ("TCL_LIBRARY", frozen_root / "_tcl_data", "init.tcl"),
+        ("TK_LIBRARY", frozen_root / "_tk_data", "tk.tcl"),
+    )
+    for variable, library, marker in libraries:
+        if (library / marker).is_file():
+            os.environ[variable] = _windows_extended_path(library)
+
+
 TOOLS = (
     ("main", "launcher.tool.main.name", "launcher.tool.main.desc", "film_foundry.tools.run_darkroom_gui"),
     ("film", "launcher.tool.film.name", "launcher.tool.film.desc", "film_foundry.tools.run_film_material_editor"),
@@ -224,7 +257,21 @@ def release_self_check() -> None:
     try:
         tcl = tkinter.Tcl()
     except Exception as exc:
-        raise RuntimeError(f"{exc}\nLoaded Tcl DLL: {loaded_tcl_path}") from exc
+        tcl_library = os.environ.get("TCL_LIBRARY", "")
+        tk_library = os.environ.get("TK_LIBRARY", "")
+        tcl_init = Path(tcl_library) / "init.tcl" if tcl_library else None
+        frozen_root = getattr(sys, "_MEIPASS", "")
+        diagnostics = (
+            f"Loaded Tcl DLL: {loaded_tcl_path}\n"
+            f"TCL_LIBRARY: {tcl_library!r}\n"
+            f"TK_LIBRARY: {tk_library!r}\n"
+            f"Tcl init exists/readable: "
+            f"{bool(tcl_init and tcl_init.is_file())}/"
+            f"{bool(tcl_init and os.access(tcl_init, os.R_OK))}\n"
+            f"Frozen resource root: {frozen_root!r}\n"
+            f"Working directory: {os.getcwd()!r}"
+        )
+        raise RuntimeError(f"{exc}\n{diagnostics}") from exc
     tcl_patchlevel = str(tcl.call("info", "patchlevel"))
     if not tcl_patchlevel.startswith("8.6."):
         raise RuntimeError(f"Unsupported Tcl runtime: {tcl_patchlevel}")
@@ -254,6 +301,7 @@ def release_self_check() -> None:
 
 
 def main() -> None:
+    configure_frozen_tcl_libraries()
     if len(sys.argv) >= 2 and sys.argv[1] == "--self-check":
         # A frozen windowed executable has no console for a traceback. Always
         # terminate this diagnostic mode explicitly and leave a readable error

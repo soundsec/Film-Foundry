@@ -8,18 +8,15 @@ Film Foundry 是一个物理启发式虚拟暗房与电子胶片介质生成工�
 
 [最新版本发布说明](https://github.com/soundsec/Film-Foundry/blob/main/docs/RELEASE_NOTES_0.3.md)
 
-<<<<<<< HEAD
 ## 主要功能
 
 - 彩色负片、黑白负片、彩色反转片和黑白反转片流程。
 - 漂白旁路、交叉冲洗、迫冲/减冲、残银、镀银、漏光、药水疲劳、显影不均和材料退化等控制。
 - 密度颗粒、画幅颗粒差异、光晕、乳剂清晰度与扫描色彩控制。
+- 负片与正片共用透射灯台和扫描采集；用户独立控制去片基、反相与片基参考边框，也可直接输出灯台上的负片翻拍。
 - 透明介质、物理透射 TIFF、scanner/light-table raw、制版分层等材料导出。
 
 ## 安装
-=======
-## 核心流程 / Core Pipeline
->>>>>>> 8f4b49d43c2f925d2f1588eaac1e907a15537878
 
 推荐 Python 3.10 或更高版本；项目的开发环境使用 Python 3.11。
 
@@ -132,14 +129,19 @@ half_frame_darkroom/presets/scanner/   扫描与观看解释
 
 ## 输出文件
 
-完整流程通常会生成最终 PNG、JPEG 或 TIFF，以及对应的 sidecar。
+主 GUI 的完整流程和只冲洗流程不会把新结果直接写回固定文件名。每次点击“开始处理”都会在所选输出根目录下创建独立的时间运行目录，并保存可重新加载的 `film_foundry_run.json` 完整设置快照。
 
-只冲洗模式会根据最终介质类型写入：
+完整流程通常会在运行目录中生成最终 PNG、JPEG 或 TIFF，以及对应的 sidecar。只冲洗模式将介质母版放在运行目录的 `negative/` 子目录中；文件后缀仍根据最终介质极性区分：
 
 ```text
-outputs/negatives/*.darkroom_negative.npz
-outputs/positives/*.darkroom_positive.npz
+outputs/2026-07-15_15-42-08_develop/
+  film_foundry_run.json
+  negative/
+    *.darkroom_negative.npz
+    *.darkroom_positive.npz
 ```
+
+只扫描模式默认把结果放到底片目录的上一级。例如读取 `.../A/negative/` 时，扫描成片和本次扫描设置会保存在 `.../A/`；输出文件名包含本次扫描时间，因此重复扫描不会覆盖旧结果。GUI 中可以关闭“只扫描：默认输出到底片目录的上一级”，改用手动指定的输出目录。命令行接口仍严格使用命令中给出的目标路径，便于脚本和自动化控制。
 
 根据导出选项，还可以生成：
 
@@ -177,92 +179,10 @@ Film Foundry 采用 **GNU General Public License version 3（GPL-3.0-or-later）
 
 本项目在开发过程中使用了 AI agent 辅助进行代码整理、重构、文档编写和调试。如果你认为某段代码、注释、文档、命名或结构可能侵犯你的权利，请向作者提供具体文件、位置和理由，以便核查和处理。
 
-<<<<<<< HEAD
 ## 声明
-=======
-- `docs/STRUCTURE.md`
-- `docs/PRESET_GUIDE.md`
-- `docs/TERMINOLOGY.md`
->>>>>>> 8f4b49d43c2f925d2f1588eaac1e907a15537878
 
 Film Foundry 与任何胶片厂商、扫描仪厂商、相机厂商或商业胶片模拟软件均无从属、赞助、认证或官方授权关系。
 
-<<<<<<< HEAD
-=======
-Develop 模式可能生成：
+作者：**soundsec**
 
-Develop mode can generate:
-
-```text
-image.darkroom_negative.npz
-image.darkroom_negative.npz.json
-image.darkroom_negative.png
-image.scanner_raw.tiff
-image.scanner_raw.tiff.json
-```
-
-含义 / Meaning:
-
-- `.npz`：电子负片密度母版。 / Electronic negative density master.
-- `.npz.json`：sidecar，保存配置快照和生成信息。 / Sidecar with config snapshot and generation metadata.
-- `.png`：橙色片基负片视觉预览。 / Orange-base negative visual preview.
-- `.scanner_raw.tiff`：16-bit linear 电子负片透射图，适合外部软件处理。 / 16-bit linear electronic-negative transmission image for external tools.
-- `.scanner_raw.tiff.json`：scanner raw TIFF 的 sidecar。 / Sidecar for the scanner raw TIFF.
-
-`.npz` 是最重要的内部底片母版。scanner raw TIFF 更像便携、可被图像软件读取的电子负片图像。
-
-The `.npz` file is the most important internal negative master. The scanner raw TIFF is a more portable electronic-negative image that regular image tools can read.
-
-## 电子负片材料导出 / Electronic Negative Material Exports
-
-项目可以导出面向创作和制版的材料：
-
-The project can export creative and plate-making materials:
-
-- transparent negative plate
-- density alpha
-- CMY plate set
-- grain layer
-- halation layer
-- layer pack folder
-
-这些输出适合导入 Photoshop、Krita、Affinity、Procreate 等软件，也可以用于海报、分色、丝网、半色调和后续接触印相类实验。
-
-These outputs are suitable for Photoshop, Krita, Affinity, Procreate, poster work, separations, screen printing, halftone experiments, and later contact-print-style experiments.
-
-## 许可证 / License
-
-Film Foundry 采用 **GNU General Public License version 3 (GPL-3.0-or-later)**。
-
-你可以在 GPLv3 条款下使用、学习、研究、修改和分发本项目。如果你分发修改版或基于本项目的派生作品，需要遵守 GPLv3 的相应义务，包括在适用情况下提供对应源代码并保留许可证声明。
-
-如果你希望将本项目用于闭源商业产品、专有再发行、商业 SDK/插件集成，或其他无法遵守 GPLv3 开源义务的产品，请单独联系项目作者。
-
-Film Foundry is licensed under **GNU General Public License version 3  (GPL-3.0-or-later)**.
-
-You may use, study, modify, and distribute this project under the GPLv3. If you distribute modified versions or derivative works, you must comply with GPLv3 obligations, including providing corresponding source code where required and preserving license notices.
-
-For closed-source commercial use, proprietary redistribution, commercial SDK/plugin integration, or use in a product that cannot comply with GPLv3, please contact the project author.
-
-## 代码来源说明 / Code Provenance Notice
-
-本项目在开发过程中使用了 AI agent 辅助进行代码整理、重构、文档编写和调试。虽然项目作者已尽力审查代码来源、项目结构和实现方式，但无法保证所有代码在形式上完全不与其他公开或闭源项目存在相似之处。
-
-如果你认为本项目中的某段代码、注释、文档、命名或结构可能侵犯了你的权利，或与某个受保护项目高度相似，请联系项目作者并提供具体文件、位置和理由。作者会优先核查，并在确认问题后进行修改、替换或删除。
-
-This project was developed with assistance from AI agents for coding, refactoring, documentation, and debugging. If you believe any code, comments, documentation, naming, or structure infringes your rights or is too similar to protected work, please contact the project author with specific details so it can be reviewed and corrected.
-
-## 声明 / Notice
-
-Film Foundry 是一个物理启发式虚拟暗房与电子负片材料生成项目。
-
-本项目与任何胶片厂商、扫描仪厂商、相机厂商或商业胶片模拟软件均无从属、赞助、认证或官方授权关系。
-
-官方预设以画面行为或材料行为描述命名，不是任何商业胶卷产品的官方模拟。
-
-Film Foundry is a physics-inspired virtual darkroom and electronic negative material factory.
-
-It is not affiliated with, endorsed by, or sponsored by any film manufacturer, scanner manufacturer, camera manufacturer, or commercial film-emulation software vendor.
-
-Official presets are named descriptively by visual behavior or material behavior. They are not official emulations of commercial film products.
->>>>>>> 8f4b49d43c2f925d2f1588eaac1e907a15537878
+仓库：[soundsec/Film-Foundry](https://github.com/soundsec/Film-Foundry)

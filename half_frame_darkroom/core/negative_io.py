@@ -29,7 +29,9 @@ def _as_density_array(value: Any, key: str, path: Path) -> np.ndarray:
     array = np.asarray(array, dtype=np.float32)
     if array.ndim != 3 or array.shape[-1] != 3 or array.shape[0] <= 0 or array.shape[1] <= 0:
         raise ValueError(f"{path} 中的 {key} 形状应为 HxWx3，实际为 {array.shape}。")
-    if not np.isfinite(array).all():
+    minimum = float(np.min(array))
+    maximum = float(np.max(array))
+    if not np.isfinite(minimum) or not np.isfinite(maximum):
         raise ValueError(f"{path} 中的 {key} 包含 NaN 或 Infinity，不能作为介质密度读取。")
     return array
 
@@ -156,6 +158,55 @@ def _metadata_kwargs(payload: dict[str, Any], path: Path) -> dict[str, Any]:
     return kwargs
 
 
+def _unavailable_rgb_field() -> np.ndarray:
+    """Return an explicit zero-allocation sentinel for an unavailable RGB field."""
+    return np.empty((0, 0, 3), dtype=np.float32)
+
+
+def _load_medium_metadata(
+    path: Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Load portable identity/runtime metadata shared by full and scan-only loads."""
+    metadata: dict[str, Any] = {"negative_path": str(path)}
+    medium_payload = _read_developed_medium_metadata_from_npz(path)
+    sidecar_path = path.with_suffix(path.suffix + ".json")
+    if sidecar_path.exists():
+        try:
+            sidecar = strict_json_load(sidecar_path)
+            if not isinstance(sidecar, dict):
+                raise ValueError("sidecar root must be a JSON object")
+            if "config" in sidecar:
+                stored_config = sidecar["config"]
+                if not isinstance(stored_config, dict):
+                    raise ValueError("sidecar config must be a JSON object")
+                metadata["runtime_config"] = DarkroomConfig.from_dict(stored_config)
+                metadata["sidecar_path"] = str(sidecar_path)
+            if "developed_medium" in sidecar:
+                sidecar_medium = sidecar["developed_medium"]
+                if not isinstance(sidecar_medium, dict):
+                    raise ValueError("sidecar developed_medium must be a JSON object")
+                if not medium_payload:
+                    medium_payload = sidecar_medium
+        except Exception as exc:
+            raise ValueError(f"Invalid developed-medium sidecar '{sidecar_path}': {exc}") from exc
+    if not medium_payload and ".darkroom_positive" in path.stem.lower():
+        medium_payload = {
+            "medium_family": "film",
+            "medium_process": "slide",
+            "image_polarity": "positive",
+            "view_mode": "transmissive",
+            "base_type": "clear_base",
+            "color_system": "positive_dye",
+            "compatible_interpreters": ["positive_transparency_scan"],
+        }
+        metadata["medium_identity_source"] = "filename_fallback"
+    if medium_payload:
+        metadata["developed_medium"] = medium_payload
+        if isinstance(medium_payload.get("film_process_model"), dict):
+            metadata["film_process_model"] = medium_payload["film_process_model"]
+    return metadata, medium_payload, _metadata_kwargs(medium_payload, path)
+
+
 def load_negative_density_arrays(
     path: str | Path,
     *,
@@ -226,50 +277,124 @@ def load_developed_negative_npz(
         path,
         allow_legacy_pickle=allow_legacy_pickle,
     )
-    empty = np.zeros_like(density_grain, dtype=np.float32)
-    metadata: dict[str, Any] = {"negative_path": str(path)}
-    medium_payload = _read_developed_medium_metadata_from_npz(path)
-    sidecar_path = path.with_suffix(path.suffix + ".json")
-    if sidecar_path.exists():
-        try:
-            sidecar = strict_json_load(sidecar_path)
-            if not isinstance(sidecar, dict):
-                raise ValueError("sidecar root must be a JSON object")
-            if "config" in sidecar:
-                stored_config = sidecar["config"]
-                if not isinstance(stored_config, dict):
-                    raise ValueError("sidecar config must be a JSON object")
-                metadata["runtime_config"] = DarkroomConfig.from_dict(stored_config)
-                metadata["sidecar_path"] = str(sidecar_path)
-            if "developed_medium" in sidecar:
-                sidecar_medium = sidecar["developed_medium"]
-                if not isinstance(sidecar_medium, dict):
-                    raise ValueError("sidecar developed_medium must be a JSON object")
-                if not medium_payload:
-                    medium_payload = sidecar_medium
-        except Exception as exc:
-            raise ValueError(f"Invalid developed-medium sidecar '{sidecar_path}': {exc}") from exc
-    if not medium_payload and ".darkroom_positive" in path.stem.lower():
-        medium_payload = {
-            "medium_family": "film",
-            "medium_process": "slide",
-            "image_polarity": "positive",
-            "view_mode": "transmissive",
-            "base_type": "clear_base",
-            "color_system": "positive_dye",
-            "compatible_interpreters": ["positive_transparency_scan"],
-        }
-        metadata["medium_identity_source"] = "filename_fallback"
-    if medium_payload:
-        metadata["developed_medium"] = medium_payload
-        if isinstance(medium_payload.get("film_process_model"), dict):
-            metadata["film_process_model"] = medium_payload["film_process_model"]
+    optical_density_rgb: np.ndarray | None = None
+    clear_base_optical_density_rgb: tuple[float, float, float] | None = None
+    with np.load(path, allow_pickle=False) as data:
+        if "optical_density_rgb" in data.files:
+            optical_density_rgb = _as_density_array(
+                data["optical_density_rgb"],
+                "optical_density_rgb",
+                path,
+            )
+            if optical_density_rgb.shape != density_grain.shape:
+                raise ValueError(
+                    f"{path} optical_density_rgb shape does not match density_grain: "
+                    f"{optical_density_rgb.shape} != {density_grain.shape}"
+                )
+            if float(np.min(optical_density_rgb)) < 0.0:
+                raise ValueError(f"{path} optical_density_rgb contains negative density")
+        if "clear_base_optical_density_rgb" in data.files:
+            clear = np.asarray(data["clear_base_optical_density_rgb"], dtype=np.float32)
+            if clear.shape != (3,) or not np.all(np.isfinite(clear)) or np.any(clear < 0.0):
+                raise ValueError(
+                    f"{path} clear_base_optical_density_rgb must contain three finite nonnegative values"
+                )
+            clear_base_optical_density_rgb = tuple(float(value) for value in clear)
+    metadata, medium_payload, identity_kwargs = _load_medium_metadata(path)
+    metadata["stage_storage"] = {
+        "profile": "portable_layers_without_history_v1",
+        "history": "unavailable",
+        "layer_masters": "resident",
+        "optical_master": "resident" if optical_density_rgb is not None else "derived_on_scan",
+    }
     return DevelopedNegative(
-        linear_input=empty,
-        after_mtf=empty,
-        after_halation=empty,
+        linear_input=_unavailable_rgb_field(),
+        after_mtf=_unavailable_rgb_field(),
+        after_halation=_unavailable_rgb_field(),
         density_cmy=density_cmy,
         density_grain=density_grain,
-        **_metadata_kwargs(medium_payload, path),
+        optical_density_rgb=optical_density_rgb,
+        clear_base_optical_density_rgb=clear_base_optical_density_rgb,
+        **identity_kwargs,
+        metadata=metadata,
+    )
+
+
+def load_developed_medium_for_scan(
+    path: str | Path,
+    *,
+    allow_legacy_pickle: bool | None = None,
+) -> DevelopedNegative:
+    """Load the smallest exact medium representation required by a scanner.
+
+    Modern archives carry an authoritative ``optical_density_rgb`` master. In
+    that case the layer compatibility masters remain safely stored in the NPZ
+    but are not decompressed into RAM. Older archives transparently fall back
+    to :func:`load_developed_negative_npz`, preserving the complete legacy
+    reconstruction path. No saved data or scan formula is changed.
+    """
+    path = Path(path)
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise ValueError(f"Developed-medium NPZ does not exist or is empty: {path}")
+    if not zipfile.is_zipfile(path):
+        raise ValueError(
+            f"Developed-medium NPZ is truncated or not a valid ZIP/NPZ archive: {path}"
+        )
+
+    optical_density_rgb: np.ndarray | None = None
+    clear_base_optical_density_rgb: tuple[float, float, float] | None = None
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            if "optical_density_rgb" in data.files:
+                optical_density_rgb = _as_density_array(
+                    data["optical_density_rgb"],
+                    "optical_density_rgb",
+                    path,
+                )
+                if float(np.min(optical_density_rgb)) < 0.0:
+                    raise ValueError(f"{path} optical_density_rgb contains negative density")
+                if "clear_base_optical_density_rgb" in data.files:
+                    clear = np.asarray(
+                        data["clear_base_optical_density_rgb"],
+                        dtype=np.float32,
+                    )
+                    if (
+                        clear.shape != (3,)
+                        or not np.all(np.isfinite(clear))
+                        or np.any(clear < 0.0)
+                    ):
+                        raise ValueError(
+                            f"{path} clear_base_optical_density_rgb must contain three "
+                            "finite nonnegative values"
+                        )
+                    clear_base_optical_density_rgb = tuple(float(value) for value in clear)
+    except (OSError, EOFError, zipfile.BadZipFile) as exc:
+        raise ValueError(
+            f"Unable to read developed-medium optical master; NPZ may be truncated or corrupt: {path}"
+        ) from exc
+
+    if optical_density_rgb is None:
+        return load_developed_negative_npz(
+            path,
+            allow_legacy_pickle=allow_legacy_pickle,
+        )
+
+    metadata, _medium_payload, identity_kwargs = _load_medium_metadata(path)
+    metadata["stage_storage"] = {
+        "profile": "scan_optical_only_v1",
+        "history": "unavailable",
+        "layer_masters": "stored_not_loaded",
+        "optical_master": "resident_authoritative",
+        "reversible_full_loader": "load_developed_negative_npz",
+    }
+    return DevelopedNegative(
+        linear_input=_unavailable_rgb_field(),
+        after_mtf=_unavailable_rgb_field(),
+        after_halation=_unavailable_rgb_field(),
+        density_cmy=_unavailable_rgb_field(),
+        density_grain=_unavailable_rgb_field(),
+        optical_density_rgb=optical_density_rgb,
+        clear_base_optical_density_rgb=clear_base_optical_density_rgb,
+        **identity_kwargs,
         metadata=metadata,
     )

@@ -52,12 +52,15 @@ DEVELOP_RECIPE_SCALAR_FIELDS = (
     "light_leak_strength",
     "chemical_stain",
     "uneven_development",
+    "development_adjacency_strength",
+    "development_adjacency_radius",
     "process_variation",
     "first_development_completion",
     "second_development_completion",
     "reversal_activation",
     "first_silver_removal",
     "silver_bleach_completion",
+    "mask_bleach_completion",
     "halide_fixing_completion",
     "dye_coupling_efficiency",
     "auxiliary_removal",
@@ -105,12 +108,15 @@ DEVELOP_EDITOR_EN = {
     "漏光事故": "Light Leak Accident",
     "海带 / 药染浑浊": "Chemical Stain / Turbidity",
     "显影不均 / 药痕": "Uneven Development / Chemical Marks",
+    "显影邻接强度（降阶）": "Development Adjacency Strength (Reduced)",
+    "显影邻接半径": "Development Adjacency Radius",
     "批次 / 单张过程差异": "Batch / Frame Process Variation",
     "首次显影阶段完成度": "First Development Completion",
     "二次显影阶段完成度": "Second Development Completion",
     "反转激活完成度": "Reversal Activation Completion",
     "首次银像移除（黑白反转）": "First Silver Image Removal (B&W reversal)",
     "金属银漂白完成度": "Silver Bleach Completion",
+    "实验性色罩 / 染料漂白": "Experimental Mask / Dye Bleach",
     "卤化银定影完成度": "Halide Fixing Completion",
     "染料偶合效率": "Dye Coupling Efficiency",
     "附加层去除能力": "Auxiliary Layer Removal",
@@ -260,12 +266,15 @@ class DevelopProcessEditor:
             "light_leak_strength": tk.DoubleVar(value=0.0),
             "chemical_stain": tk.DoubleVar(value=0.0),
             "uneven_development": tk.DoubleVar(value=0.0),
+            "development_adjacency_strength": tk.DoubleVar(value=0.0),
+            "development_adjacency_radius": tk.DoubleVar(value=0.0025),
             "process_variation": tk.DoubleVar(value=0.0),
             "first_development_completion": tk.DoubleVar(value=1.0),
             "second_development_completion": tk.DoubleVar(value=1.0),
             "reversal_activation": tk.DoubleVar(value=1.0),
             "first_silver_removal": tk.DoubleVar(value=1.0),
             "silver_bleach_completion": tk.DoubleVar(value=1.0),
+            "mask_bleach_completion": tk.DoubleVar(value=0.0),
             "halide_fixing_completion": tk.DoubleVar(value=1.0),
             "dye_coupling_efficiency": tk.DoubleVar(value=1.0),
             "auxiliary_removal": tk.DoubleVar(value=1.0),
@@ -332,8 +341,8 @@ class DevelopProcessEditor:
         controls = self.controls_scroller.content
         controls.columnconfigure(1, weight=1)
         row = 0
-        row = self._combo(controls, "显影液 / 药水类型", self.developer_type, ("standard", "fine_grain", "compensating", "high_contrast", "monobath"), row)
-        row = self._combo(controls, "定影 / 清除类型", self.fixer_type, ("standard", "rapid", "hardening", "monobath"), row)
+        row = self._combo(controls, "显影液 / 药水类型", self.developer_type, ("standard", "fine_grain", "compensating", "high_contrast", "monobath", "experimental_reversal"), row)
+        row = self._combo(controls, "定影 / 清除类型", self.fixer_type, ("standard", "rapid", "hardening", "monobath", "experimental_mask_bleach"), row)
         row = self._combo(controls, "药水执行模式", self.process_mode, ("normal_negative", "reversal", "monobath"), row)
         row = self._combo(controls, "画幅", self.frame_size, ("half_frame", "35mm", "6x6", "6x7", "4x5"), row)
         row = self._slider(controls, "冲洗时间 min", "time_min", 1.0, 20.0, row)
@@ -349,6 +358,8 @@ class DevelopProcessEditor:
         row = self._slider(controls, "漏光事故", "light_leak_strength", 0.0, 1.0, row)
         row = self._slider(controls, "海带 / 药染浑浊", "chemical_stain", 0.0, 1.0, row)
         row = self._slider(controls, "显影不均 / 药痕", "uneven_development", 0.0, 1.0, row)
+        row = self._slider(controls, "显影邻接强度（降阶）", "development_adjacency_strength", 0.0, 1.0, row)
+        row = self._slider(controls, "显影邻接半径", "development_adjacency_radius", 0.0002, 0.02, row)
         row = self._slider(controls, "批次 / 单张过程差异", "process_variation", 0.0, 1.0, row)
         ttk.Separator(controls).grid(row=row, column=0, columnspan=4, sticky="ew", pady=10)
         row += 1
@@ -357,12 +368,13 @@ class DevelopProcessEditor:
         row = self._slider(controls, "反转激活完成度", "reversal_activation", 0.0, 1.0, row)
         row = self._slider(controls, "首次银像移除（黑白反转）", "first_silver_removal", 0.0, 1.0, row)
         row = self._slider(controls, "金属银漂白完成度", "silver_bleach_completion", 0.0, 1.0, row)
+        row = self._slider(controls, "实验性色罩 / 染料漂白", "mask_bleach_completion", 0.0, 1.0, row)
         row = self._slider(controls, "卤化银定影完成度", "halide_fixing_completion", 0.0, 1.0, row)
         row = self._slider(controls, "染料偶合效率", "dye_coupling_efficiency", 0.0, 1.5, row)
         row = self._slider(controls, "附加层去除能力", "auxiliary_removal", 0.0, 1.0, row)
-        row = self._slider(controls, "感光层 1 反应平衡", "process_layer_0", 0.25, 1.75, row)
-        row = self._slider(controls, "感光层 2 反应平衡", "process_layer_1", 0.25, 1.75, row)
-        row = self._slider(controls, "感光层 3 反应平衡", "process_layer_2", 0.25, 1.75, row)
+        row = self._slider(controls, "程序自身感光层 1 倍率", "process_layer_0", 0.25, 1.75, row)
+        row = self._slider(controls, "程序自身感光层 2 倍率", "process_layer_1", 0.25, 1.75, row)
+        row = self._slider(controls, "程序自身感光层 3 倍率", "process_layer_2", 0.25, 1.75, row)
         ttk.Separator(controls).grid(row=row, column=0, columnspan=4, sticky="ew", pady=10)
         row += 1
         row = self._slider(controls, "曝光校准 EV", "exposure_ev", -2.0, 2.0, row)
@@ -436,7 +448,7 @@ class DevelopProcessEditor:
             parent,
             from_=min_value,
             to=max_value,
-            increment=max((max_value - min_value) / 200.0, 0.001),
+            increment=max((max_value - min_value) / 200.0, 0.000001),
             textvariable=var,
             width=9,
             justify="right",
@@ -589,7 +601,7 @@ class DevelopProcessEditor:
             draw.rectangle((x0, y, x0 + int((x1 - x0) * ratio), y + 11), fill=color)
             draw.text((x1 - 58, y + 14), f"{value:.3f}", fill=(70, 66, 58))
             y += 29
-        draw.text((18, height - 96), "accident order: leak -> halation -> uneven formation -> stain/plating -> grain", fill=(92, 76, 62))
+        draw.text((18, height - 96), "formation: leak -> halation -> adjacency/uneven rate -> stain/plating -> grain", fill=(92, 76, 62))
         draw.text((18, height - 76), f"program={program.key} · chemistry={state.process_mode}", fill=(70, 66, 58))
         actions = " → ".join(step.action.value for step in program.steps)
         draw.text((18, height - 52), actions, fill=(70, 66, 58))

@@ -8,6 +8,9 @@
     "halation_strength": 0.1,
     "halation_threshold": 0.74,
     "halation_softness": 0.18,
+    "halation_core_radius": 0.004,
+    "halation_outer_radius": 0.018,
+    "halation_exponential_radius": 0.018,
     "hd_gamma": [
       0.66,
       0.69,

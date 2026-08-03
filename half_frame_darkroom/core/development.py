@@ -50,6 +50,7 @@ class EffectiveDevelopmentState:
     concentration_stress: float
     temperature_stress: float
     gamma_factor: float
+    highlight_compensation: float
     developer_fog_shift: float
     d_min_shift: float
     d_max_factor: float
@@ -245,6 +246,9 @@ def build_effective_development(recipe: DevelopRecipeConfig) -> EffectiveDevelop
     shoulder_shift -= 0.20 * profile.shoulder_compensation
     shoulder_shift -= 0.14 * compensation
     shoulder_shift += 0.10 * underdevelopment
+    highlight_compensation = float(
+        np.clip(profile.shoulder_compensation + 0.65 * compensation, 0.0, 0.90)
+    )
 
     grain_factor = profile.grain_bias
     grain_factor *= frame_grain_factor
@@ -304,6 +308,7 @@ def build_effective_development(recipe: DevelopRecipeConfig) -> EffectiveDevelop
         concentration_stress=float(concentration_stress),
         temperature_stress=float(temperature_stress),
         gamma_factor=float(gamma_factor),
+        highlight_compensation=float(highlight_compensation),
         developer_fog_shift=float(developer_fog_shift),
         d_min_shift=float(d_min_shift),
         d_max_factor=float(d_max_factor),

@@ -10,7 +10,12 @@ from typing import Any
 import math
 
 from half_frame_darkroom.core.atomic_io import strict_json_load
-from half_frame_darkroom.core.states import DevelopedMedium, ScannedPositive, developed_medium_metadata
+from half_frame_darkroom.core.states import (
+    DevelopedMedium,
+    ScannedPositive,
+    ScanOutput,
+    developed_medium_metadata,
+)
 from half_frame_darkroom.model.config import DarkroomConfig
 
 
@@ -156,6 +161,10 @@ def created_at() -> str:
 def scanner_interpreter_payload(config: DarkroomConfig) -> dict[str, Any]:
     scanner = config.scanner
     return {
+        "interpretation_mode": scanner.interpretation_mode,
+        "remove_base_mask": bool(scanner.remove_base_mask),
+        "invert_transmission": bool(scanner.invert_transmission),
+        "include_clear_base_border": bool(scanner.include_clear_base_border),
         "interpreter_key": scanner.interpreter_key,
         "target_medium_process": scanner.target_medium_process,
         "input_polarity": scanner.input_polarity,
@@ -166,10 +175,14 @@ def scanner_interpreter_payload(config: DarkroomConfig) -> dict[str, Any]:
         "negative_channel_compensation_strength": float(
             scanner.negative_channel_compensation_strength
         ),
+        "transmission_light_ev": scanner.transmission_light_ev,
+        "transmission_light_temperature_k": scanner.transmission_light_temperature_k,
     }
 
 
-def scanned_positive_interpreter_payload(scanned: ScannedPositive) -> dict[str, Any]:
+def scanned_positive_interpreter_payload(
+    scanned: ScannedPositive | ScanOutput,
+) -> dict[str, Any]:
     return {
         "interpreter_key": scanned.interpreter_key,
         "input_polarity": scanned.input_polarity,
@@ -178,7 +191,7 @@ def scanned_positive_interpreter_payload(scanned: ScannedPositive) -> dict[str, 
     }
 
 
-def scan_metadata_payload(scanned: ScannedPositive) -> dict[str, Any]:
+def scan_metadata_payload(scanned: ScannedPositive | ScanOutput) -> dict[str, Any]:
     return {key: value for key, value in scanned.metadata.items() if key != "runtime_config"}
 
 
@@ -243,11 +256,11 @@ def scanner_raw_sidecar(
         "provenance": provenance,
         "encoding": "16-bit linear RGB TIFF, no sRGB gamma",
         "border": {
-            "present": not is_positive and int(border_width_px) > 0,
-            "meaning": "none; positive light-table raw contains no synthetic border" if is_positive else "unexposed clear film base for mask removal",
-            "percent": 0.0 if is_positive else config.output.scanner_raw_border_percent,
-            "min_px": 0 if is_positive else config.output.scanner_raw_border_min_px,
-            "width_px": 0 if is_positive else max(int(border_width_px), 0),
+            "present": int(border_width_px) > 0,
+            "meaning": "derived clear-film-base transmission reference; observation only",
+            "percent": config.output.scanner_raw_border_percent,
+            "min_px": config.output.scanner_raw_border_min_px,
+            "width_px": max(int(border_width_px), 0),
         },
         "config": asdict(config),
     }
@@ -283,7 +296,7 @@ def final_positive_sidecar(
     scan_source_path: Path | None = None,
     resolved_seed: int | None = None,
     preview: bool | None = None,
-    scanned: ScannedPositive | None = None,
+    scanned: ScannedPositive | ScanOutput | None = None,
     provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     effective_config = config

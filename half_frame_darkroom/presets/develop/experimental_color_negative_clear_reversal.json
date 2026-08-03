@@ -1,0 +1,32 @@
+{
+  "develop": {
+    "developer_name": "Experimental Color-Negative Clear-Base Reversal",
+    "developer_type": "experimental_reversal",
+    "fixer_name": "Reversal Fixer + Experimental Mask/Dye Bleach",
+    "fixer_type": "experimental_mask_bleach",
+    "medium_process": "reversal",
+    "program_key": "color_reversal",
+    "process_mode": "reversal",
+    "frame_size": "35mm",
+    "time_min": 8.0,
+    "temperature_c": 20.0,
+    "concentration": 1.0,
+    "agitation": 1.0,
+    "first_development_completion": 1.0,
+    "second_development_completion": 1.0,
+    "reversal_activation": 1.0,
+    "silver_bleach_completion": 1.0,
+    "mask_bleach_completion": 1.0,
+    "halide_fixing_completion": 1.0,
+    "dye_coupling_efficiency": 1.0,
+    "auxiliary_removal": 1.0
+  },
+  "mode": "color_negative",
+  "look": {
+    "exposure_ev": -0.05,
+    "negative_contrast": 1.0,
+    "halation_multiplier": 1.0,
+    "grain_multiplier": 1.0,
+    "grain_size_multiplier": 1.0
+  }
+}
