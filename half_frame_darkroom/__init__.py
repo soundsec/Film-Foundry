@@ -1,7 +1,13 @@
-"""Film Foundry / Electronic Negative Factory package.
+"""Legacy import path. Implementation lives in ``film_foundry``.
 
-The legacy import package name remains ``half_frame_darkroom`` for compatibility.
+Importing ``half_frame_darkroom`` or any of its submodules returns the same
+module objects as ``film_foundry``.
 """
 
-__app_name__ = "Film Foundry / Electronic Negative Factory"
-__version__ = "0.3.1"
+from film_foundry._compat import install_half_frame_darkroom_alias, mirror_loaded_modules
+import film_foundry
+import sys
+
+install_half_frame_darkroom_alias()
+sys.modules[__name__] = film_foundry
+mirror_loaded_modules()

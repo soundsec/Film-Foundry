@@ -1,1 +1,2 @@
-"""Film Foundry app entrypoints."""
+"""Application entry points."""
+

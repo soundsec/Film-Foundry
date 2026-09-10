@@ -9,31 +9,32 @@ from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
 import sys
-import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw
 
-from half_frame_darkroom.core.atomic_io import atomic_write_json
-from half_frame_darkroom.core.scanner import (
+from film_foundry.core.atomic_io import atomic_write_json
+from film_foundry.core.scanner import (
     normalize_scan_rgb,
     reconstruct_negative_channels,
     render_positive_scan,
     render_positive_transparency_scan,
 )
-from half_frame_darkroom.model.config import SCAN_LOOK_FIELDS, DarkroomConfig
-from film_foundry.tools.editor_ui import localize_widget_tree, localized_preset_name, ui, unique_choice_map
+from film_foundry.model.config import SCAN_LOOK_FIELDS, DarkroomConfig
+from film_foundry.ui.components import add_choice_control, add_numeric_control
+from film_foundry.ui.qt import PhotoImage, message_box, text_dialog, ui
+from film_foundry.ui.widgets import VerticalScrolledFrame
+from film_foundry.tools.editor_ui import local_text, localize_widget_tree, localized_preset_name, unique_choice_map
 from film_foundry.tools.paths import app_root, resource_root
 
 
 PROJECT_ROOT = app_root()
 RESOURCE_ROOT = resource_root()
-PRESET_DIR = RESOURCE_ROOT / "half_frame_darkroom" / "presets"
+PRESET_DIR = RESOURCE_ROOT / "film_foundry" / "presets"
 SCANNER_PRESET_DIR = PRESET_DIR / "scanner"
 USER_SCANNER_PRESET_DIR = PROJECT_ROOT / "user_presets" / "scanner"
 APP_TITLE = "Film Foundry - Negative Scanner Render Editor"
@@ -156,61 +157,61 @@ class ScannerRenderEditor:
 
         self._set_interpretation_state(interpretation)
 
-        self.root = tk.Tk()
-        self.root.title(ui("Film Foundry - 透射扫描 / 解释编辑器", "Film Foundry - Transmission Scanner / Interpreter Editor"))
+        self.root = ui.Application()
+        self.root.title(local_text("Film Foundry - 透射扫描 / 解释编辑器", "Film Foundry - Transmission Scanner / Interpreter Editor"))
         self.root.geometry("1040x760")
         self.root.minsize(840, 620)
 
-        self.interpretation_display = tk.StringVar(value=self._interpretation_label())
-        self.preset_name = tk.StringVar(value="positive_transparency_scan" if self.is_positive else "neutral_scan")
-        self.preset_display = tk.StringVar(value="")
+        self.interpretation_display = ui.TextValue(value=self._interpretation_label())
+        self.preset_name = ui.TextValue(value="positive_transparency_scan" if self.is_positive else "neutral_scan")
+        self.preset_display = ui.TextValue(value="")
         self.preset_display_to_key: dict[str, str] = {}
-        self.target_medium_process = tk.StringVar(value=self.target_process)
-        self.input_polarity = tk.StringVar(value=self.input_polarity_value)
-        self.output_polarity = tk.StringVar(value="positive")
-        self.scan_method = tk.StringVar(value="positive_transparency" if self.is_positive else "negative_inversion")
-        self.print_mapping_mode = tk.StringVar(value="printlike")
-        self.scan_normalize = tk.BooleanVar(value=True)
-        self.remove_base_mask = tk.BooleanVar(value=not self.is_positive)
-        self.invert_transmission = tk.BooleanVar(value=not self.is_positive)
-        self.include_clear_base_border = tk.BooleanVar(value=False)
-        self.negative_channel_compensation = tk.BooleanVar(value=False)
-        self.scan_normalize_mode = tk.StringVar(value="luma")
-        self.status = tk.StringVar(value=ui(
+        self.target_medium_process = ui.TextValue(value=self.target_process)
+        self.input_polarity = ui.TextValue(value=self.input_polarity_value)
+        self.output_polarity = ui.TextValue(value="positive")
+        self.scan_method = ui.TextValue(value="positive_transparency" if self.is_positive else "negative_inversion")
+        self.print_mapping_mode = ui.TextValue(value="printlike")
+        self.scan_normalize = ui.BoolValue(value=True)
+        self.remove_base_mask = ui.BoolValue(value=not self.is_positive)
+        self.invert_transmission = ui.BoolValue(value=not self.is_positive)
+        self.include_clear_base_border = ui.BoolValue(value=False)
+        self.negative_channel_compensation = ui.BoolValue(value=False)
+        self.scan_normalize_mode = ui.TextValue(value="luma")
+        self.status = ui.TextValue(value=local_text(
             "加载正片扫描预设，调整后保存到 user_presets/scanner。" if self.is_positive else "加载负片扫描预设，调整后保存到 user_presets/scanner。",
             "Load a positive scan preset, adjust it, then save to user_presets/scanner." if self.is_positive else "Load a negative scan preset, adjust it, then save to user_presets/scanner.",
         ))
         self.curve_photo = None
 
-        self.vars: dict[str, tk.DoubleVar] = {
-            "scan_base_percentile": tk.DoubleVar(value=99.5),
-            "print_gamma": tk.DoubleVar(value=0.95),
-            "print_contrast": tk.DoubleVar(value=1.10),
-            "print_exposure_ev": tk.DoubleVar(value=0.0),
-            "scan_saturation": tk.DoubleVar(value=1.0),
-            "scan_normalize_strength": tk.DoubleVar(value=0.45),
-            "scan_black_percentile": tk.DoubleVar(value=0.3),
-            "scan_white_percentile": tk.DoubleVar(value=99.7),
-            "highlight_bias_threshold": tk.DoubleVar(value=0.72),
-            "highlight_bias_softness": tk.DoubleVar(value=0.18),
-            "transmission_light_ev": tk.DoubleVar(value=0.0),
-            "transmission_light_temperature_k": tk.DoubleVar(value=5500.0),
-            "negative_channel_compensation_strength": tk.DoubleVar(value=0.35),
-            "positive_scan_color_control_strength": tk.DoubleVar(value=0.25),
-            "projection_white_softness": tk.DoubleVar(value=0.22),
-            "projection_black_adaptation": tk.DoubleVar(value=0.10),
+        self.vars: dict[str, ui.FloatValue] = {
+            "scan_base_percentile": ui.FloatValue(value=99.5),
+            "print_gamma": ui.FloatValue(value=0.95),
+            "print_contrast": ui.FloatValue(value=1.10),
+            "print_exposure_ev": ui.FloatValue(value=0.0),
+            "scan_saturation": ui.FloatValue(value=1.0),
+            "scan_normalize_strength": ui.FloatValue(value=0.45),
+            "scan_black_percentile": ui.FloatValue(value=0.3),
+            "scan_white_percentile": ui.FloatValue(value=99.7),
+            "highlight_bias_threshold": ui.FloatValue(value=0.72),
+            "highlight_bias_softness": ui.FloatValue(value=0.18),
+            "transmission_light_ev": ui.FloatValue(value=0.0),
+            "transmission_light_temperature_k": ui.FloatValue(value=5500.0),
+            "negative_channel_compensation_strength": ui.FloatValue(value=0.35),
+            "positive_scan_color_control_strength": ui.FloatValue(value=0.25),
+            "projection_white_softness": ui.FloatValue(value=0.22),
+            "projection_black_adaptation": ui.FloatValue(value=0.10),
         }
-        self.vector_vars: dict[str, tuple[tk.DoubleVar, tk.DoubleVar, tk.DoubleVar]] = {
-            "scanner_light_color": (tk.DoubleVar(value=1.0), tk.DoubleVar(value=1.0), tk.DoubleVar(value=1.0)),
-            "negative_channel_gamma": (tk.DoubleVar(value=1.0), tk.DoubleVar(value=1.0), tk.DoubleVar(value=1.0)),
-            "print_reference_density": (tk.DoubleVar(value=1.58), tk.DoubleVar(value=1.61), tk.DoubleVar(value=1.53)),
-            "print_color_shift": (tk.DoubleVar(value=0.0), tk.DoubleVar(value=0.0), tk.DoubleVar(value=0.0)),
-            "print_color_bias": (tk.DoubleVar(value=1.0), tk.DoubleVar(value=1.0), tk.DoubleVar(value=1.0)),
-            "highlight_color_bias": (tk.DoubleVar(value=1.0), tk.DoubleVar(value=1.0), tk.DoubleVar(value=1.0)),
+        self.vector_vars: dict[str, tuple[ui.FloatValue, ui.FloatValue, ui.FloatValue]] = {
+            "scanner_light_color": (ui.FloatValue(value=1.0), ui.FloatValue(value=1.0), ui.FloatValue(value=1.0)),
+            "negative_channel_gamma": (ui.FloatValue(value=1.0), ui.FloatValue(value=1.0), ui.FloatValue(value=1.0)),
+            "print_reference_density": (ui.FloatValue(value=1.58), ui.FloatValue(value=1.61), ui.FloatValue(value=1.53)),
+            "print_color_shift": (ui.FloatValue(value=0.0), ui.FloatValue(value=0.0), ui.FloatValue(value=0.0)),
+            "print_color_bias": (ui.FloatValue(value=1.0), ui.FloatValue(value=1.0), ui.FloatValue(value=1.0)),
+            "highlight_color_bias": (ui.FloatValue(value=1.0), ui.FloatValue(value=1.0), ui.FloatValue(value=1.0)),
         }
-        self.matrix_vars: dict[str, list[list[tk.DoubleVar]]] = {
-            "scanner_response_matrix": [[tk.DoubleVar(value=1.0 if x == y else 0.0) for x in range(3)] for y in range(3)],
-            "negative_channel_matrix": [[tk.DoubleVar(value=1.0 if x == y else 0.0) for x in range(3)] for y in range(3)],
+        self.matrix_vars: dict[str, list[list[ui.FloatValue]]] = {
+            "scanner_response_matrix": [[ui.FloatValue(value=1.0 if x == y else 0.0) for x in range(3)] for y in range(3)],
+            "negative_channel_matrix": [[ui.FloatValue(value=1.0 if x == y else 0.0) for x in range(3)] for y in range(3)],
         }
 
         self._build()
@@ -225,10 +226,10 @@ class ScannerRenderEditor:
         self.input_polarity_value = "positive" if self.is_positive else SUPPORTED_INPUT_POLARITY
 
     def _interpretation_label(self) -> str:
-        return ui("正片解释", "Positive Interpretation") if self.is_positive else ui("负片解释", "Negative Interpretation")
+        return local_text("正片解释", "Positive Interpretation") if self.is_positive else local_text("负片解释", "Negative Interpretation")
 
     def _on_interpretation_selected(self, _event=None) -> None:
-        selected = "positive" if self.interpretation_display.get() == ui("正片解释", "Positive Interpretation") else "negative"
+        selected = "positive" if self.interpretation_display.get() == local_text("正片解释", "Positive Interpretation") else "negative"
         if selected == self.interpretation:
             return
         self._set_interpretation_state(selected)
@@ -244,65 +245,65 @@ class ScannerRenderEditor:
         self._load_selected_preset()
 
     def _build(self) -> None:
-        shell = ttk.Frame(self.root, padding=12)
+        shell = ui.Frame(self.root, padding=12)
         shell.pack(fill="both", expand=True)
         shell.columnconfigure(0, weight=0)
         shell.columnconfigure(1, weight=1)
         shell.rowconfigure(1, weight=1)
 
-        header = ttk.LabelFrame(shell, text="透射扫描 / 解释预设", padding=10)
+        header = ui.Group(shell, text="透射扫描 / 解释预设", padding=10)
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        ttk.Label(header, text="解释控制").grid(row=0, column=0, sticky="w", pady=3)
-        interpretation_controls = ttk.Frame(
+        ui.Label(header, text="解释控制").grid(row=0, column=0, sticky="w", pady=3)
+        interpretation_controls = ui.Frame(
             header,
         )
         interpretation_controls.grid(row=0, column=1, sticky="w", padx=(8, 8), pady=3)
-        ttk.Checkbutton(
+        ui.Toggle(
             interpretation_controls,
-            text=ui("去片基 / 色罩", "Remove base / mask"),
+            text=local_text("去片基 / 色罩", "Remove base / mask"),
             variable=self.remove_base_mask,
             command=self._refresh_curve,
         ).pack(side="left")
-        ttk.Checkbutton(
+        ui.Toggle(
             interpretation_controls,
-            text=ui("反相输出", "Invert output"),
+            text=local_text("反相输出", "Invert output"),
             variable=self.invert_transmission,
             command=self._refresh_curve,
         ).pack(side="left", padx=(12, 0))
-        ttk.Checkbutton(
+        ui.Toggle(
             interpretation_controls,
-            text=ui("片基边框", "Clear-base border"),
+            text=local_text("片基边框", "Clear-base border"),
             variable=self.include_clear_base_border,
             command=self._refresh_curve,
         ).pack(side="left", padx=(12, 0))
-        ttk.Label(
+        ui.Label(
             header,
-            text=ui(
+            text=local_text(
                 "同一灯台与传感器完成透射采集；介质类型只提供建议，不锁定用户选择。",
                 "One light table and sensor perform capture; medium identity only provides a recommendation.",
             ),
             wraplength=500,
         ).grid(row=0, column=2, columnspan=2, sticky="w", pady=3)
 
-        ttk.Label(header, text="基准解释预设").grid(row=1, column=0, sticky="w", pady=3)
-        self.preset_combo = ttk.Combobox(header, textvariable=self.preset_display, state="readonly")
+        ui.Label(header, text="基准解释预设").grid(row=1, column=0, sticky="w", pady=3)
+        self.preset_combo = ui.Choice(header, textvariable=self.preset_display, state="readonly")
         self.preset_combo.grid(row=1, column=1, sticky="ew", padx=(8, 8), pady=3)
         self.preset_combo.bind("<<ComboboxSelected>>", self._on_preset_selected)
-        ttk.Button(header, text="加载", command=self._load_selected_preset).grid(row=1, column=2, padx=(0, 8))
-        ttk.Button(header, text=ui("保存为用户扫描预设", "Save User Scan Preset"), command=self._save_user_preset).grid(row=1, column=3)
-        ttk.Label(header, text=ui("说明", "Note")).grid(row=2, column=0, sticky="w", pady=3)
-        medium_row = ttk.Frame(header)
+        ui.Button(header, text="加载", command=self._load_selected_preset).grid(row=1, column=2, padx=(0, 8))
+        ui.Button(header, text=local_text("保存为用户扫描预设", "Save User Scan Preset"), command=self._save_user_preset).grid(row=1, column=3)
+        ui.Label(header, text=local_text("说明", "Note")).grid(row=2, column=0, sticky="w", pady=3)
+        medium_row = ui.Frame(header)
         medium_row.grid(row=2, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=3)
-        ttk.Label(
+        ui.Label(
             medium_row,
-            text=ui(
+            text=local_text(
                 "负片常用：去片基 + 反相；正片常用：保留片基 + 不反相。",
                 "Typical negative: remove base + invert; typical positive: preserve base + no inversion.",
             ),
         ).pack(side="left", padx=(0, 10))
-        ttk.Label(
+        ui.Label(
             medium_row,
-            text=ui(
+            text=local_text(
                 "也可保留片基且不反相，输出灯台上的负片翻拍。",
                 "Preserve the base and disable inversion for a photographed negative on the light table.",
             ),
@@ -310,21 +311,13 @@ class ScannerRenderEditor:
         ).pack(side="left")
         header.columnconfigure(1, weight=1)
 
-        controls_shell = ttk.Frame(shell)
+        controls_shell = ui.Frame(shell)
         controls_shell.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
         controls_shell.rowconfigure(0, weight=1)
         controls_shell.columnconfigure(0, weight=1)
-        canvas = tk.Canvas(controls_shell, highlightthickness=0, width=560)
-        scrollbar = ttk.Scrollbar(controls_shell, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        controls = ttk.Frame(canvas, padding=(0, 0, 8, 0))
-        window = canvas.create_window((0, 0), window=controls, anchor="nw")
-        controls.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window, width=event.width))
-        canvas.bind("<Enter>", lambda _event: self.root.bind_all("<MouseWheel>", lambda event: canvas.yview_scroll(int(-event.delta / 120), "units")))
-        canvas.bind("<Leave>", lambda _event: self.root.unbind_all("<MouseWheel>"))
+        self.controls_scroller = VerticalScrolledFrame(controls_shell, canvas_width=560)
+        self.controls_scroller.grid(row=0, column=0, sticky="nsew")
+        controls = self.controls_scroller.content
 
         row = 0
         row = self._section(controls, "共享透射采样", row)
@@ -334,7 +327,7 @@ class ScannerRenderEditor:
         row = self._slider(controls, "透射光源色温 K", "transmission_light_temperature_k", 2800.0, 9000.0, row)
 
         row = self._section(controls, "透射解释 / 通道重建", row)
-        compensation_check = ttk.Checkbutton(
+        compensation_check = ui.Toggle(
             controls,
             text="启用反相后的蓝绿 / 扫描通道补偿",
             variable=self.negative_channel_compensation,
@@ -371,10 +364,10 @@ class ScannerRenderEditor:
         row = self._slider(controls, "直接透射白点软滚降", "projection_white_softness", 0.0, 0.75, row)
         row = self._slider(controls, "直接透射黑位观看适应", "projection_black_adaptation", 0.0, 0.75, row)
         row = self._slider(controls, "扫描饱和度", "scan_saturation", 0.40, 1.80, row)
-        ttk.Checkbutton(controls, text="扫描黑白点归一化", variable=self.scan_normalize, command=self._refresh_curve).grid(
+        ui.Toggle(controls, text="扫描黑白点归一化", variable=self.scan_normalize, command=self._refresh_curve).grid(
             row=row, column=0, sticky="w", pady=4
         )
-        ttk.Combobox(controls, textvariable=self.scan_normalize_mode, values=("luma", "rgb"), state="readonly", width=8).grid(
+        ui.Choice(controls, textvariable=self.scan_normalize_mode, values=("luma", "rgb"), state="readonly", width=8).grid(
             row=row, column=1, sticky="w", pady=4
         )
         row += 1
@@ -382,15 +375,16 @@ class ScannerRenderEditor:
         row = self._slider(controls, "黑点 percentile", "scan_black_percentile", 0.0, 5.0, row)
         row = self._slider(controls, "白点 percentile", "scan_white_percentile", 95.0, 100.0, row)
 
-        preview = ttk.LabelFrame(shell, text="scan/render 曲线预览", padding=10)
+        preview = ui.Group(shell, text="scan/render 曲线预览", padding=10)
         preview.grid(row=1, column=1, sticky="nsew")
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(0, weight=1)
-        self.curve_label = ttk.Label(preview)
+        self.curve_label = ui.Label(preview)
         self.curve_label.grid(row=0, column=0, sticky="nsew")
-        ttk.Button(preview, text="刷新曲线", command=self._refresh_curve).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        ui.Button(preview, text="刷新曲线", command=self._refresh_curve).grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
-        ttk.Label(self.root, textvariable=self.status, padding=(12, 0, 12, 8), wraplength=960).pack(fill="x", side="bottom")
+        ui.Label(self.root, textvariable=self.status, padding=(12, 0, 12, 8), wraplength=960).pack(fill="x", side="bottom")
+        self.controls_scroller.bind_mousewheel()
         localize_widget_tree(self.root, SCANNER_EDITOR_EN)
 
     def _refresh_preset_choices(self) -> None:
@@ -403,48 +397,47 @@ class ScannerRenderEditor:
     def _on_preset_selected(self, _event=None) -> None:
         self.preset_name.set(self.preset_display_to_key.get(self.preset_display.get(), self.preset_display.get()))
 
-    def _section(self, parent: ttk.Frame, text: str, row: int) -> int:
-        ttk.Label(parent, text=text, font=("", 10, "bold")).grid(row=row, column=0, columnspan=5, sticky="w", pady=(12, 4))
+    def _section(self, parent: ui.Frame, text: str, row: int) -> int:
+        ui.Label(parent, text=text, font=("", 10, "bold")).grid(row=row, column=0, columnspan=5, sticky="w", pady=(12, 4))
         return row + 1
 
-    def _combo(self, parent: ttk.Frame, label: str, var: tk.StringVar, values: tuple[str, ...], row: int) -> int:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
-        ttk.Combobox(parent, textvariable=var, values=values, state="readonly").grid(row=row, column=1, columnspan=3, sticky="ew", pady=4)
-        var.trace_add("write", lambda *_: self._refresh_curve())
-        return row + 1
-
-    def _slider(self, parent: ttk.Frame, label: str, key: str, min_value: float, max_value: float, row: int) -> int:
-        var = self.vars[key]
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
-        ttk.Scale(parent, from_=min_value, to=max_value, variable=var, command=lambda _value: self._refresh_curve()).grid(
-            row=row, column=1, columnspan=2, sticky="ew", pady=4
-        )
-        ttk.Spinbox(
+    def _combo(self, parent: ui.Frame, label: str, var: ui.TextValue, values: tuple[str, ...], row: int) -> int:
+        add_choice_control(
             parent,
-            from_=min_value,
-            to=max_value,
-            increment=max((max_value - min_value) / 200.0, 0.001),
-            textvariable=var,
-            width=9,
-            justify="right",
-            command=self._refresh_curve,
-        ).grid(row=row, column=3, sticky="e", pady=4)
-        var.trace_add("write", lambda *_: self._refresh_curve())
-        parent.columnconfigure(1, weight=1)
+            label=label,
+            value=var,
+            choices=values,
+            row=row,
+            on_change=self._refresh_curve,
+        )
         return row + 1
 
-    def _vector(self, parent: ttk.Frame, key: str, label: str, min_value: float, max_value: float, row: int) -> int:
-        vars_ = self.vector_vars[key]
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
+    def _slider(self, parent: ui.Frame, label: str, key: str, min_value: float, max_value: float, row: int) -> int:
+        var = self.vars[key]
+        add_numeric_control(
+            parent,
+            label=label,
+            value=var,
+            minimum=min_value,
+            maximum=max_value,
+            row=row,
+            increment=max((max_value - min_value) / 200.0, 0.001),
+            on_change=self._refresh_curve,
+        )
+        return row + 1
 
-        vector_frame = ttk.Frame(parent)
+    def _vector(self, parent: ui.Frame, key: str, label: str, min_value: float, max_value: float, row: int) -> int:
+        vars_ = self.vector_vars[key]
+        ui.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
+
+        vector_frame = ui.Frame(parent)
         vector_frame.grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
         for index, (channel, var) in enumerate(zip(("R", "G", "B"), vars_)):
-            cell = ttk.Frame(vector_frame)
+            cell = ui.Frame(vector_frame)
             cell.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 8, 0))
             cell.columnconfigure(1, weight=1)
-            ttk.Label(cell, text=channel, width=2, anchor="center").grid(row=0, column=0, sticky="w", padx=(0, 3))
-            spin = ttk.Spinbox(
+            ui.Label(cell, text=channel, width=2, anchor="center").grid(row=0, column=0, sticky="w", padx=(0, 3))
+            spin = ui.NumberInput(
                 cell,
                 from_=min_value,
                 to=max_value,
@@ -461,19 +454,19 @@ class ScannerRenderEditor:
         parent.columnconfigure(3, weight=1)
         return row + 1
 
-    def _matrix(self, parent: ttk.Frame, key: str, label: str, min_value: float, max_value: float, row: int) -> int:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
+    def _matrix(self, parent: ui.Frame, key: str, label: str, min_value: float, max_value: float, row: int) -> int:
+        ui.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
         matrix = self.matrix_vars[key]
-        matrix_frame = ttk.Frame(parent)
+        matrix_frame = ui.Frame(parent)
         matrix_frame.grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
         for x, channel in enumerate(("R", "G", "B"), start=1):
-            ttk.Label(matrix_frame, text=channel, anchor="center").grid(row=0, column=x, sticky="ew", padx=2)
+            ui.Label(matrix_frame, text=channel, anchor="center").grid(row=0, column=x, sticky="ew", padx=2)
             matrix_frame.columnconfigure(x, weight=1, uniform="rgb_matrix")
         for y in range(3):
-            ttk.Label(matrix_frame, text=("R", "G", "B")[y], width=2, anchor="center").grid(row=y + 1, column=0, sticky="ew", padx=(0, 3))
+            ui.Label(matrix_frame, text=("R", "G", "B")[y], width=2, anchor="center").grid(row=y + 1, column=0, sticky="ew", padx=(0, 3))
             for x in range(3):
                 var = matrix[y][x]
-                spin = ttk.Spinbox(
+                spin = ui.NumberInput(
                     matrix_frame,
                     from_=min_value,
                     to=max_value,
@@ -492,12 +485,12 @@ class ScannerRenderEditor:
     def _load_selected_preset(self) -> None:
         path = scanner_preset_path(self.preset_name.get())
         if not path.exists():
-            self.status.set(ui(f"找不到扫描预设：{path}", f"Scan preset not found: {path}"))
+            self.status.set(local_text(f"找不到扫描预设：{path}", f"Scan preset not found: {path}"))
             return
         config = DarkroomConfig.from_json(path)
         self._set_controls_from_config(config)
         source = "用户" if path.parent == USER_SCANNER_PRESET_DIR else "内置"
-        self.status.set(ui(
+        self.status.set(local_text(
             f"已加载{source}扫描预设：{path.name}",
             f"Loaded {'user' if path.parent == USER_SCANNER_PRESET_DIR else 'built-in'} scan preset: {path.name}",
         ))
@@ -619,7 +612,7 @@ class ScannerRenderEditor:
         try:
             config = self._config_from_controls()
             image = self._draw_scan_curve(config)
-            self.curve_photo = ImageTk.PhotoImage(image)
+            self.curve_photo = PhotoImage(image)
             self.curve_label.configure(image=self.curve_photo)
         except Exception:
             return
@@ -697,9 +690,9 @@ class ScannerRenderEditor:
     def _save_user_preset(self) -> None:
         config = self._config_from_controls()
         initial = safe_preset_stem(self.preset_name.get()) or "custom_scan"
-        name = simpledialog.askstring(
-            ui("保存扫描预设", "Save Scan Preset"),
-            ui("请输入扫描预设文件名（建议英文、数字、下划线）：", "Enter a scan preset filename (letters, numbers, and underscores recommended):"),
+        name = text_dialog.askstring(
+            local_text("保存扫描预设", "Save Scan Preset"),
+            local_text("请输入扫描预设文件名（建议英文、数字、下划线）：", "Enter a scan preset filename (letters, numbers, and underscores recommended):"),
             parent=self.root,
             initialvalue=initial,
         )
@@ -707,24 +700,24 @@ class ScannerRenderEditor:
             return
         stem = safe_preset_stem(name)
         if not stem:
-            messagebox.showerror(ui("无法保存", "Cannot Save"), ui("预设文件名不能为空，也不能只包含特殊字符。", "The preset filename cannot be empty or contain only special characters."), parent=self.root)
+            message_box.showerror(local_text("无法保存", "Cannot Save"), local_text("预设文件名不能为空，也不能只包含特殊字符。", "The preset filename cannot be empty or contain only special characters."), parent=self.root)
             return
         path = USER_SCANNER_PRESET_DIR / f"{stem}.json"
         existing = scanner_preset_path(stem)
         if existing.exists():
             if existing.parent == SCANNER_PRESET_DIR and not path.exists():
-                detail = ui(
+                detail = local_text(
                     f"{stem}.json 是内置扫描预设。保存后会创建同名用户扫描预设，并在 GUI/CLI 中优先使用。",
                     f"{stem}.json is built in. Saving creates a same-name user scan preset that takes precedence in the GUI and CLI.",
                 )
             else:
-                detail = ui(f"{path.name} 已存在。", f"{path.name} already exists.")
-            if not messagebox.askyesno(ui("覆盖扫描预设", "Overwrite Scan Preset"), f"{detail}\n{ui('是否继续？', 'Continue?')}", parent=self.root):
+                detail = local_text(f"{path.name} 已存在。", f"{path.name} already exists.")
+            if not message_box.askyesno(local_text("覆盖扫描预设", "Overwrite Scan Preset"), f"{detail}\n{local_text('是否继续？', 'Continue?')}", parent=self.root):
                 return
         save_json(path, self._preset_payload(config))
         self.preset_name.set(stem)
         self._refresh_preset_choices()
-        self.status.set(ui(f"已保存用户扫描预设：{path}", f"Saved user scan preset: {path}"))
+        self.status.set(local_text(f"已保存用户扫描预设：{path}", f"Saved user scan preset: {path}"))
 
     def run(self) -> None:
         self.root.mainloop()

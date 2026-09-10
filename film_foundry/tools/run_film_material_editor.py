@@ -10,28 +10,28 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 import sys
-import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw
 
-from half_frame_darkroom.core.atomic_io import atomic_write_json
-from half_frame_darkroom.core.sensitometry import hd_density_curve
-from half_frame_darkroom.core.film_process import shape_positive_density_fraction
-from half_frame_darkroom.ui.widgets import VerticalScrolledFrame
-from half_frame_darkroom.model.config import DarkroomConfig
-from film_foundry.tools.editor_ui import localize_widget_tree, localized_preset_name, ui, unique_choice_map
+from film_foundry.core.atomic_io import atomic_write_json
+from film_foundry.core.sensitometry import hd_density_curve
+from film_foundry.core.film_process import shape_positive_density_fraction
+from film_foundry.ui.components import add_numeric_control
+from film_foundry.ui.qt import PhotoImage, message_box, text_dialog, ui
+from film_foundry.ui.widgets import VerticalScrolledFrame
+from film_foundry.model.config import DarkroomConfig
+from film_foundry.tools.editor_ui import local_text, localize_widget_tree, localized_preset_name, unique_choice_map
 from film_foundry.tools.paths import app_root, resource_root
 
 
 PROJECT_ROOT = app_root()
 RESOURCE_ROOT = resource_root()
-PRESET_DIR = RESOURCE_ROOT / "half_frame_darkroom" / "presets"
+PRESET_DIR = RESOURCE_ROOT / "film_foundry" / "presets"
 FILM_PRESET_DIR = PRESET_DIR / "film"
 USER_FILM_PRESET_DIR = PROJECT_ROOT / "user_presets" / "film"
 APP_TITLE = "Film Foundry - Silver-Halide Film Material Editor"
@@ -75,19 +75,21 @@ POSITIVE_MATERIAL_FIELDS = (
     "positive_highlight_chroma_retention",
     "positive_shadow_chroma_retention",
 )
+DIR_MATERIAL_SCALAR_FIELDS = ("dir_diffusion_radius",)
+DIR_MATERIAL_MATRIX_FIELDS = ("dir_material_response_matrix",)
 HALATION_RETURN_MODE_LABELS = {
-    ui("兼容暖色 RGB 回注", "Compatible Warm RGB Return"): "compatibility_rgb",
-    ui("实验性材料层回流", "Experimental Material-Layer Return"): "layer_selective",
+    local_text("兼容暖色 RGB 回注", "Compatible Warm RGB Return"): "compatibility_rgb",
+    local_text("实验性材料层回流", "Experimental Material-Layer Return"): "layer_selective",
 }
 LIGHT_PIPING_EDGE_LABELS = {
-    ui("关闭", "Off"): "none",
-    ui("上边缘", "Top Edge"): "top",
-    ui("右边缘", "Right Edge"): "right",
-    ui("下边缘", "Bottom Edge"): "bottom",
-    ui("左边缘", "Left Edge"): "left",
-    ui("两条长边", "Both Long Edges"): "long_edges",
-    ui("两条短边", "Both Short Edges"): "short_edges",
-    ui("全部边缘", "All Edges"): "all_edges",
+    local_text("关闭", "Off"): "none",
+    local_text("上边缘", "Top Edge"): "top",
+    local_text("右边缘", "Right Edge"): "right",
+    local_text("下边缘", "Bottom Edge"): "bottom",
+    local_text("左边缘", "Left Edge"): "left",
+    local_text("两条长边", "Both Long Edges"): "long_edges",
+    local_text("两条短边", "Both Short Edges"): "short_edges",
+    local_text("全部边缘", "All Edges"): "all_edges",
 }
 
 MATERIAL_EDITOR_EN = {
@@ -158,6 +160,13 @@ MATERIAL_EDITOR_EN = {
     "乳剂模糊半径": "Emulsion Blur Radius",
     "高频响应阈值": "High-Frequency Response Threshold",
     "数字锐化抑制": "Digital Sharpening Suppression",
+    "乳剂内部高光扩散（实验，默认关闭）": "Emulsion-Internal Highlight Spread (Experimental, Off by Default)",
+    "乳剂高光扩散强度": "Emulsion Highlight-Spread Strength",
+    "乳剂高光扩散半径": "Emulsion Highlight-Spread Radius",
+    "乳剂高光触发阈值": "Emulsion Highlight Threshold",
+    "乳剂高光阈值软化": "Emulsion Highlight Threshold Softness",
+    "逐层扩散半径倍率": "Per-Layer Spread Radius Scale",
+    "逐层扩散强度倍率": "Per-Layer Spread Strength Scale",
     "Halation 基准": "Halation Baseline",
     "halation 强度": "Halation Strength",
     "halation 阈值": "Halation Threshold",
@@ -181,6 +190,9 @@ MATERIAL_EDITOR_EN = {
     "指数散射幅度": "Exponential Scatter Amplitude",
     "指数尾半径": "Exponential Tail Radius",
     "三层感光 / 染料吸收 / 片基光谱耦合矩阵": "Sensitivity / Dye / Base Spectral Matrices",
+    "DIR 材料响应（彩色材料，默认全零关闭）": "DIR Material Response (Color Materials, Off When Zero)",
+    "DIR 扩散半径": "DIR Diffusion Radius",
+    "源层→目标层有效响应": "Source→Target Effective Response",
     "曲线预览": "Curve Preview",
     "刷新曲线": "Refresh Curve",
 }
@@ -287,31 +299,32 @@ class FilmMaterialEditor:
     def __init__(self) -> None:
         USER_FILM_PRESET_DIR.mkdir(parents=True, exist_ok=True)
 
-        self.root = tk.Tk()
-        self.root.title(ui("Film Foundry - 银盐胶片材料编辑器", APP_TITLE))
+        self.root = ui.Application()
+        self.root.title(local_text("Film Foundry - 银盐胶片材料编辑器", APP_TITLE))
         self.root.geometry("1080x780")
         self.root.minsize(860, 620)
 
-        self.preset_name = tk.StringVar(value="clear_modern_negative")
-        self.preset_display = tk.StringVar(value="")
+        self.preset_name = ui.TextValue(value="clear_modern_negative")
+        self.preset_display = ui.TextValue(value="")
         self.preset_display_to_key: dict[str, str] = {}
-        self.material_name = tk.StringVar(value="")
-        self.material_class = tk.StringVar(value="color_negative")
-        self.mode = tk.StringVar(value="color_negative")
-        self.medium_family = tk.StringVar(value="film")
-        self.medium_process = tk.StringVar(value="negative")
-        self.image_polarity = tk.StringVar(value="negative")
-        self.color_process = tk.StringVar(value="color")
-        self.identity_summary = tk.StringVar(value="film / negative / negative polarity / color")
-        self.halation_return_display = tk.StringVar(value="")
-        self.light_piping_edge_display = tk.StringVar(value="")
-        self.status = tk.StringVar(value=ui("加载银盐胶片材料预设，调整后保存到 user_presets/film。", "Load a silver-halide material preset, adjust it, then save to user_presets/film."))
+        self.material_name = ui.TextValue(value="")
+        self.material_class = ui.TextValue(value="color_negative")
+        self.mode = ui.TextValue(value="color_negative")
+        self.medium_family = ui.TextValue(value="film")
+        self.medium_process = ui.TextValue(value="negative")
+        self.image_polarity = ui.TextValue(value="negative")
+        self.color_process = ui.TextValue(value="color")
+        self.identity_summary = ui.TextValue(value="film / negative / negative polarity / color")
+        self.halation_return_display = ui.TextValue(value="")
+        self.light_piping_edge_display = ui.TextValue(value="")
+        self.status = ui.TextValue(value=local_text("加载银盐胶片材料预设，调整后保存到 user_presets/film。", "Load a silver-halide material preset, adjust it, then save to user_presets/film."))
         self.curve_photo = None
 
-        self.scalar_vars: dict[str, tk.DoubleVar] = {}
-        self.vector_vars: dict[str, tuple[tk.DoubleVar, tk.DoubleVar, tk.DoubleVar]] = {}
-        self.matrix_vars: dict[str, list[list[tk.DoubleVar]]] = {}
-        self.field_widgets: dict[str, ttk.Widget] = {}
+        self.scalar_vars: dict[str, ui.FloatValue] = {}
+        self.vector_vars: dict[str, tuple[ui.FloatValue, ui.FloatValue, ui.FloatValue]] = {}
+        self.matrix_vars: dict[str, list[list[ui.FloatValue]]] = {}
+        self.matrix_inputs: dict[str, list] = {}
+        self.field_widgets: dict[str, object] = {}
 
         self._build()
         self._refresh_preset_choices()
@@ -319,37 +332,37 @@ class FilmMaterialEditor:
         self._load_selected_preset()
 
     def _build(self) -> None:
-        shell = ttk.Frame(self.root, padding=12)
+        shell = ui.Frame(self.root, padding=12)
         shell.pack(fill="both", expand=True)
         shell.columnconfigure(0, weight=0)
         shell.columnconfigure(1, weight=1)
         shell.rowconfigure(1, weight=1)
 
-        header = ttk.LabelFrame(shell, text="银盐胶片材料预设（分类共享外壳）", padding=10)
+        header = ui.Group(shell, text="银盐胶片材料预设（分类共享外壳）", padding=10)
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        ttk.Label(header, text="基准材料").grid(row=0, column=0, sticky="w", pady=3)
-        self.preset_combo = ttk.Combobox(header, textvariable=self.preset_display, state="readonly")
+        ui.Label(header, text="基准材料").grid(row=0, column=0, sticky="w", pady=3)
+        self.preset_combo = ui.Choice(header, textvariable=self.preset_display, state="readonly")
         self.preset_combo.grid(row=0, column=1, sticky="ew", pady=3, padx=(8, 8))
         self.preset_combo.bind("<<ComboboxSelected>>", self._on_preset_selected)
-        ttk.Button(header, text="加载", command=self._load_selected_preset).grid(row=0, column=2, padx=(0, 8))
-        ttk.Button(header, text="保存为用户胶片材料", command=self._save_user_preset).grid(row=0, column=3)
-        ttk.Label(header, text="材料名称").grid(row=1, column=0, sticky="w", pady=3)
-        ttk.Entry(header, textvariable=self.material_name).grid(row=1, column=1, columnspan=2, sticky="ew", pady=3, padx=(8, 8))
-        ttk.Combobox(header, textvariable=self.material_class, values=tuple(MATERIAL_CLASS_SPECS), state="readonly", width=16).grid(
+        ui.Button(header, text="加载", command=self._load_selected_preset).grid(row=0, column=2, padx=(0, 8))
+        ui.Button(header, text="保存为用户胶片材料", command=self._save_user_preset).grid(row=0, column=3)
+        ui.Label(header, text="材料名称").grid(row=1, column=0, sticky="w", pady=3)
+        ui.TextInput(header, textvariable=self.material_name).grid(row=1, column=1, columnspan=2, sticky="ew", pady=3, padx=(8, 8))
+        ui.Choice(header, textvariable=self.material_class, values=tuple(MATERIAL_CLASS_SPECS), state="readonly", width=16).grid(
             row=1, column=3, sticky="ew", pady=3
         )
-        ttk.Label(header, text="当前介质").grid(row=2, column=0, sticky="w", pady=3)
-        medium_row = ttk.Frame(header)
+        ui.Label(header, text="当前介质").grid(row=2, column=0, sticky="w", pady=3)
+        medium_row = ui.Frame(header)
         medium_row.grid(row=2, column=1, columnspan=3, sticky="ew", pady=3, padx=(8, 0))
-        ttk.Label(medium_row, textvariable=self.identity_summary).pack(side="left", padx=(0, 10))
-        ttk.Label(
+        ui.Label(medium_row, textvariable=self.identity_summary).pack(side="left", padx=(0, 10))
+        ui.Label(
             medium_row,
             text="负片与反转片共享编辑器外壳，但调用身份、原生极性和曲线预览分开；即时成像、撕拉片和银版仍使用独立入口。",
             wraplength=560,
         ).pack(side="left")
         header.columnconfigure(1, weight=1)
 
-        controls_shell = ttk.Frame(shell)
+        controls_shell = ui.Frame(shell)
         controls_shell.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
         controls_shell.rowconfigure(0, weight=1)
         controls_shell.columnconfigure(0, weight=1)
@@ -441,16 +454,66 @@ class FilmMaterialEditor:
         row = self._scalar(controls, "high_frequency_threshold", "高频响应阈值", 0.00, 0.20, row)
         row = self._scalar(controls, "digital_artifact_suppression", "数字锐化抑制", 0.00, 0.60, row)
 
+        row = self._section(controls, "乳剂内部高光扩散（实验，默认关闭）", row)
+        row = self._scalar(
+            controls,
+            "emulsion_highlight_spread_strength",
+            "乳剂高光扩散强度",
+            0.00,
+            0.60,
+            row,
+        )
+        row = self._scalar(
+            controls,
+            "emulsion_highlight_spread_radius",
+            "乳剂高光扩散半径",
+            0.0002,
+            0.0080,
+            row,
+        )
+        row = self._scalar(
+            controls,
+            "emulsion_highlight_spread_threshold",
+            "乳剂高光触发阈值",
+            0.20,
+            1.40,
+            row,
+        )
+        row = self._scalar(
+            controls,
+            "emulsion_highlight_spread_softness",
+            "乳剂高光阈值软化",
+            0.01,
+            0.50,
+            row,
+        )
+        row = self._vector(
+            controls,
+            "emulsion_highlight_spread_layer_radius_scales",
+            "逐层扩散半径倍率",
+            0.20,
+            2.00,
+            row,
+        )
+        row = self._vector(
+            controls,
+            "emulsion_highlight_spread_layer_strengths",
+            "逐层扩散强度倍率",
+            0.00,
+            2.00,
+            row,
+        )
+
         row = self._section(controls, "片基边缘光导（实验）", row)
         row = self._scalar(controls, "light_piping_strength", "片基光导强度", 0.00, 0.50, row)
         row = self._scalar(controls, "light_piping_depth", "向内传播深度", 0.002, 0.25, row)
-        ttk.Label(controls, text=ui("入光边缘", "Entry Edges")).grid(
+        ui.Label(controls, text=local_text("入光边缘", "Entry Edges")).grid(
             row=row,
             column=0,
             sticky="w",
             pady=2,
         )
-        ttk.Combobox(
+        ui.Choice(
             controls,
             textvariable=self.light_piping_edge_display,
             values=tuple(LIGHT_PIPING_EDGE_LABELS),
@@ -475,13 +538,13 @@ class FilmMaterialEditor:
         row = self._scalar(controls, "halation_outer_radius", "长程散射半径", 0.0030, 0.0500, row)
         row = self._scalar(controls, "halation_core_mix", "短程/长程混合", 0.00, 1.00, row)
         row = self._vector(controls, "halation_color", "光晕颜色 RGB", 0.00, 1.50, row)
-        ttk.Label(controls, text=ui("回流模型", "Return Model")).grid(
+        ui.Label(controls, text=local_text("回流模型", "Return Model")).grid(
             row=row,
             column=0,
             sticky="w",
             pady=2,
         )
-        ttk.Combobox(
+        ui.Choice(
             controls,
             textvariable=self.halation_return_display,
             values=tuple(HALATION_RETURN_MODE_LABELS),
@@ -517,20 +580,31 @@ class FilmMaterialEditor:
         row = self._scalar(controls, "halation_exponential_amplitude", "指数散射幅度", 0.00, 1.50, row)
         row = self._scalar(controls, "halation_exponential_radius", "指数尾半径", 0.0030, 0.0600, row)
 
+        row = self._section(controls, "DIR 材料响应（彩色材料，默认全零关闭）", row)
+        row = self._scalar(controls, "dir_diffusion_radius", "DIR 扩散半径", 0.0002, 0.0200, row)
+        row = self._matrix(
+            controls,
+            "dir_material_response_matrix",
+            "源层→目标层有效响应",
+            0.0,
+            0.95,
+            row,
+        )
+
         row = self._section(controls, "三层感光 / 染料吸收 / 片基光谱耦合矩阵", row)
         row = self._matrix(controls, "layer_sensitivity_matrix", "layer sensitivity", 0.0, 1.4, row)
         row = self._matrix(controls, "dye_absorption_matrix", "dye absorption", 0.0, 1.6, row)
         row = self._matrix(controls, "base_dye_interaction_matrix", "base / dye spectral overlap", 0.0, 1.0, row)
 
-        preview = ttk.LabelFrame(shell, text="曲线预览", padding=10)
+        preview = ui.Group(shell, text="曲线预览", padding=10)
         preview.grid(row=1, column=1, sticky="nsew")
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(0, weight=1)
-        self.curve_label = ttk.Label(preview)
+        self.curve_label = ui.Label(preview)
         self.curve_label.grid(row=0, column=0, sticky="nsew")
-        ttk.Button(preview, text="刷新曲线", command=self._refresh_curve).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        ui.Button(preview, text="刷新曲线", command=self._refresh_curve).grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
-        ttk.Label(self.root, textvariable=self.status, padding=(12, 0, 12, 8), wraplength=980).pack(fill="x", side="bottom")
+        ui.Label(self.root, textvariable=self.status, padding=(12, 0, 12, 8), wraplength=980).pack(fill="x", side="bottom")
         self.controls_scroller.bind_mousewheel()
         localize_widget_tree(self.root, MATERIAL_EDITOR_EN)
 
@@ -544,50 +618,41 @@ class FilmMaterialEditor:
     def _on_preset_selected(self, _event=None) -> None:
         self.preset_name.set(self.preset_display_to_key.get(self.preset_display.get(), self.preset_display.get()))
 
-    def _section(self, parent: ttk.Frame, text: str, row: int) -> int:
-        ttk.Label(parent, text=text, font=("", 10, "bold")).grid(row=row, column=0, columnspan=5, sticky="w", pady=(12, 4))
+    def _section(self, parent: ui.Frame, text: str, row: int) -> int:
+        ui.Label(parent, text=text, font=("", 10, "bold")).grid(row=row, column=0, columnspan=5, sticky="w", pady=(12, 4))
         return row + 1
 
-    def _scalar(self, parent: ttk.Frame, key: str, label: str, min_value: float, max_value: float, row: int) -> int:
-        var = tk.DoubleVar(value=0.0)
+    def _scalar(self, parent: ui.Frame, key: str, label: str, min_value: float, max_value: float, row: int) -> int:
+        var = ui.FloatValue(value=0.0)
         self.scalar_vars[key] = var
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
-        scale = ttk.Scale(
+        control = add_numeric_control(
             parent,
-            from_=min_value,
-            to=max_value,
-            variable=var,
-            command=lambda _value: self._refresh_curve(),
-        )
-        scale.grid(row=row, column=1, columnspan=2, sticky="ew", pady=3)
-        self.field_widgets[key] = scale
-        ttk.Spinbox(
-            parent,
-            from_=min_value,
-            to=max_value,
+            label=label,
+            value=var,
+            minimum=min_value,
+            maximum=max_value,
+            row=row,
             increment=max((max_value - min_value) / 200.0, 0.0001),
-            textvariable=var,
-            width=10,
-            justify="right",
-            command=self._refresh_curve,
-        ).grid(row=row, column=3, sticky="e", pady=3)
-        var.trace_add("write", lambda *_: self._refresh_curve())
-        parent.columnconfigure(1, weight=1)
+            input_width=10,
+            on_change=self._refresh_curve,
+            pady=3,
+        )
+        self.field_widgets[key] = control.slider
         return row + 1
 
-    def _vector(self, parent: ttk.Frame, key: str, label: str, min_value: float, max_value: float, row: int) -> int:
-        vars_ = (tk.DoubleVar(value=0.0), tk.DoubleVar(value=0.0), tk.DoubleVar(value=0.0))
+    def _vector(self, parent: ui.Frame, key: str, label: str, min_value: float, max_value: float, row: int) -> int:
+        vars_ = (ui.FloatValue(value=0.0), ui.FloatValue(value=0.0), ui.FloatValue(value=0.0))
         self.vector_vars[key] = vars_
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
+        ui.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
 
-        vector_frame = ttk.Frame(parent)
+        vector_frame = ui.Frame(parent)
         vector_frame.grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
         for index, (channel, var) in enumerate(zip(("R", "G", "B"), vars_)):
-            cell = ttk.Frame(vector_frame)
+            cell = ui.Frame(vector_frame)
             cell.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 8, 0))
             cell.columnconfigure(1, weight=1)
-            ttk.Label(cell, text=channel, width=2, anchor="center").grid(row=0, column=0, sticky="w", padx=(0, 3))
-            spin = ttk.Spinbox(
+            ui.Label(cell, text=channel, width=2, anchor="center").grid(row=0, column=0, sticky="w", padx=(0, 3))
+            spin = ui.NumberInput(
                 cell,
                 from_=min_value,
                 to=max_value,
@@ -604,19 +669,22 @@ class FilmMaterialEditor:
         parent.columnconfigure(3, weight=1)
         return row + 1
 
-    def _matrix(self, parent: ttk.Frame, key: str, label: str, min_value: float, max_value: float, row: int) -> int:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
-        matrix: list[list[tk.DoubleVar]] = []
+    def _matrix(self, parent: ui.Frame, key: str, label: str, min_value: float, max_value: float, row: int) -> int:
+        ui.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
+        matrix: list[list[ui.FloatValue]] = []
+        inputs: list = []
         for y in range(3):
             matrix_row = []
             for x in range(3):
-                var = tk.DoubleVar(value=0.0)
-                spin = ttk.Spinbox(parent, from_=min_value, to=max_value, increment=(max_value - min_value) / 200.0, textvariable=var, width=8)
+                var = ui.FloatValue(value=0.0)
+                spin = ui.NumberInput(parent, from_=min_value, to=max_value, increment=(max_value - min_value) / 200.0, textvariable=var, width=8)
                 spin.grid(row=row + y, column=x + 1, sticky="ew", padx=2, pady=2)
                 var.trace_add("write", lambda *_: self._refresh_curve())
                 matrix_row.append(var)
+                inputs.append(spin)
             matrix.append(matrix_row)
         self.matrix_vars[key] = matrix
+        self.matrix_inputs[key] = inputs
         return row + 3
 
     def _apply_material_class(self) -> None:
@@ -631,27 +699,36 @@ class FilmMaterialEditor:
             f"{identity['color_process']}"
         )
         reversal_material = self.material_class.get() in {"color_reversal", "bw_reversal"}
+        color_material = self.material_class.get() in {"color_negative", "color_reversal"}
         for key in POSITIVE_MATERIAL_FIELDS:
             widget = self.field_widgets.get(key)
             if widget is not None:
                 widget.state(["!disabled"] if reversal_material else ["disabled"])
+        dir_state = ["!disabled"] if color_material else ["disabled"]
+        for key in DIR_MATERIAL_SCALAR_FIELDS:
+            widget = self.field_widgets.get(key)
+            if widget is not None:
+                widget.state(dir_state)
+        for key in DIR_MATERIAL_MATRIX_FIELDS:
+            for widget in self.matrix_inputs.get(key, []):
+                widget.state(dir_state)
         self._refresh_curve()
 
     def _load_selected_preset(self) -> None:
         path = film_preset_path(self.preset_name.get())
         if not path.exists():
-            self.status.set(ui(f"找不到材料预设：{path}", f"Material preset not found: {path}"))
+            self.status.set(local_text(f"找不到材料预设：{path}", f"Material preset not found: {path}"))
             return
         config = DarkroomConfig.from_json(path)
         supported = self._set_controls_from_config(config)
         source = "用户" if path.parent == USER_FILM_PRESET_DIR else "内置"
         if supported:
-            self.status.set(ui(
+            self.status.set(local_text(
                 f"已加载{source}银盐材料预设：{path.name} · {self.material_class.get()}",
                 f"Loaded {'user' if path.parent == USER_FILM_PRESET_DIR else 'built-in'} silver-halide material preset: {path.name} · {self.material_class.get()}",
             ))
         else:
-            self.status.set(ui(
+            self.status.set(local_text(
                 f"已加载{source}材料预设：{path.name}；共享编辑器只支持银盐负片/反转片，不会改写其他介质。",
                 f"Loaded material preset {path.name}; this shared editor supports silver-halide negative and reversal materials only.",
             ))
@@ -741,10 +818,10 @@ class FilmMaterialEditor:
         try:
             config = self._config_from_controls()
             image = self._draw_hd_curve(config)
-            self.curve_photo = ImageTk.PhotoImage(image)
+            self.curve_photo = PhotoImage(image)
             self.curve_label.configure(image=self.curve_photo)
         except Exception:
-            # Spinbox typing can briefly create invalid floats; ignore until input stabilizes.
+            # Numeric typing can briefly create invalid floats; ignore until input stabilizes.
             return
 
     def _draw_hd_curve(self, config: DarkroomConfig) -> Image.Image:
@@ -785,9 +862,9 @@ class FilmMaterialEditor:
     def _save_user_preset(self) -> None:
         config = self._config_from_controls()
         initial = safe_preset_stem(config.film.name) or safe_preset_stem(self.preset_name.get()) or "custom_film_material"
-        name = simpledialog.askstring(
-            ui("保存胶片材料", "Save Film Material"),
-            ui("请输入材料预设文件名（建议英文、数字、下划线）：", "Enter a material preset filename (letters, numbers, and underscores recommended):"),
+        name = text_dialog.askstring(
+            local_text("保存胶片材料", "Save Film Material"),
+            local_text("请输入材料预设文件名（建议英文、数字、下划线）：", "Enter a material preset filename (letters, numbers, and underscores recommended):"),
             parent=self.root,
             initialvalue=initial,
         )
@@ -795,24 +872,24 @@ class FilmMaterialEditor:
             return
         stem = safe_preset_stem(name)
         if not stem:
-            messagebox.showerror(ui("无法保存", "Cannot Save"), ui("预设文件名不能为空，也不能只包含特殊字符。", "The preset filename cannot be empty or contain only special characters."), parent=self.root)
+            message_box.showerror(local_text("无法保存", "Cannot Save"), local_text("预设文件名不能为空，也不能只包含特殊字符。", "The preset filename cannot be empty or contain only special characters."), parent=self.root)
             return
         path = USER_FILM_PRESET_DIR / f"{stem}.json"
         existing = film_preset_path(stem)
         if existing.exists():
             if existing.parent == FILM_PRESET_DIR and not path.exists():
-                detail = ui(
+                detail = local_text(
                     f"{stem}.json 是内置材料。保存后会创建同名用户材料，并在 GUI/CLI 中优先使用。",
                     f"{stem}.json is built in. Saving creates a same-name user material that takes precedence in the GUI and CLI.",
                 )
             else:
-                detail = ui(f"{path.name} 已存在。", f"{path.name} already exists.")
-            if not messagebox.askyesno(ui("覆盖材料预设", "Overwrite Material Preset"), f"{detail}\n{ui('是否继续？', 'Continue?')}", parent=self.root):
+                detail = local_text(f"{path.name} 已存在。", f"{path.name} already exists.")
+            if not message_box.askyesno(local_text("覆盖材料预设", "Overwrite Material Preset"), f"{detail}\n{local_text('是否继续？', 'Continue?')}", parent=self.root):
                 return
         save_json(path, self._film_payload(config))
         self.preset_name.set(stem)
         self._refresh_preset_choices()
-        self.status.set(ui(f"已保存用户胶片材料：{path}", f"Saved user film material: {path}"))
+        self.status.set(local_text(f"已保存用户胶片材料：{path}", f"Saved user film material: {path}"))
 
     def run(self) -> None:
         self.root.mainloop()

@@ -39,7 +39,7 @@ sidecar 是跟在主文件旁边的 `.json` 伴随文件。它不保存图像数
 - `fixed`：同一基础种子与设置可重复，用于批次复现；
 - `path`：同一输入路径保持稳定，不同输入获得不同随机结果。
 
-“过程条件随机波动”只控制时间、温度、浓度、搅拌、疲劳和已启用事故倾向的变化幅度，不等同于随机性策略。当前漏光 GUI 只暴露强度；入光边、宽度和纹理由种子自动采样，模板、组合与位置编辑尚未接入。
+“过程条件随机波动”只控制时间、温度、浓度、搅拌、疲劳和已启用事故倾向的变化幅度，不等同于随机性策略。当前漏光 GUI 可选择兼容自动局部边缘、局部边缘、四周、半幅和锥形；具体入口位置、宽度及纹理仍由种子采样。银盐工艺程序编辑器另外提供次级形态组合、外部 mask、手动位置和可选身份种子。
 
 典型 develop 输出可以是：
 
@@ -47,8 +47,8 @@ sidecar 是跟在主文件旁边的 `.json` 伴随文件。它不保存图像数
 image.darkroom_negative.npz              密度母版
 image.darkroom_negative.npz.json         密度母版 sidecar
 image.darkroom_negative.png              橙色负片预览
-image.scanner_raw.tiff                   16-bit linear 电子负片透射图
-image.scanner_raw.tiff.json              电子负片 TIFF sidecar
+image.scanner_raw.tiff                   16-bit linear scanner-raw 透射图
+image.scanner_raw.tiff.json              scanner-raw TIFF sidecar
 ```
 
 如果用 `.npz` 重扫，sidecar 能告诉程序“这张底片当初是用哪个胶片/冲洗配置形成的”。如果 sidecar 丢失，程序只能按当前或默认配置解释密度，语义会弱一些。
@@ -86,6 +86,7 @@ scanner preset
 | `extreme_exposure_reversal_start_loge` / `extreme_exposure_reversal_width` | `film` | 三材料层的回落起点和连续过渡宽度 | 使用内部归一化 `logE` 坐标，尚未按真实曝光量标定；只应配合有依据的异常材料使用 |
 | `development_adjacency_strength` | `chemistry` | 默认关闭的一次性首次显影邻接强度 | 从预计反应量生成局部速率修正；不改变潜影、不执行扫描锐化 |
 | `development_adjacency_radius` | `chemistry` | 邻接作用尺度，相对画面短边 | 当前是工程降阶尺度，未按乳剂厚度、扩散系数或具体药水定量标定 |
+| `dir_process_effectiveness` | `chemistry` | 当前彩显条件对材料 DIR 响应的有效性 | `None` 时彩负默认 1、标准穷尽彩反默认 0；属于冲洗配方，不在材料编辑器里改 |
 | `adjacency_work_long_edge` | `processing` | 显影邻接全局工作网格的长边上限 | 只改变内部计算分辨率；全局统计先冻结，材料分块不得各自估计 |
 | `halation_layer_return_weights` | `film` | 材料层回流相对权重 | 仅在 `layer_selective` 下生效；控制三层材料接收回流曝光的相对比例，最大项归一为 1 |
 | `halation_spread_scale_weights` | `film` | 紧邻、主回流、宽域三个传播尺度的相对权重 | 仅在 `layer_selective` 下生效；默认 `(0,1,0)` 只使用兼容主 PSF，增加首/末项会加入紧邻扩散或宽域薄雾 |
@@ -109,6 +110,8 @@ scanner preset
 | `auxiliary_layer_density_rgb` | `film` | 附加层单位剩余量的 RGB 光学密度 | 只有附加层清除不完全时进入最终介质密度 |
 | `layer_sensitivity_matrix` | `film` | RGB 曝光如何落到三层乳剂 | 改变颜色如何形成 CMY 密度，属于胶片材料层 |
 | `dye_absorption_matrix` | `film` | CMY 染料密度如何吸收 RGB 光 | 交叉项越强，颜色越“互染”、越不数码干净 |
+| `dir_material_response_matrix` | `film` | 彩色材料 DIR 源层→目标层有效响应 | 全零关闭；非零时在彩显中抑制目标层，不是扫描锐化或饱和度滤镜 |
+| `dir_diffusion_radius` | `film` | DIR 有界扩散相对短边尺度 | 更大则层内抑制更宽；黑白材料必须保持关闭 |
 | `hd_gamma` | `film` | H-D 曲线中段斜率 | 底片密度分离更强，扫描后反差也更容易增强 |
 | `density_min` | `film` | 最小密度 / 片基灰雾 | 黑位更抬、底片更“雾”，扫描后可能更灰 |
 | `density_max` | `film` | 最大可形成密度 | 高曝光区域能形成更厚密度，高光压缩空间更大 |
@@ -121,7 +124,7 @@ scanner preset
 | `emulsion_mtf_strength` | `film` | 乳剂有限解析力 / 输入高频抑制 | 数码锐边更不“浮”，但真实细节也可能被压掉 |
 | `digital_artifact_suppression` | `film` | 对 ISP 锐化振铃的额外抑制 | JPEG/手机锐化边缘更柔，但过高会糊 |
 
-`granularity_sigma` 只是材料基准。实际颗粒还会乘以冲洗得到的 `grain_factor`，空间尺度还会乘以 `grain_radius_factor`；迫冲、过显、高温、显影/定影疲劳、残银、药染、显影不均、显影液类型和画幅都可能让最终颗粒更强或更粗。
+`granularity_sigma` 只是材料基准。实际颗粒还会乘以冲洗得到的 `grain_factor`，空间尺度会乘以 `grain_radius_factor`，既有多尺度颗粒中最粗尺度的相对占比由 `grain_clump_factor` 调整；后者重新归一化权重，不会凭空增加第二套纹理。迫冲、过显、高温、显影疲劳、显影液类型和画幅会改变乳剂颗粒的幅度、尺度或团聚性；定影残留、药染和表面镀银仍按各自最终介质组分表达，不能冒充染料/乳剂颗粒。
 
 ### 保存数组的固定语义
 
@@ -154,7 +157,7 @@ grain_midtone_mu
 grain_midtone_sigma
 ```
 
-这些字段主要服务旧的 `core/response.py` 和 `core/grain.py` 辅助模块，不属于当前电子负片主链路。当前主链路使用的是：
+这些字段主要服务旧的 `core/response.py` 和 `core/grain.py` 辅助模块，不属于当前冲洗介质主链路。当前主链路使用的是：
 
 ```text
 sensitometry.py      -> H-D density / CMY density
@@ -170,7 +173,7 @@ scanner.py          -> negative inversion / scan render
 
 | 参数 | 所属配置 | 直观含义 | 增大时通常发生什么 |
 | --- | --- | --- | --- |
-| `developer_type` | `chemistry/develop` | 显影液响应类型 | 改变显影速率、反差倾向、雾化、颗粒和高光补偿方式 |
+| `developer_type` | `chemistry/develop` | 显影液响应类型 | 改变显影速率、反差倾向、雾化、颗粒幅度/尺度/粗粒团聚和高光补偿方式；高锐度预设另显式启用首次显影邻接，不是扫描锐化 |
 | `fixer_type` | `chemistry/develop` | 定影/清除 profile | 快速、硬膜和单浴具有不同疲劳容忍与清除倾向，不改变显影生成量 |
 | `frame_size` | `chemistry/develop` | 画幅 / 放大倍率代理 | 半格/35mm 颗粒更显眼，中画幅和大画幅更细；不改变胶片材料本身 |
 | `time_min` | `chemistry/develop` | 显影时间 | 时间更长通常显影更充分，反差/雾化/颗粒可能增加 |
@@ -181,7 +184,19 @@ scanner.py          -> negative inversion / scan render
 | `push_stops` | `chemistry` | 迫冲档数 | 中段反差、灰雾、颗粒都会变强；阴影可能更硬 |
 | `silver_retention` | `chemistry` | 留银/漂白旁路强度 | 只降低漂白去银完成度，保留显影形成的影像银 |
 | `silver_plating` | `chemistry` | 表面镀银事故强度 | 在冲洗后介质上增加斑驳中性金属银沉积，不改变原影像银材料池 |
-| `light_leak_strength` | `chemistry` | 漏光预曝光强度 | 在潜影形成前从一条或少数入光边增加局部曝光，不是四边光晕滤镜 |
+| `light_leak_template` | `chemistry` | 潜影前漏光空间形态 | `auto` 保持历史局部边缘行为；另有 `local_edge`、`perimeter`、`half_frame`、`cone`，显示名称会随 GUI 语言切换 |
+| `light_leak_strength` | `chemistry` | 漏光预曝光强度 | 新模板由形态控制覆盖、强度控制带限模板场的峰值尺度；`auto/local_edge` 保持历史响应。全部都在潜影形成前增加非负曝光，不是成片叠色或扫描 flare |
+| `light_leak_secondary_template` | `chemistry` | 次级内置漏光形态 | `none` 保持单模板；与主形态在覆盖场上混合，不另乘一套强度 |
+| `light_leak_mix` | `chemistry` | 漏光覆盖混合 | `max` / `add` 混合主形态、次级形态和 mask；`replace` 只用外部 mask |
+| `light_leak_mask_path` | `chemistry` | 外部漏光覆盖图 | 读入后放到与内置模板相同的带限控制网格，只归一峰值不归一总能量 |
+| `light_leak_placement` | `chemistry` | 漏光位置模式 | `sampled` 由种子决定入口；`manual` 使用入口边/中心/旋转，不重采样纹理 |
+| `light_leak_identity_seed` | `chemistry` | 漏光结构身份种子 | 设置后漏光采样不再消耗逐帧 RNG，便于批内共用同一结构；不是 sidecar 组契约 |
+| `exposure_occlusion_dust` / `debris` | `chemistry` | 逆 gamma 之后、冲洗之前的线性曝光遮挡 | 乘性挡住到达乳剂的光，随逐帧 RNG 变化；全零关闭。不是扫描脏点或成片叠图 |
+| `exposure_occlusion_hair` / `insect` | `chemistry` | 片面相对固定的毛发/飞虫遮挡 | 使用身份种子而不是逐帧 RNG；强度只缩放数量与不透明度 |
+| `exposure_occlusion_identity_seed` | `chemistry` | 毛发/飞虫结构身份种子 | `None` 使用内置固定身份；改种子换一套粘在片上的几何。不是 sidecar 组契约 |
+| `film_border.imprint_*` | 顶层 `film_border` | 激光点阵 / 光学琥珀 / 冲洗厂边字 | 片门超强光源，在 MTF 之后加法进入潜影；文字和时间都空则关闭。不是 RGB 水印 |
+| `reticulation_strength` | `chemistry` | 浴间温差或操作失误造成的明胶乳剂网裂/皱缩强度 | 同一种子固定结构拓扑，强度线性缩放近零均值的宽谱密度起伏；不由单一 `temperature_c` 自动推断，也不改变片基或扫描器 |
+| `dye_damage_strength` | `chemistry` | 非标准药液或明确事故造成的已形成染料损失 | 只在统一彩色流程中通过材料池算子减少染料；不是扫描降饱和，也不会由单一温度或药液疲劳自动开启 |
 | `auxiliary_removal` | `chemistry` | 附加层去除完成度 | 越低则最终介质保留更多由材料定义的 rem-jet/背层密度 |
 | `temperature_c` | `chemistry` | 显影温度 | 高于基准时反应更激烈，反差和颗粒略增 |
 | `developer_exhaustion` | `chemistry` | 药水疲劳 | 最大密度下降，灰雾增加，反差可能变钝，颗粒更脏 |
@@ -197,6 +212,7 @@ scanner.py          -> negative inversion / scan render
 | `remove_base_mask` | `scanner` | 是否使用已知片基、明确边框样本或兜底估计去除片基/色罩 | 开启后执行片基平衡；它不修改介质中的真实片基 |
 | `invert_transmission` | `scanner` | 是否把透射采样转为正密度并反相解释 | 开启后进入通道重建与正像映射；关闭时保留输入正负关系 |
 | `include_clear_base_border` | `scanner` | 是否在扫描结果周围显示派生片基参考边框 | 扩大观察画布；边框经过同一光源和传感器，但不写回 `optical_density_rgb` |
+| `film_border` | 顶层布局契约 | 齿孔、片边几何和边字闪光 | 齿孔仍只解析布局；边字作为形成侧超强光源接入。不要和片基观察边框混用 |
 | `scanner_response_matrix` | `scanner` | 背光透过介质后的传感器 RGB 响应 | 位于去色罩之前，描述采样器；不是负片染料校正或最终滤色 |
 | `scan_base_percentile` | `scanner` | 无边框、无已知片基样本时估计片基的高百分位 | full 生成型负片会使用已知 clear base；该项主要是外部 scan-only 兜底 |
 | `negative_channel_matrix` | `scanner` | 去罩并转入密度域后的通道交叉重建 | 可补偿材料/扫描组合的染料串扰；不应写成所有负片共用的固定蓝绿增强 |
@@ -210,7 +226,7 @@ scanner.py          -> negative inversion / scan render
 | `print_color_bias` | `scanner` | RGB 乘法增益 | 直接改变输出通道，容易显得数码，建议少用 |
 | `highlight_color_bias` | `scanner` | 只作用在达到阈值后的 RGB 通道增益；`1.00` 中性 | 某通道低于 `1.00` 会压低，高于 `1.00` 会增强；该显式高光控制不再被正片总体滤色强度二次衰减 |
 | `projection_black_adaptation` | `scanner` | 正片灯台观察阶段的暗部适应 | 单调抬升极暗层次并保持 RGB 比例；不制造固定灰底，也不改写正片密度母版 |
-| `scan_saturation` | `scanner` | 扫描输出色彩浓度 | 只改变最终正像饱和度，不回写电子负片 |
+| `scan_saturation` | `scanner` | 扫描输出色彩浓度 | 只改变最终正像饱和度，不回写冲洗介质 |
 | `scan_normalize` | `scanner` | 是否定黑白点 | 开启后更像扫描软件自动展开黑白点 |
 | `scan_normalize_strength` | `scanner` | 全局黑白点标定的混合强度 | 越高越接近扫描软件自动展开后的正常显示范围；过高会削弱原场景曝光差异并增加极端值裁切风险 |
 | `scan_normalize_mode` | `scanner` | 黑白点归一化方式 | `luma` 只重映射亮度并对每个像素的 RGB 使用同一倍率，保留整体色偏与灯台色温；`rgb` 分别展开通道，更像自动白平衡 |
@@ -233,13 +249,71 @@ scanner.py          -> negative inversion / scan render
 
 `look_strength` 不是物理参数，而是面向 GUI / CLI 的“一键味道浓淡”总控。它会直接修改运行时 film 参数，所以适合快速预览，不适合作为精细 film preset 的核心定义。制作严肃 preset 时，应把 `look_strength` 保持在 `1.0`，直接调胶片和扫描器参数。
 
+## 正冲 / 反转 / Reversal
+
+中文里“正冲”常被用来指反转冲洗：最终直接在胶片上得到正像，而不是得到负片再扫描反相。
+
+黑白反转的典型流程是：
+
+```text
+第一次显影
+-> 漂白去掉第一次显影形成的负像银
+-> 清洗 / 清除漂白残留
+-> 二次曝光或化学雾化
+-> 第二次显影形成正像
+-> 定影 / 水洗 / 干燥
+```
+
+彩色反转并不是不存在。彩色反转片一般对应 E-6 一类流程，目标是得到彩色正片/幻灯片。它和“彩色负片 + C-41 + 扫描反相”不是一回事。
+
+### 当前项目实现
+
+`bw_reversal` 与 `color_reversal` 已进入统一银盐材料池主流程。它们与负片程序共享连续潜影、唯一卤化银池和基础算子。黑白反转在首次显影后直接移除第一次银像；彩色反转保留第一次银像到末段，与彩显形成的银一起漂白、定影。两者都通过剩余卤化银激活与二次显影形成正像，而不是扫描阶段反相。
+
+这不表示彩负材料和反转材料可以混为一谈：材料 preset 仍应分别描述感光曲线、片基、染料与正片密度特性；药水兼容性也应保留差异。统一的是降阶状态转换语言和形成入口，不是具体材料或标准工艺参数。
+
+最终介质继续保存为密度母版并声明自身极性。`positive_transparency_scan` 只负责观察正像透明介质，不能改变已经形成的银、染料或残留卤化银状态。
+
+## 彩负黑白冲洗
+
+彩色负片使用黑白显影程序时，材料仍然是彩色多层负片：感色矩阵、三层卤化银响应、橙色片基和材料光学参数不会被改写。黑白程序不进行染料偶合，最终主要留下宽谱吸收的金属银。因此它不同于使用真正黑白胶片，也不同于把彩色扫描结果简单去饱和。
+
+项目用 `silver_on_color_material` 标识该最终介质，并把组合记录为 material/process mismatch。扫描仍可观察片基带来的颜色影响，但不能把它解释为冲洗时形成了彩色染料像。
+
+## 常见调参判断
+
+| 现象 | 优先检查 | 建议 |
+| --- | --- | --- |
+| 负片输出整体发灰、黑白都不到位 | `scan_normalize`, `scan_normalize_strength`, `print_contrast` | 日常扫描先确认启用 `luma` 归一化并提高 strength；仍偏平再小幅提高 print contrast，诊断流程则保持关闭 |
+| 曝光 EV 不再明显控制亮暗 | `scan_normalize` | 归一化会重新定黑白点，降低 strength 或关闭 |
+| 颜色像 YCrCb、太干净 | `scan_normalize_mode`, `scan_normalize_strength` | 保持 `luma`，降低 strength，避免 `rgb` |
+| 颜色寡淡 | `scan_saturation`, `print_contrast`, `print_color_shift` | 先调扫描饱和度，再调 print contrast，最后小幅 log 域滤色 |
+| 整体偏红 | `print_color_shift`, `print_reference_density` | 不要用 RGB bias 硬压；优先微调 log 域滤色 |
+| 红色不够浓 | `scan_saturation`, `dye_absorption_matrix`, `layer_sensitivity_matrix` | 若只是最终图，调 scan saturation；若要材料特性，做新 preset |
+| 颗粒像盖在图上 | `emulsion_mtf_strength`, `grain_size_multiplier`, `digital_artifact_suppression` | 提高 MTF/伪影抑制，适当增大颗粒尺寸 |
+| 细节被糊掉 | `emulsion_mtf_strength`, `digital_artifact_suppression` | 降低这两个值，尤其对干净相机图 |
+| 光晕太硬 | `halation_softness`, `halation_gradient_suppression`, `halation_strength` | 提高软化和边缘补偿，略降强度 |
+| 高光绿色/蓝色控制看不出 | `highlight_color_bias`, `highlight_bias_threshold` | 先确认高光亮度能达到阈值；`1.00` 中性，分别调绿色或蓝色增益，避免同时大幅改整体滤色 |
+| 高光颜色抢戏 | `highlight_color_bias` | 把相应通道增益拉回 `1.00` 附近，先让整体扫描色彩成立 |
+
 ## 工作流建议
 
 调 preset 时建议按这个顺序：
 
 1. 固定输入图，关闭或降低 scan normalize，看底片/扫描基础是否正常。
-2. 先调 `film` 和 `chemistry`，生成稳定的 `.npz` 电子负片。
+2. 先调 `film` 和 `chemistry`，生成稳定的 `.npz` 冲洗介质。
 3. 固定 `.npz`，只调 `scanner` 和扫描侧 `look`。
 4. 最后再调输出格式、尺寸、sidecar、layer pack。
 
-出现问题时，建议不要一次同时改胶片、冲洗和扫描参数。否则很难判断问题来自底片本身，还是扫描解释。
+不要一次同时改胶片、冲洗和扫描参数。否则很难判断问题来自底片本身，还是扫描解释。
+
+## 大图性能路线
+
+当前开发阶段可以使用 GUI 的“按边长缩放”或 CLI 的 `--resize-long-edge` 快速试参；现有 session/preset 中的 `preview_long_edge` 是兼容字段名。正式输出再回到原始尺寸。后续若要让大分辨率冲洗更快，优先考虑这些方向：
+
+1. **分辨率分层计算**：halation、MTF 判定、部分低频残留层可以在较低分辨率计算，再上采样回原图；真正需要像素级保真的 H-D 密度映射保留全分辨率。
+2. **分块 / tile 处理**：对 H-D、密度映射、扫描反相这类局部运算可按块处理，降低内存峰值；halation 这类卷积需要带 overlap padding。
+3. **缓存冲洗介质阶段**：develop 阶段生成 `.npz` / scanner raw 后，反复调扫描不再重跑冲洗，这是当前最重要的实际加速方式。
+4. **更快的随机场生成**：颗粒可以先在低分辨率生成相关随机场，再按画幅比例上采样；细节颗粒可叠加轻量局部噪声。
+5. **可选 FFT / separable convolution**：大半径 halation PSF 可以切换到 FFT 卷积或分离近似核，避免大核 `filter2D` 在高分辨率下变慢。
+6. **Numba / CuPy / OpenCL 可选后端**：核心仍保持 NumPy/OpenCV，但以后可以为重计算模块加可选加速后端，而不是把 GPU 作为必需依赖。

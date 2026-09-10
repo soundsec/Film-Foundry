@@ -20,23 +20,23 @@ from typing import Callable
 import numpy as np
 
 from film_foundry.tools.benchmark_pipeline import synthetic_reference_image
-from half_frame_darkroom.core import engine
-from half_frame_darkroom.core.atomic_io import atomic_write_json
-from half_frame_darkroom.core.development_adjacency import (
+from film_foundry.core import engine
+from film_foundry.core.atomic_io import atomic_write_json
+from film_foundry.core.development_adjacency import (
     build_development_adjacency_field,
 )
-from half_frame_darkroom.core.engine import develop_negative
-from half_frame_darkroom.core.halation import (
+from film_foundry.core.engine import develop_negative
+from film_foundry.core.halation import (
     halation_source_energy,
     halation_source_energy_tiled,
     spread_multiscale_halation_work_source,
 )
-from half_frame_darkroom.core.silver_grain import (
+from film_foundry.core.silver_grain import (
     SilverGrainPlan,
     apply_metallic_silver_grain,
 )
-from half_frame_darkroom.core.spatial_fields import global_field_grid
-from half_frame_darkroom.model.config import (
+from film_foundry.core.spatial_fields import global_field_grid
+from film_foundry.model.config import (
     DarkroomConfig,
     DevelopRecipeConfig,
     FilmStockConfig,

@@ -3,27 +3,26 @@
 from __future__ import annotations
 
 from pathlib import Path
-import tkinter as tk
 
-from half_frame_darkroom.ui.i18n import current_language, tr
+from film_foundry.ui.i18n import current_language, tr
 
 
-def ui(zh: str, en: str) -> str:
+def local_text(zh: str, en: str) -> str:
     return en if current_language() == "en_US" else zh
 
 
-def localize_widget_tree(widget: tk.Misc, english: dict[str, str]) -> None:
-    """Translate static widget text after a Tk editor has built its controls."""
+def localize_widget_tree(widget, english: dict[str, str]) -> None:
+    """Translate static widget text after an editor builds its controls."""
     if current_language() != "en_US":
         return
     try:
         value = str(widget.cget("text"))
-    except (AttributeError, tk.TclError):
+    except (AttributeError, RuntimeError, KeyError):
         value = ""
     if value in english:
         try:
             widget.configure(text=english[value])
-        except tk.TclError:
+        except (AttributeError, RuntimeError):
             pass
     for child in widget.winfo_children():
         localize_widget_tree(child, english)

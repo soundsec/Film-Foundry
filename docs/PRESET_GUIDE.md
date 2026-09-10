@@ -10,7 +10,7 @@
 
 develop preset 的官方显示名明确包含彩色/黑白与负片/反转正片语义。scanner preset 现在共用一个透射扫描目录和编辑器；旧 `negative_scan` / `positive_transparency_scan` 身份只用于兼容旧 preset 并初始化建议组合，不再代表两台不同扫描器，也不会禁止用户加载另一类 preset。
 
-主 GUI 列出 `standard_color_negative`、`standard_bw_negative`、`standard_color_reversal`、`standard_bw_reversal` 四个标准内置冲洗流程，并额外列出明确标记为实验性的 `experimental_color_negative_clear_reversal`。其他专用黑白流程不是删除：它们仍由银盐工艺程序编辑器和 CLI 读取，也可以另存为用户 preset 后重新进入主列表。
+主 GUI 列出 `standard_color_negative`、`standard_bw_negative`、`standard_color_reversal`、`standard_bw_reversal` 四个标准内置冲洗流程，并额外列出明确标记为实验性的 `experimental_color_negative_clear_reversal`。其他专用黑白流程不是删除：细颗粒、补偿、高锐度和单浴等方案仍由银盐工艺程序编辑器和 CLI 读取，也可以另存为用户 preset 后重新进入主列表。`high_acutance_bw` 使用已有的首次显影邻接动力学表达边缘效应，不是扫描锐化。
 
 当前公开正片材料：`color_reversal_transparency`（标准）、`color_reversal_soft`（柔和宽容）、`color_reversal_vivid`（高饱和高反差）、`monochrome_reversal_transparency`（黑白细颗粒）。当前公开正片灯台：`positive_transparency_scan`（中性，`+0.35 EV`）、`positive_transparency_bright`（明亮，`+0.80 EV`）、`positive_transparency_warm`（暖调，`+0.50 EV / 4800 K`）。
 
@@ -18,26 +18,26 @@ develop preset 的官方显示名明确包含彩色/黑白与负片/反转正片
 
 输出配置中，`export_transparent_plate` 表示 standalone 透明/透射介质，默认开启；`export_plate_set` 表示 standalone 密度与效果辅助层；`export_layer_pack` 表示包含前两者以及 NPZ、预览/raw 和 manifest 的完整归档。Layer Pack 开启时，前两个布尔值不再决定包内是否包含对应内容，也不会另外生成重复目录。
 
-公开负片 film preset 的 `granularity_sigma` 当前较早期值约降低一成。这只降低材料本底；`build_effective_development()` 仍根据 developer profile、push、overdevelopment、temperature、developer/fixer exhaustion、retained silver、chemical stain、uneven development 和 frame size 生成实际 `grain_factor` 与 `grain_radius_factor`。反转片预设使用独立、较细且更紧密的密度域颗粒参数；颗粒强度仍随形成密度变化。正片灯台预设的 `scan_saturation` 已收回接近中性，色彩主要由材料与冲洗形成。
+公开负片 film preset 的 `granularity_sigma` 当前较早期值约降低一成。这只降低材料本底；`build_effective_development()` 仍根据 developer profile、push、overdevelopment、temperature、developer/fixer exhaustion、retained silver、chemical stain、uneven development 和 frame size 生成实际 `grain_factor`、`grain_radius_factor` 与 `grain_clump_factor`。前两者控制幅度和尺度，后者只在保持总随机能量归一化的前提下改变粗尺度所占比例，不会再生成一套颗粒场。反转片预设使用独立、较细且更紧密的密度域颗粒参数；颗粒强度仍随形成密度变化。正片灯台预设的 `scan_saturation` 已收回接近中性，色彩主要由材料与冲洗形成。
 
 这份说明用于解释预设的用途。不是每个 preset 都应该被理解成“正常照片输出”，有些是调试基准，有些是扫描风格，有些更接近材料母版。
 
 当前推荐使用拆分后的预设目录：
 
 ```text
-half_frame_darkroom/presets/film/
+film_foundry/presets/film/
   film material: H-D curve, base, dye, grain, halation
 
-half_frame_darkroom/presets/develop/
+film_foundry/presets/develop/
   silver-halide film process program: operator topology + developer/monobath,
   time, temperature, concentration, agitation, exhaustion, frame size
   银盐负片 / 反转片共享算子程序；非银盐介质使用独立 preset 目录
 
-half_frame_darkroom/presets/scanner/
+film_foundry/presets/scanner/
   扫描 / 正像解释 / 输出影调
 ```
 
-根目录下的 `half_frame_darkroom/presets/*.json` 现在只建议保留少量完整配置示例。它们不是主流程依赖；GUI 和 CLI 默认组合 `film/`、`develop/` 与 `scanner/` 三个子目录。
+根目录下的 `film_foundry/presets/*.json` 现在只建议保留少量完整配置示例。它们不是主流程依赖；GUI 和 CLI 默认组合 `film/`、`develop/` 与 `scanner/` 三个子目录。
 
 拆分合并执行严格所有权：film preset 只接管 `FilmStockConfig` 和材料身份，develop preset 只接管 `DevelopRecipeConfig` 与冲洗侧 look，scanner preset 只接管 `ScannerConfig` 与扫描侧 look。放错目录的跨阶段字段不会通过 `merge_config_presets()` 渗入运行配置。需要保存所有阶段与输出开关时，应使用根目录完整配置或 session，而不是让一个拆分 preset 暗中拥有其他阶段。
 
@@ -66,9 +66,9 @@ half_frame_darkroom/presets/scanner/
 
 `experimental_color_negative_clear_reversal` 是主 GUI、编辑器与 CLI 均可见的实验流程。它在彩色负片的 `color_reversal` 后段使用 `mask_bleach_completion` 插入独立的色罩/染料漂白，使橙色色罩趋近透明支撑体，同时允许产生材料定义的成像染料损伤。该字段不是“更强的银漂白”，不会漂除透明塑料支撑体，也不代表 C-41/E-6 标准流程；默认标准流程中它始终为 `0`。
 
-黑白 `program_key` 描述银显影拓扑，不重定义 film preset 的材料身份。将彩色 film preset 与 `bw_negative` 组合会得到保留彩色材料三层感色和橙色片基的银像负片；使用真正的黑白 film preset 才会得到单层、通常为透明片基的黑白材料。两者不应靠修改 scanner preset 相互伪装。
+黑白 `program_key` 描述银显影拓扑，不重定义 film preset 的材料身份。将彩色 film preset 与 `bw_negative` 组合会得到保留彩色材料三层感色和橙色片基的银像负片；使用真正的黑白 film preset 才会得到单层、通常为透明片基的黑白材料。反过来，黑白 film preset 与 `color_negative` / `color_reversal` 仍走统一材料池：成色剂容量为零，因此不会凭空形成染料；标准漂白会去掉已显银像，漂白旁路则保留银像。两者都不应靠修改 scanner preset 相互伪装。
 
-材料 preset 的原生 `medium_process` / `image_polarity` 与 develop preset 的 `program_key` 可以交叉组合。彩负 + `color_reversal` 和反转片 + `color_negative` 都是有效逆冲；最终 NPZ 的 `cross_process` 会同时记录材料与程序极性。`first_development_completion` / `second_development_completion` 只区分反转程序内两次显影，并继续乘以由时间、温度、浓度、搅动和疲劳推导的全局完成度。
+材料 preset 的原生 `medium_process` / `image_polarity` 与 develop preset 的 `program_key` 可以交叉组合。彩负 + `color_reversal`、反转片 + `color_negative`、黑白片 + 彩色程序都是有效交叉冲洗；最终 NPZ 的 `cross_process` 会记录材料与程序的色彩系统和极性。`first_development_completion` / `second_development_completion` 只区分反转程序内两次显影，并继续乘以由时间、温度、浓度、搅动和疲劳推导的全局完成度。
 
 film preset 的 `cross_process_silver_development`、`cross_process_dye_coupling`、`cross_process_activation`、`cross_process_silver_bleach`、`cross_process_halide_fixing`、`cross_process_silver_removal`、`cross_process_dye_stability`、`cross_process_auxiliary_removal` 和 `cross_process_layer_balance` 只在材料类别与程序不匹配时生效。银显影、激活、漂白、定影、去银及附加层清除使用 0–1 的兼容效率；`cross_process_dye_coupling` 与 `cross_process_layer_balance` 是可大于 1 的比率，但仍受材料容量和反应上限约束。`cross_process_layer_balance` 会与 develop preset 的程序自身 `process_layer_balance` 相乘，请勿在两处重复填写同一偏色意图。默认均为中性值，保证旧 preset 兼容；这些字段不应进入 scanner preset。
 
@@ -84,7 +84,7 @@ scanner preset 只拥有扫描和观看字段。即使完整 JSON 中出现 `fil
 
 ### `film/clear_modern_negative` + `scanner/neutral_scan`
 
-用途：默认中性彩色负片、电子负片标准样张、日常照片。
+用途：默认中性彩色负片、冲洗介质标准样张、日常照片。
 
 特点：
 
@@ -186,7 +186,7 @@ scanner preset 只拥有扫描和观看字段。即使完整 JSON 中出现 `fil
 
 ### `scanner/neutral_scan`
 
-用途：中性扫描解释，对已有电子负片重新扫描时做基准。
+用途：中性扫描解释，对已有冲洗介质重新扫描时做基准。
 
 特点：
 
@@ -264,7 +264,7 @@ Characteristics:
 Suggested CLI check:
 
 ```bash
-python -m half_frame_darkroom.app.cli full input_images outputs/diagnostic_develop \
+python -m film_foundry.app.cli full input_images outputs/diagnostic_develop \
   --film-preset diagnostic_develop_sensitive \
   --develop-preset standard_color_negative \
   --scanner-preset diagnostic_flat_scan \
@@ -278,7 +278,7 @@ python -m half_frame_darkroom.app.cli full input_images outputs/diagnostic_devel
 Purpose: playful expert-mode accident preset for ruined chemistry, retained silver, murky stain, uneven development, and edge light leaks.
 
 New develop fields:
-- `light_leak_strength`: adds directional local edge exposure before latent-state formation; it no longer lights all four edges by default.
+- `light_leak_strength`: adds directional local edge exposure before latent-state formation; it no longer lights all four edges by default. Process-editor fields can add a secondary shape, external mask, or manual placement without changing this preset's defaults.
 - `chemical_stain`: creates a murky, spatial CMY density deposit after material formation; it does not reduce developer activity or already formed silver/dye Dmax.
 - `uneven_development`: creates a low-frequency local developer-activity field before material-pool conversion, so silver/dye formation—not a final overlay—becomes uneven.
 - `silver_retention`: retains developed image silver by reducing bleach completion; use for bleach bypass, not surface plating.

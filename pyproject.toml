@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "film-foundry"
 version = "0.3.1"
-description = "Physics-inspired film and electronic negative material factory."
+description = "Physics-inspired film and developed-medium workflow."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
@@ -15,6 +15,8 @@ dependencies = [
   "numpy>=1.24",
   "opencv-python>=4.8",
   "Pillow>=10.0",
+  "python-lcms2>=0.1.1,<0.2",
+  "PySide6-Essentials>=6.8,<7",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -31,17 +33,17 @@ Issues = "https://github.com/soundsec/Film-Foundry/issues"
 test = ["pytest>=8.0"]
 
 [project.scripts]
-film-foundry = "half_frame_darkroom.app.cli:main"
-electronic-negative-factory = "half_frame_darkroom.app.cli:main"
-half-frame-darkroom = "half_frame_darkroom.app.cli:main"
+film-foundry = "film_foundry.app.cli:main"
+electronic-negative-factory = "film_foundry.app.cli:main"
+half-frame-darkroom = "film_foundry.app.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["half_frame_darkroom*", "film_foundry*"]
+include = ["film_foundry*", "half_frame_darkroom*"]
 
 [tool.setuptools.package-data]
-half_frame_darkroom = ["presets/*.json", "presets/*/*.json"]
+film_foundry = ["presets/*.json", "presets/*/*.json"]
 
 [tool.pytest.ini_options]
-testpaths = ["half_frame_darkroom/tests"]
+testpaths = ["film_foundry/tests"]
 norecursedirs = ["#BackUp", "build", "dist", ".git", ".pytest_cache", "__pycache__"]

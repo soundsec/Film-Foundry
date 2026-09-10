@@ -1,0 +1,30 @@
+{
+  "develop": {
+    "developer_name": "High-Acutance BW Developer",
+    "developer_type": "high_acutance",
+    "fixer_name": "Standard Fixer",
+    "fixer_type": "standard",
+    "program_key": "bw_negative",
+    "process_mode": "normal_negative",
+    "frame_size": "35mm",
+    "time_min": 9.0,
+    "temperature_c": 20.0,
+    "concentration": 1.0,
+    "agitation": 0.6,
+    "push_stops": 0.0,
+    "developer_exhaustion": 0.0,
+    "fixer_exhaustion": 0.0,
+    "compensation": 0.12,
+    "silver_retention": 0.0,
+    "development_adjacency_strength": 0.32,
+    "development_adjacency_radius": 0.0022
+  },
+  "mode": "bw_negative",
+  "look": {
+    "exposure_ev": -0.1,
+    "negative_contrast": 1.0,
+    "halation_multiplier": 0.55,
+    "grain_multiplier": 1.0,
+    "grain_size_multiplier": 1.0
+  }
+}

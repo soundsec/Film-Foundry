@@ -1,6 +1,8 @@
-# Film Foundry / Electronic Negative Factory
+# Film Foundry
 
-Film Foundry 是一个物理启发式虚拟暗房与电子胶片介质生成工具。它先根据材料和冲洗流程形成负片或反转片，再通过独立的透射扫描流程得到最终数字图像。
+Film Foundry 是一个物理启发式虚拟暗房与成像介质生成工具。它先根据材料和冲洗流程形成负片或反转片，再通过独立的透射扫描流程得到最终数字图像。
+
+旧材料、sidecar 和命令入口仍可能出现 “Electronic Negative Factory” 或 `half_frame_darkroom` 等历史名称；它们是兼容别名，不是另一套产品。
 
 本项目仍处于早期 alpha 阶段。它不是严格的胶片化学仿真器，也不以复刻某一款商业胶卷或扫描仪为目标；它更重视可解释的材料行为、暗房控制和创作自由。
 
@@ -11,7 +13,7 @@ Film Foundry 是一个物理启发式虚拟暗房与电子胶片介质生成工�
 ## 主要功能
 
 - 彩色负片、黑白负片、彩色反转片和黑白反转片流程。
-- 漂白旁路、交叉冲洗、迫冲/减冲、残银、镀银、漏光、药水疲劳、显影不均和材料退化等控制。
+- 漂白旁路、交叉冲洗、迫冲/减冲、残银、镀银、潜影前漏光模板、药水疲劳、显影不均、显式染料损伤、乳剂网裂和材料退化等控制。
 - 密度颗粒、画幅颗粒差异、光晕、乳剂清晰度与扫描色彩控制。
 - 负片与正片共用透射灯台和扫描采集；用户独立控制去片基、反相与片基参考边框，也可直接输出灯台上的负片翻拍。
 - 透明介质、物理透射 TIFF、scanner/light-table raw、制版分层等材料导出。
@@ -35,6 +37,8 @@ conda activate film-foundry
 
 ## 启动 GUI
 
+桌面界面使用 PySide6；通过 `requirements.txt` 或 `environment.yml` 安装时会一并安装所需 Qt 运行时。
+
 推荐从启动器进入：
 
 ```bash
@@ -57,13 +61,15 @@ python -m film_foundry.tools.run_darkroom_gui
 
 ## 处理模式与大图
 
-CLI 和运行配置提供三种处理模式：
+CLI 和运行配置提供三个可独立组合的处理控制：
 
-- `quality`：使用正式输出尺寸，适合最终成片。
-- `scaled_fast`：先缩小到预览尺寸，适合快速试色和调参。
-- `reduced_fast`：保留正式输出尺寸，但降低部分内部细节计算，适合希望保留分辨率的快速处理。
+- 边长缩放：按目标长边缩放后处理，适合快速试色、调参或直接输出较小尺寸。
+- 降阶快速：选择明确声明的低阶算子；当前版本仍在逐步扩充其覆盖。
+- 处理质量：`draft` / `standard` / `high` 控制当前所选模型内部的细节与采样预算。
 
-主 GUI 中“快速模式”复选框单独对应 `reduced_fast`；“按预览长边输出 / 冲洗”对应 `scaled_fast`，并且优先级更高。两项都开启时实际执行 `scaled_fast`。当前两项默认开启，预览长边默认为 1600 px，因此默认点击“开始处理”会先缩放，而不是在原始尺寸上执行降阶快速。取消“按预览长边输出 / 冲洗”后，“快速模式”才表示保持正式尺寸的内部降阶；再取消“快速模式”则进入 `quality`。
+主 GUI 的边长缩放、降阶快速和处理质量是三个可以任意叠加的控制。两项快速开关都开启时，系统会先缩放到目标长边，再在该尺寸上运行所选质量档位的低阶算子；关闭降阶但保留缩放，则是在较小尺寸上运行完整算子；关闭缩放但保留降阶，则是在正式尺寸上运行低阶算子。当前两项默认开启，缩放目标长边默认为 1600 px。
+
+这里的“降阶快速”特指由用户开关选择的近似模型，可能以更简单的数学或统计表达换取速度。程序内部还会持续进行另一类通用算法优化，例如消除重复计算、复用已经没有后续消费者的临时缓冲和缩短数组生命周期；这类优化不由快速开关控制，不改变材料、工艺或扫描语义，并同时服务完整与降阶流程。
 
 30MP 为默认测试，更高分辨率没有做出针对优化与支持。更大的图片仍可处理，但实际能否顺利完成取决于分辨率、导出内容和电脑内存。程序不会在未选择快速模式时自动缩小图片。
 
@@ -74,37 +80,43 @@ CLI 更适合批处理、自动化和重放 GUI 保存的会话。
 查看帮助：
 
 ```bash
-python -m half_frame_darkroom.app.cli --help
+python -m film_foundry.app.cli --help
 ```
 
 完整流程：
 
 ```bash
-python -m half_frame_darkroom.app.cli full input_images outputs --film-preset clear_modern_negative --develop-preset standard_color_negative --scanner-preset neutral_scan
+python -m film_foundry.app.cli full input_images outputs --film-preset clear_modern_negative --develop-preset standard_color_negative --scanner-preset neutral_scan
 ```
 
 只冲洗介质：
 
 ```bash
-python -m half_frame_darkroom.app.cli develop input_images outputs/negatives --film-preset clear_modern_negative --develop-preset standard_color_negative
+python -m film_foundry.app.cli develop input_images outputs/negatives --film-preset clear_modern_negative --develop-preset standard_color_negative
 ```
 
 重新扫描已有介质：
 
 ```bash
-python -m half_frame_darkroom.app.cli scan outputs/negatives outputs/rescans --scanner-preset rich_color_scan
+python -m film_foundry.app.cli scan outputs/negatives outputs/rescans --scanner-preset rich_color_scan
 ```
 
 使用缩放快速模式：
 
 ```bash
-python -m half_frame_darkroom.app.cli full input_images outputs --processing-mode scaled_fast --preview-long-edge 1600
+python -m film_foundry.app.cli full input_images outputs --processing-mode scaled_fast --preview-long-edge 1600
+```
+
+缩放、降阶与 draft 质量叠加：
+
+```bash
+python -m film_foundry.app.cli full input_images outputs --processing-mode scaled_fast --fast --quality-mode draft --preview-long-edge 1600
 ```
 
 读取 GUI 会话：
 
 ```bash
-python -m half_frame_darkroom.app.cli full input_images outputs --session user_presets/film_foundry_session.json
+python -m film_foundry.app.cli full input_images outputs --session user_presets/film_foundry_session.json
 ```
 
 ## 预设与编辑器
@@ -112,9 +124,9 @@ python -m half_frame_darkroom.app.cli full input_images outputs --session user_p
 内置预设分为三类：
 
 ```text
-half_frame_darkroom/presets/film/      胶片材料
-half_frame_darkroom/presets/develop/   冲洗工艺与药水
-half_frame_darkroom/presets/scanner/   扫描与观看解释
+film_foundry/presets/film/      胶片材料
+film_foundry/presets/develop/   冲洗工艺与药水
+film_foundry/presets/scanner/   扫描与观看解释
 ```
 
 用户预设保存到 `user_presets/`。同名情况下，用户预设优先于内置预设。
@@ -165,7 +177,7 @@ Layer Pack 是完整归档合集，已经包含透明介质和制版层；它不
 - 输入图通常已经经过相机 ISP 和 tone mapping，因此项目中的 曝光 和 线性化 是面向视觉处理的近似。
 - 高分辨率、多种附属导出和 Layer Pack 会显著增加内存、处理时间与磁盘占用。
 - 预设按材料行为和画面行为命名，不代表任何厂商产品的官方模拟。
-- 当前 Tk GUI 在部分 Windows 系统上拖动复杂主窗口时，手感可能不如原生界面即时；这不影响处理流程和输出结果。
+- 当前桌面界面仍以功能迁移和流程一致性为先，视觉设计与高密度参数布局会在后续版本继续整理。
 
 ## 许可证
 

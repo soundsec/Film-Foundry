@@ -1,3 +1,5 @@
 numpy>=1.24
 opencv-python>=4.8
 Pillow>=10.0
+python-lcms2>=0.1.1,<0.2
+PySide6-Essentials>=6.8,<7

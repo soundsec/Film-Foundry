@@ -1,4 +1,4 @@
-"""Film Foundry / Electronic Negative Factory 简易调参面板。
+"""Film Foundry 简易调参面板。
 
 直接在 IDE 里运行本文件即可打开窗口。
 
@@ -11,23 +11,28 @@ GUI 现在按阶段工作：
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import subprocess
 import sys
 from threading import Thread
 from time import perf_counter
-import tkinter as tk
-from tkinter import filedialog, ttk
+from typing import Callable
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
 import numpy as np
-from PIL import Image, ImageTk
+from PIL import Image
 
-from half_frame_darkroom.core.engine import (
+from film_foundry.core.accidents import LIGHT_LEAK_CONFIG_TEMPLATE_KEYS
+from film_foundry.core.film_border import (
+    FILM_BORDER_IMPRINT_SIDES,
+    FILM_BORDER_IMPRINT_STYLES,
+)
+from film_foundry.core.engine import (
     apply_optical_observation_snapshot,
     configure_scan_interpretation,
     develop_negative,
@@ -38,260 +43,68 @@ from half_frame_darkroom.core.engine import (
     save_developed_medium_at_path,
     seed_from_path,
 )
-from half_frame_darkroom.core.electronic_negative import (
+from film_foundry.core.electronic_negative import (
     halation_alpha,
     halation_alpha_linear,
     load_linear_rgb_tiff,
     split_scanner_raw_border,
 )
-from half_frame_darkroom.core.execution import processing_long_edge, resolve_execution_mode
-from half_frame_darkroom.core.io_utils import SUPPORTED_EXTENSIONS, assert_unique_output_stems, iter_images, load_image, output_target_is_file, save_image_bundle, scan_output_stem
-from half_frame_darkroom.core.negative_io import load_developed_medium_for_scan
-from half_frame_darkroom.core.preview import (
+from film_foundry.core.execution import (
+    processing_long_edge,
+    resolve_execution_axes,
+)
+from film_foundry.core.io_utils import SUPPORTED_EXTENSIONS, assert_unique_output_stems, iter_images, load_image, output_target_is_file, save_image_bundle, scan_output_stem
+from film_foundry.core.negative_io import load_developed_medium_for_scan
+from film_foundry.core.preview import (
     negative_visual_preview,
     optical_density_visual_preview,
     resize_to_long_edge,
 )
-from half_frame_darkroom.core.sidecar import (
+from film_foundry.core.sidecar import (
     final_positive_sidecar,
     load_scanner_raw_sidecar,
     scanner_raw_border_width_from_sidecar,
     scanner_raw_optical_observation_from_sidecar,
     transmission_raw_source_kind,
 )
-from half_frame_darkroom.core.states import DevelopedNegative
-from half_frame_darkroom.model.config import DarkroomConfig, merge_config_presets
-from half_frame_darkroom.model.session import load_session, preset_reference, preset_value_from_reference, save_session, session_payload
-from half_frame_darkroom.ui.i18n import current_language, language_from_label, language_label, language_options, set_language, tr
-from half_frame_darkroom.ui.widgets import VerticalScrolledFrame
+from film_foundry.core.states import DevelopedNegative
+from film_foundry.model.config import DarkroomConfig, merge_config_presets
+from film_foundry.model.session import load_session, preset_reference, preset_value_from_reference, save_session, session_payload
+from film_foundry.ui.qt import PhotoImage, file_dialog, ui
+from film_foundry.ui.i18n import current_language, language_from_label, language_label, language_options, set_language, tr
+from film_foundry.ui.widgets import VerticalScrolledFrame
 from film_foundry.tools.paths import app_root, resource_root
 
 
-PROJECT_ROOT = app_root()
-RESOURCE_ROOT = resource_root()
-APP_TITLE = "Film Foundry - Imaging Medium Workflow"
-PRESET_DIR = RESOURCE_ROOT / "half_frame_darkroom" / "presets"
-FILM_PRESET_DIR = PRESET_DIR / "film"
-DEVELOP_PRESET_DIR = PRESET_DIR / "develop"
-SCANNER_PRESET_DIR = PRESET_DIR / "scanner"
-USER_PRESET_DIR = PROJECT_ROOT / "user_presets"
-USER_FILM_PRESET_DIR = USER_PRESET_DIR / "film"
-USER_DEVELOP_PRESET_DIR = USER_PRESET_DIR / "develop"
-USER_SCANNER_PRESET_DIR = USER_PRESET_DIR / "scanner"
-INTERNAL_PRESET_PREFIXES = ("diagnostic_", "accident_", "experimental_")
-MAIN_GUI_BUILTIN_DEVELOP_PRESETS = {
-    "standard_color_negative",
-    "standard_bw_negative",
-    "standard_color_reversal",
-    "standard_bw_reversal",
-    # Deliberately exposed as an advanced, explicitly labelled experiment:
-    # color-negative stock run through reversal processing, followed by a
-    # separate mask/dye bleach. This is not a standard silver-bleach variant.
-    "experimental_color_negative_clear_reversal",
-}
-DEFAULT_INPUT_DIR = PROJECT_ROOT / "input_images"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
-DEFAULT_NEGATIVE_DIR = DEFAULT_OUTPUT_DIR / "negatives"
-PREVIEW_PROCESS_LONG_EDGE = 900
-PREVIEW_DISPLAY_LONG_EDGE = 520
-NEGATIVE_SUFFIX = ".darkroom_negative.npz"
-POSITIVE_SUFFIX = ".darkroom_positive.npz"
-SEED_STRATEGY_KEYS = ("random", "fixed", "path")
+from film_foundry.app.workflow import *  # noqa: F401,F403
+from film_foundry.app import workflow as _workflow
 
 
-class Tooltip:
-    def __init__(self, widget: tk.Widget, key: str, delay_ms: int = 450, wraplength: int = 360) -> None:
-        self.widget = widget
-        self.key = key
-        self.delay_ms = delay_ms
-        self.wraplength = wraplength
-        self._after_id: str | None = None
-        self._tip: tk.Toplevel | None = None
-        widget.bind("<Enter>", self._schedule, add="+")
-        widget.bind("<Leave>", self._hide, add="+")
-        widget.bind("<ButtonPress>", self._hide, add="+")
-
-    def _schedule(self, _event=None) -> None:
-        self._cancel()
-        self._after_id = self.widget.after(self.delay_ms, self._show)
-
-    def _cancel(self) -> None:
-        if self._after_id is not None:
-            self.widget.after_cancel(self._after_id)
-            self._after_id = None
-
-    def _show(self) -> None:
-        text = tr(self.key)
-        if not text or text == self.key or self._tip is not None:
-            return
-        x = self.widget.winfo_rootx() + 18
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
-        tip = tk.Toplevel(self.widget)
-        tip.wm_overrideredirect(True)
-        tip.wm_geometry(f"+{x}+{y}")
-        label = ttk.Label(
-            tip,
-            text=text,
-            padding=(8, 5),
-            relief="solid",
-            borderwidth=1,
-            wraplength=self.wraplength,
-        )
-        label.pack()
-        self._tip = tip
-
-    def _hide(self, _event=None) -> None:
-        self._cancel()
-        if self._tip is not None:
-            self._tip.destroy()
-            self._tip = None
+def create_run_directory(output_root, mode, *, timestamp=None):
+    """Reserve a run directory using this module's patchable timestamp."""
+    if timestamp is None:
+        timestamp = run_timestamp()
+    return _workflow.create_run_directory(output_root, mode, timestamp=timestamp)
 
 
-def attach_tooltip(widget: tk.Widget, key: str | None) -> None:
-    if key:
-        Tooltip(widget, key)
-
-
-def ensure_user_dirs() -> None:
-    DEFAULT_INPUT_DIR.mkdir(parents=True, exist_ok=True)
-    DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    DEFAULT_NEGATIVE_DIR.mkdir(parents=True, exist_ok=True)
-    USER_FILM_PRESET_DIR.mkdir(parents=True, exist_ok=True)
-    USER_DEVELOP_PRESET_DIR.mkdir(parents=True, exist_ok=True)
-    USER_SCANNER_PRESET_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def output_path_for(
-    input_path: Path,
-    output_root: Path,
-    output_format: str,
-    *,
-    run_suffix: str | None = None,
-) -> Path:
-    if output_target_is_file(output_root):
-        return output_root
-    suffix = "." + output_format.lower().lstrip(".")
-    stem = f"{scan_output_stem(input_path)}_darkroom"
-    if run_suffix:
-        stem += f"_{run_suffix}"
-    return output_root / f"{stem}{suffix}"
-
-
-def run_timestamp(now: datetime | None = None) -> str:
-    """Return a filesystem-safe local run timestamp."""
-    return (now or datetime.now()).strftime("%Y-%m-%d_%H-%M-%S")
-
-
-def create_run_directory(
-    output_root: Path,
-    mode: str,
-    *,
-    timestamp: str | None = None,
-) -> tuple[Path, str]:
-    """Atomically reserve a non-overwriting directory for one GUI run."""
-    output_root = Path(output_root)
-    if output_target_is_file(output_root):
-        raise ValueError(f"运行输出位置必须是文件夹：{output_root}")
-    output_root.mkdir(parents=True, exist_ok=True)
-    base_id = f"{timestamp or run_timestamp()}_{mode}"
-    for index in range(1, 10_000):
-        run_id = base_id if index == 1 else f"{base_id}_{index:02d}"
-        candidate = output_root / run_id
-        try:
-            candidate.mkdir()
-        except FileExistsError:
-            continue
-        return candidate, run_id
-    raise FileExistsError(f"无法创建唯一运行目录：{output_root / base_id}")
-
-
-def default_scan_output_root(developed_source: Path) -> Path:
-    """Place scan-only results one directory above the selected source folder."""
-    source = Path(developed_source)
-    if source.suffix.lower() in {".npz", ".tif", ".tiff"}:
-        containing_folder = source.parent
-        if containing_folder.name.lower() in {"negative", "negatives"}:
-            return containing_folder.parent
-        return containing_folder
-    return source.parent
-
-
-def unique_scan_run_id(
-    output_root: Path,
-    *,
-    timestamp: str | None = None,
-) -> str:
-    """Choose a scan generation id without replacing a previous run manifest."""
-    base_id = f"{timestamp or run_timestamp()}_scan"
-    for index in range(1, 10_000):
-        run_id = base_id if index == 1 else f"{base_id}_{index:02d}"
-        if not (Path(output_root) / f"film_foundry_{run_id}.json").exists():
-            return run_id
-    raise FileExistsError(f"无法创建唯一扫描运行标识：{output_root / base_id}")
-
-
-def batch_item_record(
-    input_path: Path,
-    output_path: Path | None,
-    elapsed_seconds: float,
-    error: BaseException | None = None,
-) -> dict[str, object]:
-    """Build one lightweight batch record without inspecting output files."""
-    record: dict[str, object] = {
-        "input": str(input_path),
-        "output": str(output_path) if output_path is not None else None,
-        "status": "failed" if error is not None else "completed",
-        "elapsed_seconds": round(max(float(elapsed_seconds), 0.0), 6),
-    }
-    if error is not None:
-        record["error"] = {
-            "type": type(error).__name__,
-            "message": str(error),
-        }
-    return record
-
-
-def finalize_batch_run(
-    payload: dict,
-    *,
-    operation: str,
-    started_at: str,
-    elapsed_seconds: float,
-    items: list[dict[str, object]],
-) -> None:
-    """Attach one in-memory batch summary before the final manifest write."""
-    completed = sum(item.get("status") == "completed" for item in items)
-    failed = len(items) - completed
-    status = "completed" if failed == 0 else ("failed" if completed == 0 else "completed_with_errors")
-    finished_at = datetime.now().isoformat(timespec="seconds")
-    payload["batch"] = {
-        "version": 1,
-        "operation": str(operation),
-        "status": status,
-        "started_at": str(started_at),
-        "finished_at": finished_at,
-        "elapsed_seconds": round(max(float(elapsed_seconds), 0.0), 6),
-        "completed": int(completed),
-        "failed": int(failed),
-        "items": items,
-        "recording_strategy": "memory_then_single_atomic_write",
-    }
-    run_record = payload.get("run")
-    if isinstance(run_record, dict):
-        run_record["status"] = status
+def unique_scan_run_id(output_root, *, timestamp=None):
+    """Choose a scan generation id using this module's patchable timestamp."""
+    if timestamp is None:
+        timestamp = run_timestamp()
+    return _workflow.unique_scan_run_id(output_root, timestamp=timestamp)
 
 
 def save_batch_run_record(
-    path: Path,
-    payload: dict,
+    path,
+    payload,
     *,
-    operation: str,
-    started_at: str,
-    started_counter: float,
-    items: list[dict[str, object]],
-) -> Exception | None:
-    """Finalize and atomically save a batch record without failing image work."""
-    finalize_batch_run(
+    operation,
+    started_at,
+    started_counter,
+    items,
+):
+    """Finalize a batch record using this module's patchable save_session."""
+    _workflow.finalize_batch_run(
         payload,
         operation=operation,
         started_at=started_at,
@@ -305,590 +118,150 @@ def save_batch_run_record(
     return None
 
 
-def developed_path_for(
-    input_path: Path,
-    output_root: Path,
-    medium: DevelopedNegative,
-) -> Path:
-    if output_root.suffix.lower() == ".npz":
-        return output_root
-    suffix = POSITIVE_SUFFIX if str(medium.image_polarity).lower() == "positive" else NEGATIVE_SUFFIX
-    return output_root / f"{input_path.stem}{suffix}"
-
-
-def scanner_raw_path_for_negative(negative_path: Path) -> Path:
-    return negative_path.with_suffix(".scanner_raw.tiff")
-
-
-def transmission_raw_path_for_medium(medium_path: Path) -> Path:
-    if medium_path.name.lower().endswith(POSITIVE_SUFFIX):
-        return medium_path.with_suffix(".light_table_raw.tiff")
-    return scanner_raw_path_for_negative(medium_path)
-
-
-def is_scanner_raw_tiff(path: Path) -> bool:
-    return path.suffix.lower() in {".tif", ".tiff"} and any(
-        token in path.stem.lower() for token in (".scanner_raw", ".light_table_raw")
-    )
-
-
-def iter_developed_medium_files(path: Path) -> list[Path]:
-    if path.is_file() and (path.suffix.lower() == ".npz" or is_scanner_raw_tiff(path)):
-        return [path]
-    if path.is_dir():
-        npz_paths = sorted(path.glob(f"*{NEGATIVE_SUFFIX}"))
-        npz_paths += sorted(path.glob(f"*{POSITIVE_SUFFIX}"))
-        raw_paths = sorted(item for item in path.glob("*.tif*") if is_scanner_raw_tiff(item))
-        npz_raw_paths = {transmission_raw_path_for_medium(item).resolve() for item in npz_paths}
-        return npz_paths + [item for item in raw_paths if item.resolve() not in npz_raw_paths]
-    return []
-
-
-# Backward-compatible name for sessions/tests created before positive masters.
-iter_negative_files = iter_developed_medium_files
-
-
-def scale_dye_selectivity(matrix, selectivity: float):
-    """调节染料吸收矩阵的光谱选择性，而不是直接在 RGB 上拉饱和度。"""
-    selectivity = max(0.0, float(selectivity))
-    rows = []
-    for row in matrix:
-        neutral = sum(float(v) for v in row) / 3.0
-        rows.append(tuple(max(0.0, neutral + (float(v) - neutral) * selectivity) for v in row))
-    return tuple(rows)
-
-
-def density_preview(density_cmy: np.ndarray, config: DarkroomConfig) -> np.ndarray:
-    d_min = np.asarray(config.film.density_min, dtype=np.float32)
-    d_max = np.asarray(config.film.density_max, dtype=np.float32)
-    return np.clip((density_cmy - d_min) / np.maximum(d_max - d_min, 1e-6), 0.0, 1.0)
-
-
-def gray_to_rgb(values: np.ndarray) -> np.ndarray:
-    values = np.clip(np.asarray(values, dtype=np.float32), 0.0, 1.0)
-    return np.repeat(values[..., None], 3, axis=-1)
-
-
-def labeled_preview_tile(image: np.ndarray, label: str, size: int = 360) -> np.ndarray:
-    image = np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0)
-    if image.ndim == 2:
-        image = gray_to_rgb(image)
-    tile = resize_to_long_edge(image, size)
-    canvas = np.full((size + 28, size, 3), 0.055, dtype=np.float32)
-    height, width = tile.shape[:2]
-    y = 28 + max(0, (size - height) // 2)
-    x = max(0, (size - width) // 2)
-    canvas[y : y + height, x : x + width] = tile
-
-    from PIL import ImageDraw
-
-    pil = Image.fromarray(np.round(canvas * 255.0).astype(np.uint8), mode="RGB")
-    draw = ImageDraw.Draw(pil)
-    draw.text((8, 7), label, fill=(235, 235, 228))
-    return np.asarray(pil, dtype=np.float32) / 255.0
-
-
-def preview_grid(items: list[tuple[str, np.ndarray]], tile_size: int = 360, columns: int = 2) -> np.ndarray:
-    tiles = [labeled_preview_tile(image, label, tile_size) for label, image in items]
-    if not tiles:
-        return np.zeros((tile_size, tile_size, 3), dtype=np.float32)
-    rows = []
-    for start in range(0, len(tiles), columns):
-        row_tiles = tiles[start : start + columns]
-        while len(row_tiles) < columns:
-            row_tiles.append(np.zeros_like(tiles[0]))
-        rows.append(np.hstack(row_tiles))
-    return np.vstack(rows).astype(np.float32)
-
-
-def resolved_seed_for(path: Path, config: DarkroomConfig) -> int | None:
-    strategy = str(config.seed_strategy).lower()
-    if strategy == "fixed":
-        return 0 if config.random_seed is None else int(config.random_seed)
-    if strategy == "path":
-        return seed_from_path(path, 0 if config.random_seed is None else int(config.random_seed))
-    return None
-
-
-def seed_strategy_labels() -> dict[str, str]:
-    return {
-        key: tr(f"seed.strategy.{key}")
-        for key in SEED_STRATEGY_KEYS
-    }
-
-
-def seed_strategy_label(key: str) -> str:
-    normalized = str(key).strip().lower()
-    return seed_strategy_labels().get(normalized, seed_strategy_labels()["random"])
-
-
-def seed_strategy_key_from_label(label: str) -> str:
-    requested = str(label)
-    for key, localized in seed_strategy_labels().items():
-        if requested == localized:
-            return key
-    normalized = requested.strip().lower()
-    return normalized if normalized in SEED_STRATEGY_KEYS else "random"
-
-
-def rng_and_resolved_seed_for_develop(
-    path: Path,
-    config: DarkroomConfig,
-) -> tuple[np.random.Generator, int]:
-    seed = resolved_seed_for(path, config)
-    if seed is None:
-        seed = int(np.random.SeedSequence().generate_state(1, dtype=np.uint32)[0])
-    return np.random.default_rng(seed), seed
-
-
-def rng_for_develop(path: Path, config: DarkroomConfig) -> np.random.Generator:
-    rng, _ = rng_and_resolved_seed_for_develop(path, config)
-    return rng
-
-
-def is_internal_preset_name(name: str) -> bool:
-    normalized = name.lower()
-    return normalized.startswith(INTERNAL_PRESET_PREFIXES)
-
-
-def public_builtin_preset_names(directory: Path) -> set[str]:
-    return {
-        path.stem
-        for path in directory.glob("*.json")
-        if not is_internal_preset_name(path.stem)
-    }
-
-
-def develop_preset_names() -> list[str]:
-    # Keep the daily GUI concise. Specialized B&W recipes remain available in
-    # the process editor and CLI, while user presets are always shown. The one
-    # experimental clear-base reversal recipe is intentionally exposed because
-    # it represents a distinct, user-selectable color-negative reversal path.
-    names = {
-        path.stem
-        for path in DEVELOP_PRESET_DIR.glob("*.json")
-        if path.stem in MAIN_GUI_BUILTIN_DEVELOP_PRESETS
-    }
-    names.update(path.stem for path in USER_DEVELOP_PRESET_DIR.glob("*.json"))
-    return sorted(names)
-
-
-def develop_preset_path(name: str) -> Path:
-    path = Path(name)
-    if path.exists():
-        return path
-    user_path = USER_DEVELOP_PRESET_DIR / f"{name}.json"
-    if user_path.exists():
-        return user_path
-    return DEVELOP_PRESET_DIR / f"{name}.json"
-
-
-def film_preset_names() -> list[str]:
-    names = public_builtin_preset_names(FILM_PRESET_DIR)
-    names.update(path.stem for path in USER_FILM_PRESET_DIR.glob("*.json"))
-    return sorted(names)
-
-
-def film_preset_path(name: str) -> Path:
-    path = Path(name)
-    if path.exists():
-        return path
-    user_path = USER_FILM_PRESET_DIR / f"{name}.json"
-    if user_path.exists():
-        return user_path
-    return FILM_PRESET_DIR / f"{name}.json"
-
-
-def material_polarity_label(polarity: str) -> str:
-    return tr(f"material.{polarity}")
-
-
-def material_color_label(color: str) -> str:
-    return tr(f"material.{color}")
-
-
-def localized_preset_name(kind: str, key: str, fallback: str) -> str:
-    """Translate built-in preset names without replacing user-defined names."""
-    path = Path(key)
-    user_dirs = {"film": USER_FILM_PRESET_DIR, "develop": USER_DEVELOP_PRESET_DIR, "scanner": USER_SCANNER_PRESET_DIR}
-    builtin_dirs = {"film": FILM_PRESET_DIR, "develop": DEVELOP_PRESET_DIR, "scanner": SCANNER_PRESET_DIR}
-    is_builtin = not path.exists() and not (user_dirs[kind] / f"{key}.json").exists() and (builtin_dirs[kind] / f"{key}.json").exists()
-    translation_key = f"preset.{kind}.{Path(key).stem}"
-    translated = tr(translation_key)
-    return translated if is_builtin and translated != translation_key else fallback
-
-
-def material_polarity_category(config: DarkroomConfig) -> str:
-    """Return the material's native result category used by the develop UI."""
-    polarity = str(config.film.image_polarity).strip().lower()
-    process = str(config.film.medium_process).strip().lower()
-    return "positive" if polarity == "positive" or process in {"positive", "reversal", "slide"} else "negative"
-
-
-def material_color_category(config: DarkroomConfig) -> str:
-    color_process = str(config.film.color_process).strip().lower()
-    return "monochrome" if color_process in {"bw", "black_white", "black-and-white", "monochrome"} else "color"
-
-
-def film_preset_record(key: str) -> dict[str, str] | None:
-    path = film_preset_path(key)
-    if not path.exists():
-        return None
-    try:
-        config = DarkroomConfig.from_json(path)
-    except (OSError, ValueError, TypeError, KeyError):
-        return None
-    polarity = material_polarity_category(config)
-    color = material_color_category(config)
-    name = str(config.film.name).strip() or Path(key).stem
-    display_name = localized_preset_name("film", key, name)
-    return {
-        "key": key,
-        "name": name,
-        "polarity": polarity,
-        "color": color,
-        "label": f"{material_color_label(color)} · {material_polarity_label(polarity)} · {display_name}",
-    }
-
-
-def film_preset_catalog(polarity: str | None = None) -> list[dict[str, str]]:
-    records = [record for key in film_preset_names() if (record := film_preset_record(key)) is not None]
-    if polarity is not None:
-        records = [record for record in records if record["polarity"] == polarity]
-    return sorted(records, key=lambda record: (record["color"], record["name"].casefold(), record["key"].casefold()))
-
-
-def develop_preset_record(key: str) -> dict[str, str] | None:
-    path = develop_preset_path(key)
-    if not path.exists():
-        return None
-    try:
-        config = DarkroomConfig.from_json(path)
-    except (OSError, ValueError, TypeError, KeyError):
-        return None
-    fallback = str(config.chemistry.developer_name).strip() or Path(key).stem
-    return {"key": key, "label": localized_preset_name("develop", key, fallback)}
-
-
-def develop_preset_catalog() -> list[dict[str, str]]:
-    return [record for key in develop_preset_names() if (record := develop_preset_record(key)) is not None]
-
-
-def scanner_preset_polarity(config: DarkroomConfig) -> str:
-    scanner = config.scanner
-    return "positive" if str(scanner.interpreter_key).lower() == "positive_transparency_scan" or str(scanner.input_polarity).lower() == "positive" else "negative"
-
-
-def scanner_preset_record(key: str) -> dict[str, str] | None:
-    path = scanner_preset_path(key)
-    if not path.exists():
-        return None
-    try:
-        config = DarkroomConfig.from_json(path)
-    except (OSError, ValueError, TypeError, KeyError):
-        return None
-    fallback = Path(key).stem.replace("_", " ").title()
-    return {
-        "key": key,
-        "polarity": scanner_preset_polarity(config),
-        "label": localized_preset_name("scanner", key, fallback),
-    }
-
-
-def scanner_preset_catalog(polarity: str | None = None) -> list[dict[str, str]]:
-    records = [record for key in scanner_preset_names() if (record := scanner_preset_record(key)) is not None]
-    if polarity is not None:
-        records = [record for record in records if record["polarity"] == polarity]
-    return records
-
-
-def scanner_preset_names() -> list[str]:
-    names = public_builtin_preset_names(SCANNER_PRESET_DIR)
-    names.update(path.stem for path in USER_SCANNER_PRESET_DIR.glob("*.json"))
-    return sorted(names)
-
-
-def scanner_capture_summary(metadata: dict) -> str:
-    """Return a compact, localized scanner-raw headroom diagnostic."""
-    saturation = float(metadata.get("scanner_saturation_fraction", 0.0)) * 100.0
-    floor = float(metadata.get("scanner_floor_fraction", 0.0)) * 100.0
-    parts = [
-        f"{tr('scan.diagnostic.saturation')} {saturation:.1f}%",
-        f"{tr('scan.diagnostic.floor')} {floor:.1f}%",
-    ]
-    base_channels = metadata.get("base_saturated_channels")
-    if isinstance(base_channels, (list, tuple)) and any(bool(value) for value in base_channels):
-        clipped = "".join(
-            channel for channel, value in zip("RGB", base_channels) if bool(value)
-        )
-        parts.append(f"{tr('scan.diagnostic.base_clip')} {clipped}")
-    return " · ".join(parts)
-
-
-def scanner_preset_path(name: str) -> Path:
-    path = Path(name)
-    if path.exists():
-        return path
-    user_path = USER_SCANNER_PRESET_DIR / f"{name}.json"
-    if user_path.exists():
-        return user_path
-    return SCANNER_PRESET_DIR / f"{name}.json"
-
-
-def recommended_standard_develop_preset(config: DarkroomConfig) -> str:
-    positive = material_polarity_category(config) == "positive"
-    monochrome = material_color_category(config) == "monochrome"
-    if positive:
-        return "standard_bw_reversal" if monochrome else "standard_color_reversal"
-    return "standard_bw_negative" if monochrome else "standard_color_negative"
-
-
-def preset_source_text(value: str, user_dir: Path, builtin_dir: Path) -> str:
-    path = Path(value)
-    if path.exists():
-        return "直接文件 / Direct"
-    if (user_dir / f"{value}.json").exists():
-        return "用户预设 / User"
-    if (builtin_dir / f"{value}.json").exists():
-        return "官方预设 / Built-in"
-    return "未找到 / Missing"
-
-
-def save_developed_medium(
-    negative: DevelopedNegative,
-    path: Path,
-    input_path: Path,
-    config: DarkroomConfig,
-    save_sidecar: bool,
-    *,
-    resolved_seed: int | None = None,
-) -> None:
-    """Save through the shared polarity-aware medium exporter."""
-    config.save_sidecar = bool(save_sidecar)
-    save_developed_medium_at_path(
-        input_path,
-        path,
-        negative,
-        config,
-        resolved_seed=(
-            resolved_seed_for(input_path, config)
-            if resolved_seed is None
-            else int(resolved_seed)
-        ),
-    )
-
-
-def load_developed_medium(path: Path) -> DevelopedNegative:
-    return load_developed_medium_for_scan(path)
-
-
-# Compatibility aliases for the older electronic-negative-only GUI API.
-save_negative = save_developed_medium
-load_negative = load_developed_medium
-
-
-def scan_from_file(path: Path, config: DarkroomConfig):
-    # Sidecar optics are scoped to this observation and must not leak into the
-    # GUI state or a later file in a directory scan.
-    config = copy.deepcopy(config)
-    interpretation = str(config.scanner.interpretation_mode or "auto")
-    if is_scanner_raw_tiff(path):
-        raw_sidecar = load_scanner_raw_sidecar(path)
-        apply_optical_observation_snapshot(
-            config,
-            scanner_raw_optical_observation_from_sidecar(raw_sidecar),
-        )
-        scanner_raw = load_linear_rgb_tiff(path)
-        source_kind = transmission_raw_source_kind(path, raw_sidecar)
-        border_width = scanner_raw_border_width_from_sidecar(raw_sidecar, scanner_raw.shape)
-        if border_width is not None:
-            inner, border_samples = split_scanner_raw_border(
-                scanner_raw,
-                border_width_px=border_width,
-            )
-        elif source_kind == "light_table_raw_tiff":
-            inner, border_samples = scanner_raw, None
-        else:
-            inner, border_samples = split_scanner_raw_border(
-                scanner_raw,
-                border_percent=config.output.scanner_raw_border_percent,
-                border_min_px=config.output.scanner_raw_border_min_px,
-            )
-        return scan_scanner_raw_direct(
-            inner,
-            config,
-            interpretation,
-            base_samples=border_samples,
-            source_path=path,
-            raw_source_kind=source_kind,
-        ), source_kind, scanner_raw
-
-    scanner_raw_path = transmission_raw_path_for_medium(path)
-    if scanner_raw_path.exists():
-        raw_sidecar = load_scanner_raw_sidecar(scanner_raw_path)
-        apply_optical_observation_snapshot(
-            config,
-            scanner_raw_optical_observation_from_sidecar(raw_sidecar),
-        )
-        scanner_raw = load_linear_rgb_tiff(scanner_raw_path)
-        source_kind = transmission_raw_source_kind(scanner_raw_path, raw_sidecar)
-        border_width = scanner_raw_border_width_from_sidecar(raw_sidecar, scanner_raw.shape)
-        if border_width is not None:
-            inner, border_samples = split_scanner_raw_border(
-                scanner_raw,
-                border_width_px=border_width,
-            )
-        elif source_kind == "light_table_raw_tiff":
-            inner, border_samples = scanner_raw, None
-        else:
-            inner, border_samples = split_scanner_raw_border(
-                scanner_raw,
-                border_percent=config.output.scanner_raw_border_percent,
-                border_min_px=config.output.scanner_raw_border_min_px,
-            )
-        return (
-            scan_scanner_raw_direct(
-                inner,
-                config,
-                interpretation,
-                base_samples=border_samples,
-                source_path=scanner_raw_path,
-                raw_source_kind=source_kind,
-            ),
-            source_kind,
-            scanner_raw,
-        )
-
-    if path.suffix.lower() != ".npz":
-        raise ValueError(f"不支持的底片文件：{path}。请选择 .npz 或 .scanner_raw.tiff，不要选择 sidecar .json。")
-    negative = load_developed_medium(path)
-    scanned = scan_medium_output(negative, config, interpretation)
-    runtime_config = scanned.metadata.get("runtime_config")
-    preview_film = runtime_config.film if isinstance(runtime_config, DarkroomConfig) else config.film
-    if negative.optical_density_rgb is not None:
-        preview = optical_density_visual_preview(negative.optical_density_rgb)
-    else:
-        preview = negative_visual_preview(negative.density_grain, preview_film)
-    return scanned, "density_npz", preview
+def attach_tooltip(widget: ui.Widget, key: str | None) -> None:
+    if key:
+        text = tr(key)
+        if text and text != key:
+            widget.set_tooltip(text)
 
 
 class DarkroomPanel:
+
     def __init__(self) -> None:
         ensure_user_dirs()
 
-        self.root = tk.Tk()
+        self.root = ui.Application()
         self.root.title(APP_TITLE)
         self.root.geometry("940x760")
         self.root.minsize(760, 560)
 
-        self.pipeline_mode = tk.StringVar(value="full")
-        self.input_path = tk.StringVar(value=str(DEFAULT_INPUT_DIR))
-        self.negative_path = tk.StringVar(value=str(DEFAULT_NEGATIVE_DIR))
-        self.output_path = tk.StringVar(value=str(DEFAULT_OUTPUT_DIR))
-        self.scan_output_near_source = tk.BooleanVar(value=True)
-        self.film_preset = tk.StringVar(value="clear_modern_negative")
-        self.material_polarity_display = tk.StringVar(value=material_polarity_label("negative"))
-        self.film_preset_display = tk.StringVar(value="")
-        self.develop_preset = tk.StringVar(value="standard_color_negative")
-        self.develop_preset_display = tk.StringVar(value="")
-        self.scanner_preset = tk.StringVar(value="neutral_scan")
-        self.scanner_preset_display = tk.StringVar(value="")
-        self.scan_interpretation = tk.StringVar(value="manual")
-        self.scan_interpretation_display = tk.StringVar(value=tr("scan.mode.auto"))
-        self.scan_remove_base = tk.BooleanVar(value=True)
-        self.scan_invert = tk.BooleanVar(value=True)
-        self.scan_recommendation = tk.StringVar(value="")
-        self.film_preset_source = tk.StringVar(value="")
-        self.develop_preset_source = tk.StringVar(value="")
-        self.scanner_preset_source = tk.StringVar(value="")
-        self.language = tk.StringVar(value=language_label(current_language()))
-        self.expert_mode = tk.BooleanVar(value=False)
+        self.pipeline_mode = ui.TextValue(value="full")
+        self.input_path = ui.TextValue(value=str(DEFAULT_INPUT_DIR))
+        self.negative_path = ui.TextValue(value=str(DEFAULT_NEGATIVE_DIR))
+        self.output_path = ui.TextValue(value=str(DEFAULT_OUTPUT_DIR))
+        self.scan_output_near_source = ui.BoolValue(value=True)
+        self.film_preset = ui.TextValue(value="clear_modern_negative")
+        self.material_polarity_display = ui.TextValue(value=material_polarity_label("negative"))
+        self.film_preset_display = ui.TextValue(value="")
+        self.develop_preset = ui.TextValue(value="standard_color_negative")
+        self.develop_preset_display = ui.TextValue(value="")
+        self.scanner_preset = ui.TextValue(value="neutral_scan")
+        self.scanner_preset_display = ui.TextValue(value="")
+        self.scan_interpretation = ui.TextValue(value="manual")
+        self.scan_interpretation_display = ui.TextValue(value=tr("scan.mode.auto"))
+        self.scan_remove_base = ui.BoolValue(value=True)
+        self.scan_invert = ui.BoolValue(value=True)
+        self.scan_recommendation = ui.TextValue(value="")
+        self.film_preset_source = ui.TextValue(value="")
+        self.develop_preset_source = ui.TextValue(value="")
+        self.scanner_preset_source = ui.TextValue(value="")
+        self.language = ui.TextValue(value=language_label(current_language()))
+        self.expert_mode = ui.BoolValue(value=False)
 
-        self.run_as_preview = tk.BooleanVar(value=True)
-        self.preview_long_edge = tk.IntVar(value=1600)
-        self.fast_mode = tk.BooleanVar(value=True)
-        self.quality_mode = tk.StringVar(value="standard")
-        self.seed_strategy = tk.StringVar(value="random")
-        self.seed_strategy_display = tk.StringVar(value=seed_strategy_label("random"))
-        self.random_seed = tk.StringVar(value="0")
+        self.run_as_preview = ui.BoolValue(value=True)
+        self.preview_long_edge = ui.IntegerValue(value=1600)
+        self.fast_mode = ui.BoolValue(value=True)
+        self.quality_mode = ui.TextValue(value="standard")
+        self.seed_strategy = ui.TextValue(value="random")
+        self.seed_strategy_display = ui.TextValue(value=seed_strategy_label("random"))
+        self.random_seed = ui.TextValue(value="0")
 
-        self.exposure_ev = tk.DoubleVar(value=-0.35)
-        self.negative_contrast = tk.DoubleVar(value=1.05)
-        self.developer_type = tk.StringVar(value="standard")
-        self.fixer_type = tk.StringVar(value="standard")
-        self.frame_size = tk.StringVar(value="35mm")
-        self.material_degradation = tk.DoubleVar(value=0.0)
-        self.develop_time = tk.DoubleVar(value=8.0)
-        self.develop_temperature = tk.DoubleVar(value=20.0)
-        self.developer_concentration = tk.DoubleVar(value=1.0)
-        self.agitation = tk.DoubleVar(value=1.0)
-        self.exhaustion = tk.DoubleVar(value=0.0)
-        self.fixer_exhaustion = tk.DoubleVar(value=0.0)
-        self.silver_retention = tk.DoubleVar(value=0.0)
-        self.silver_plating = tk.DoubleVar(value=0.0)
-        self.compensation = tk.DoubleVar(value=0.0)
-        self.light_leak = tk.DoubleVar(value=0.0)
-        self.chemical_stain = tk.DoubleVar(value=0.0)
-        self.uneven_development = tk.DoubleVar(value=0.0)
-        self.development_adjacency_strength = tk.DoubleVar(value=0.0)
-        self.development_adjacency_radius = tk.DoubleVar(value=0.0025)
-        self.process_variation = tk.DoubleVar(value=0.0)
-        self.halation = tk.DoubleVar(value=0.90)
-        self.halation_sensitivity = tk.DoubleVar(value=0.0)
-        self.grain = tk.DoubleVar(value=0.85)
-        self.grain_size = tk.DoubleVar(value=1.00)
-        self.emulsion_mtf = tk.DoubleVar(value=0.25)
-        self.artifact_suppression = tk.DoubleVar(value=0.15)
-        self.halation_edge = tk.DoubleVar(value=0.35)
-        self.push = tk.DoubleVar(value=0.0)
-        self.force_bw = tk.BooleanVar(value=False)
-        self.enable_mtf = tk.BooleanVar(value=True)
-        self.enable_halation = tk.BooleanVar(value=True)
-        self.enable_grain = tk.BooleanVar(value=True)
+        self.exposure_ev = ui.FloatValue(value=-0.35)
+        self.negative_contrast = ui.FloatValue(value=1.05)
+        self.developer_type = ui.TextValue(value="standard")
+        self.fixer_type = ui.TextValue(value="standard")
+        self.frame_size = ui.TextValue(value="35mm")
+        self.material_degradation = ui.FloatValue(value=0.0)
+        self.develop_time = ui.FloatValue(value=8.0)
+        self.develop_temperature = ui.FloatValue(value=20.0)
+        self.developer_concentration = ui.FloatValue(value=1.0)
+        self.agitation = ui.FloatValue(value=1.0)
+        self.exhaustion = ui.FloatValue(value=0.0)
+        self.fixer_exhaustion = ui.FloatValue(value=0.0)
+        self.silver_retention = ui.FloatValue(value=0.0)
+        self.silver_plating = ui.FloatValue(value=0.0)
+        self.compensation = ui.FloatValue(value=0.0)
+        self.light_leak_template = ui.TextValue(value="auto")
+        self.light_leak_template_display = ui.TextValue(
+            value=light_leak_template_label("auto")
+        )
+        self.light_leak = ui.FloatValue(value=0.0)
+        self.exposure_occlusion_dust = ui.FloatValue(value=0.0)
+        self.exposure_occlusion_hair = ui.FloatValue(value=0.0)
+        self.exposure_occlusion_insect = ui.FloatValue(value=0.0)
+        self.exposure_occlusion_debris = ui.FloatValue(value=0.0)
+        self.imprint_style = ui.TextValue(value="none")
+        self.imprint_style_display = ui.TextValue(value=imprint_style_label("none"))
+        self.imprint_side = ui.TextValue(value="bottom")
+        self.imprint_side_display = ui.TextValue(value=imprint_side_label("bottom"))
+        self.imprint_text = ui.TextValue(value="")
+        self.imprint_time = ui.TextValue(value="")
+        self.chemical_stain = ui.FloatValue(value=0.0)
+        self.uneven_development = ui.FloatValue(value=0.0)
+        self.reticulation_strength = ui.FloatValue(value=0.0)
+        self.dye_damage_strength = ui.FloatValue(value=0.0)
+        self.development_adjacency_strength = ui.FloatValue(value=0.0)
+        self.development_adjacency_radius = ui.FloatValue(value=0.0025)
+        self.process_variation = ui.FloatValue(value=0.0)
+        self.halation = ui.FloatValue(value=0.90)
+        self.halation_sensitivity = ui.FloatValue(value=0.0)
+        self.grain = ui.FloatValue(value=0.85)
+        self.grain_size = ui.FloatValue(value=1.00)
+        self.emulsion_mtf = ui.FloatValue(value=0.25)
+        self.artifact_suppression = ui.FloatValue(value=0.15)
+        self.halation_edge = ui.FloatValue(value=0.35)
+        self.push = ui.FloatValue(value=0.0)
+        self.force_bw = ui.BoolValue(value=False)
+        self.enable_mtf = ui.BoolValue(value=True)
+        self.enable_halation = ui.BoolValue(value=True)
+        self.enable_grain = ui.BoolValue(value=True)
 
-        self.print_contrast = tk.DoubleVar(value=1.12)
-        self.print_exposure = tk.DoubleVar(value=0.0)
-        self.saturation = tk.DoubleVar(value=1.00)
-        self.scan_normalize = tk.BooleanVar(value=True)
-        self.scan_strength = tk.DoubleVar(value=0.45)
-        self.anti_banding = tk.DoubleVar(value=0.18)
-        self.print_shift_r = tk.DoubleVar(value=0.06)
-        self.print_shift_g = tk.DoubleVar(value=0.00)
-        self.print_shift_b = tk.DoubleVar(value=-0.08)
-        self.highlight_green = tk.DoubleVar(value=1.04)
-        self.highlight_blue = tk.DoubleVar(value=0.94)
-        self.light_table_ev = tk.DoubleVar(value=0.35)
-        self.light_table_temperature = tk.DoubleVar(value=5400.0)
-        self.positive_color_control = tk.DoubleVar(value=0.25)
-        self.projection_white_softness = tk.DoubleVar(value=0.22)
-        self.projection_black_adaptation = tk.DoubleVar(value=0.10)
-        self.negative_channel_compensation = tk.BooleanVar(value=False)
-        self.negative_channel_compensation_strength = tk.DoubleVar(value=0.35)
-        self.scan_pipeline_description = tk.StringVar(value="")
+        self.print_contrast = ui.FloatValue(value=1.12)
+        self.print_exposure = ui.FloatValue(value=0.0)
+        self.saturation = ui.FloatValue(value=1.00)
+        self.scan_normalize = ui.BoolValue(value=True)
+        self.scan_strength = ui.FloatValue(value=0.45)
+        self.anti_banding = ui.FloatValue(value=0.18)
+        self.print_shift_r = ui.FloatValue(value=0.06)
+        self.print_shift_g = ui.FloatValue(value=0.00)
+        self.print_shift_b = ui.FloatValue(value=-0.08)
+        self.highlight_green = ui.FloatValue(value=1.04)
+        self.highlight_blue = ui.FloatValue(value=0.94)
+        self.light_table_ev = ui.FloatValue(value=0.35)
+        self.light_table_temperature = ui.FloatValue(value=5400.0)
+        self.positive_color_control = ui.FloatValue(value=0.25)
+        self.projection_white_softness = ui.FloatValue(value=0.22)
+        self.projection_black_adaptation = ui.FloatValue(value=0.10)
+        self.negative_channel_compensation = ui.BoolValue(value=False)
+        self.negative_channel_compensation_strength = ui.FloatValue(value=0.35)
+        self.scan_pipeline_description = ui.TextValue(value="")
 
-        self.debug_output = tk.BooleanVar(value=False)
-        self.comparison_grid = tk.BooleanVar(value=False)
-        self.save_sidecar = tk.BooleanVar(value=True)
-        self.save_scanner_raw = tk.BooleanVar(value=True)
-        self.scanner_raw_border = tk.DoubleVar(value=4.0)
-        self.include_clear_base_border = tk.BooleanVar(value=False)
-        self.export_layer_pack = tk.BooleanVar(value=False)
-        self.export_transparent_plate = tk.BooleanVar(value=True)
-        self.export_plate_set = tk.BooleanVar(value=False)
-        self.output_format = tk.StringVar(value="jpg")
+        self.debug_output = ui.BoolValue(value=False)
+        self.comparison_grid = ui.BoolValue(value=False)
+        self.save_sidecar = ui.BoolValue(value=True)
+        self.save_scanner_raw = ui.BoolValue(value=True)
+        self.scanner_raw_border = ui.FloatValue(value=4.0)
+        self.include_clear_base_border = ui.BoolValue(value=False)
+        self.export_layer_pack = ui.BoolValue(value=False)
+        self.export_transparent_plate = ui.BoolValue(value=True)
+        self.export_plate_set = ui.BoolValue(value=False)
+        self.output_format = ui.TextValue(value="jpg")
 
-        self.status = tk.StringVar(value=tr("status.ready"))
-        self.preview_window: tk.Toplevel | None = None
-        self.preview_left_label: ttk.Label | None = None
-        self.preview_right_label: ttk.Label | None = None
-        self.preview_left_title = tk.StringVar(value=tr("preview.input"))
-        self.preview_right_title = tk.StringVar(value=tr("preview.result"))
+        self.status = ui.TextValue(value=tr("status.ready"))
+        self.preview_window: ui.Window | None = None
+        self.preview_left_label: ui.Label | None = None
+        self.preview_right_label: ui.Label | None = None
+        self.preview_left_title = ui.TextValue(value=tr("preview.input"))
+        self.preview_right_title = ui.TextValue(value=tr("preview.result"))
         self.preview_left_photo = None
         self.preview_right_photo = None
         self.slider_specs: list[dict] = []
         self._material_ui_syncing = False
+        self._preview_running = False
+        self._preview_generation = 0
         self._processing = False
-        self.process_button: ttk.Button | None = None
+        self.preview_button: ui.Button | None = None
+        self.process_button: ui.Button | None = None
         self._film_display_key_map: dict[str, str] = {}
         self._develop_display_key_map: dict[str, str] = {}
         self._scanner_display_key_map: dict[str, str] = {}
@@ -906,14 +279,14 @@ class DarkroomPanel:
 
     def _build(self) -> None:
         self.root.title(tr("app.title"))
-        scroll_shell = ttk.Frame(self.root)
+        scroll_shell = ui.Frame(self.root)
         scroll_shell.pack(fill="both", expand=True)
         self.main_scroller = VerticalScrolledFrame(scroll_shell, canvas_width=900)
         self.main_scroller.pack(fill="both", expand=True)
         outer = self.main_scroller.content
         outer.configure(padding=12)
 
-        header = ttk.LabelFrame(outer, text=tr("section.stage"), padding=10)
+        header = ui.Group(outer, text=tr("section.stage"), padding=10)
         header.pack(fill="x", pady=(0, 8))
         modes = (
             (tr("mode.full"), "full"),
@@ -921,7 +294,7 @@ class DarkroomPanel:
             (tr("mode.scan"), "scan"),
         )
         for text, value in modes:
-            ttk.Radiobutton(
+            ui.Radio(
                 header,
                 text=text,
                 value=value,
@@ -929,22 +302,22 @@ class DarkroomPanel:
                 command=self._update_mode_visibility,
             ).pack(side="left", padx=(0, 18))
 
-        self.paths_frame = ttk.LabelFrame(outer, text=tr("section.paths"), padding=10)
+        self.paths_frame = ui.Group(outer, text=tr("section.paths"), padding=10)
         self.paths_frame.pack(fill="x", pady=8)
         self._path_row(self.paths_frame, tr("label.input_image"), self.input_path, self._choose_input_file, self._choose_input_folder, 0)
         self._path_row(self.paths_frame, tr("label.negative_npz"), self.negative_path, self._choose_negative_file, self._choose_negative_folder, 1)
         self._path_row(self.paths_frame, tr("label.output"), self.output_path, None, self._choose_output_folder, 2)
-        self.scan_output_follow_check = ttk.Checkbutton(
+        self.scan_output_follow_check = ui.Toggle(
             self.paths_frame,
             text=tr("label.scan_output_near_source"),
             variable=self.scan_output_near_source,
         )
         self.scan_output_follow_check.grid(row=3, column=1, columnspan=3, sticky="w", pady=3)
 
-        common = ttk.LabelFrame(outer, text=tr("section.common"), padding=10)
+        common = ui.Group(outer, text=tr("section.common"), padding=10)
         common.pack(fill="x", pady=8)
-        self.material_category_label = ttk.Label(common, text=tr("label.material_category"))
-        self.material_polarity_combo = ttk.Combobox(
+        self.material_category_label = ui.Label(common, text=tr("label.material_category"))
+        self.material_polarity_combo = ui.Choice(
             common,
             textvariable=self.material_polarity_display,
             values=(material_polarity_label("negative"), material_polarity_label("positive")),
@@ -953,11 +326,11 @@ class DarkroomPanel:
         )
         self.material_category_label.grid(row=0, column=0, sticky="w", pady=4)
         self.material_polarity_combo.grid(row=0, column=1, sticky="w", pady=4)
-        self.film_editor_button = ttk.Button(common, text=tr("button.film_editor"), command=lambda: self._open_editor("film_foundry.tools.run_film_material_editor"))
+        self.film_editor_button = ui.Button(common, text=tr("button.film_editor"), command=lambda: self._open_editor("film_foundry.tools.run_film_material_editor"))
         self.film_editor_button.grid(row=0, column=3, sticky="e", pady=4)
 
-        self.film_preset_label = ttk.Label(common, text=tr("label.film_preset"))
-        self.film_preset_combo = ttk.Combobox(
+        self.film_preset_label = ui.Label(common, text=tr("label.film_preset"))
+        self.film_preset_combo = ui.Choice(
             common,
             textvariable=self.film_preset_display,
             values=(),
@@ -967,10 +340,10 @@ class DarkroomPanel:
         self.film_preset_combo.grid(row=1, column=1, columnspan=3, sticky="ew", pady=4)
         self.material_polarity_combo.bind("<<ComboboxSelected>>", self._on_material_category_selected)
         self.film_preset_combo.bind("<<ComboboxSelected>>", self._on_film_preset_display_selected)
-        self.film_preset_source_label = ttk.Label(common, textvariable=self.film_preset_source)
+        self.film_preset_source_label = ui.Label(common, textvariable=self.film_preset_source)
 
-        self.develop_preset_label = ttk.Label(common, text=tr("label.develop_preset"))
-        self.develop_preset_combo = ttk.Combobox(
+        self.develop_preset_label = ui.Label(common, text=tr("label.develop_preset"))
+        self.develop_preset_combo = ui.Choice(
             common,
             textvariable=self.develop_preset_display,
             values=(),
@@ -979,13 +352,13 @@ class DarkroomPanel:
         self.develop_preset_label.grid(row=2, column=0, sticky="w", pady=4)
         self.develop_preset_combo.grid(row=2, column=1, columnspan=2, sticky="ew", pady=4)
         self.develop_preset_combo.bind("<<ComboboxSelected>>", self._on_develop_preset_display_selected)
-        self.develop_preset_source_label = ttk.Label(common, textvariable=self.develop_preset_source)
-        self.develop_editor_button = ttk.Button(common, text=tr("button.develop_editor"), command=lambda: self._open_editor("film_foundry.tools.run_develop_process_editor"))
+        self.develop_preset_source_label = ui.Label(common, textvariable=self.develop_preset_source)
+        self.develop_editor_button = ui.Button(common, text=tr("button.develop_editor"), command=lambda: self._open_editor("film_foundry.tools.run_develop_process_editor"))
         self.develop_editor_button.grid(row=2, column=3, sticky="e", padx=(8, 0), pady=4)
 
-        self.scan_interpretation_label = ttk.Label(common, text=tr("label.scan_interpretation"))
+        self.scan_interpretation_label = ui.Label(common, text=tr("label.scan_interpretation"))
         self.scan_interpretation_label.grid(row=3, column=0, sticky="w", pady=4)
-        self.scan_interpretation_controls = ttk.Frame(
+        self.scan_interpretation_controls = ui.Frame(
             common,
         )
         self.scan_interpretation_controls.grid(
@@ -995,28 +368,28 @@ class DarkroomPanel:
             sticky="ew",
             pady=4,
         )
-        self.scan_remove_base_check = ttk.Checkbutton(
+        self.scan_remove_base_check = ui.Toggle(
             self.scan_interpretation_controls,
             text=tr("label.scan_remove_base"),
             variable=self.scan_remove_base,
             command=self._sync_manual_scan_controls,
         )
         self.scan_remove_base_check.pack(side="left")
-        self.scan_invert_check = ttk.Checkbutton(
+        self.scan_invert_check = ui.Toggle(
             self.scan_interpretation_controls,
             text=tr("label.scan_invert"),
             variable=self.scan_invert,
             command=self._sync_manual_scan_controls,
         )
         self.scan_invert_check.pack(side="left", padx=(12, 0))
-        ttk.Label(
+        ui.Label(
             self.scan_interpretation_controls,
             textvariable=self.scan_recommendation,
             foreground="#555555",
         ).pack(side="left", padx=(14, 0))
 
-        self.scanner_preset_label = ttk.Label(common, text=tr("label.scanner_preset"))
-        self.scanner_preset_combo = ttk.Combobox(
+        self.scanner_preset_label = ui.Label(common, text=tr("label.scanner_preset"))
+        self.scanner_preset_combo = ui.Choice(
             common,
             textvariable=self.scanner_preset_display,
             values=(),
@@ -1025,37 +398,37 @@ class DarkroomPanel:
         self.scanner_preset_label.grid(row=4, column=0, sticky="w", pady=4)
         self.scanner_preset_combo.grid(row=4, column=1, columnspan=2, sticky="ew", pady=4)
         self.scanner_preset_combo.bind("<<ComboboxSelected>>", self._on_scanner_preset_display_selected)
-        self.scanner_preset_source_label = ttk.Label(common, textvariable=self.scanner_preset_source)
-        self.scanner_editor_button = ttk.Button(common, text=tr("button.scanner_editor"), command=self._open_scanner_editor)
+        self.scanner_preset_source_label = ui.Label(common, textvariable=self.scanner_preset_source)
+        self.scanner_editor_button = ui.Button(common, text=tr("button.scanner_editor"), command=self._open_scanner_editor)
         self.scanner_editor_button.grid(row=4, column=3, sticky="e", padx=(8, 0), pady=4)
-        ttk.Button(common, text=tr("button.refresh_presets"), command=self._refresh_all_preset_combos).grid(row=3, column=3, sticky="e", padx=(8, 0), pady=4)
+        ui.Button(common, text=tr("button.refresh_presets"), command=self._refresh_all_preset_combos).grid(row=3, column=3, sticky="e", padx=(8, 0), pady=4)
 
-        ttk.Separator(common).grid(row=5, column=0, columnspan=4, sticky="ew", pady=(7, 5))
-        ttk.Checkbutton(common, text=tr("label.preview_output"), variable=self.run_as_preview).grid(row=6, column=0, sticky="w", pady=4)
+        ui.Separator(common).grid(row=5, column=0, columnspan=4, sticky="ew", pady=(7, 5))
+        ui.Toggle(common, text=tr("label.preview_output"), variable=self.run_as_preview).grid(row=6, column=0, sticky="w", pady=4)
         self._slider(common, tr("label.preview_long_edge"), self.preview_long_edge, 0, 4000, 7, integer=True)
-        ttk.Checkbutton(common, text=tr("label.fast_mode"), variable=self.fast_mode).grid(row=8, column=0, sticky="w", pady=4)
-        ttk.Label(common, text=tr("label.quality")).grid(row=8, column=1, sticky="w", pady=4)
-        ttk.Combobox(
+        ui.Toggle(common, text=tr("label.fast_mode"), variable=self.fast_mode).grid(row=8, column=0, sticky="w", pady=4)
+        ui.Label(common, text=tr("label.quality")).grid(row=8, column=1, sticky="w", pady=4)
+        ui.Choice(
             common,
             textvariable=self.quality_mode,
             values=("draft", "standard", "high"),
             width=10,
             state="readonly",
         ).grid(row=8, column=2, sticky="w", pady=4)
-        ttk.Checkbutton(common, text=tr("label.sidecar"), variable=self.save_sidecar).grid(row=8, column=3, sticky="w", pady=4)
-        ttk.Checkbutton(common, text=tr("label.debug"), variable=self.debug_output).grid(row=9, column=3, sticky="w", pady=4)
-        ttk.Checkbutton(common, text=tr("label.grid"), variable=self.comparison_grid).grid(row=10, column=3, sticky="w", pady=4)
-        ttk.Checkbutton(common, text=tr("label.expert"), variable=self.expert_mode, command=self._update_mode_visibility).grid(row=9, column=0, sticky="w", pady=4)
-        ttk.Label(common, text=tr("label.output_format")).grid(row=9, column=1, sticky="w", pady=4)
-        ttk.Combobox(common, textvariable=self.output_format, values=("jpg", "png", "tiff"), width=8, state="readonly").grid(
+        ui.Toggle(common, text=tr("label.sidecar"), variable=self.save_sidecar).grid(row=8, column=3, sticky="w", pady=4)
+        ui.Toggle(common, text=tr("label.debug"), variable=self.debug_output).grid(row=9, column=3, sticky="w", pady=4)
+        ui.Toggle(common, text=tr("label.grid"), variable=self.comparison_grid).grid(row=10, column=3, sticky="w", pady=4)
+        ui.Toggle(common, text=tr("label.expert"), variable=self.expert_mode, command=self._update_mode_visibility).grid(row=9, column=0, sticky="w", pady=4)
+        ui.Label(common, text=tr("label.output_format")).grid(row=9, column=1, sticky="w", pady=4)
+        ui.Choice(common, textvariable=self.output_format, values=("jpg", "png", "tiff"), width=8, state="readonly").grid(
             row=9, column=2, sticky="w", pady=4
         )
-        ttk.Button(common, text=tr("button.save_session"), command=self._save_session).grid(row=10, column=0, sticky="w", pady=4)
-        ttk.Button(common, text=tr("button.load_session"), command=self._load_session).grid(row=10, column=1, sticky="w", pady=4)
+        ui.Button(common, text=tr("button.save_session"), command=self._save_session).grid(row=10, column=0, sticky="w", pady=4)
+        ui.Button(common, text=tr("button.load_session"), command=self._load_session).grid(row=10, column=1, sticky="w", pady=4)
 
-        ttk.Label(common, text=tr("label.seed_strategy")).grid(row=11, column=0, sticky="w", pady=4)
+        ui.Label(common, text=tr("label.seed_strategy")).grid(row=11, column=0, sticky="w", pady=4)
         self.seed_strategy_display.set(seed_strategy_label(self.seed_strategy.get()))
-        self.seed_strategy_combo = ttk.Combobox(
+        self.seed_strategy_combo = ui.Choice(
             common,
             textvariable=self.seed_strategy_display,
             values=tuple(seed_strategy_labels().values()),
@@ -1064,36 +437,36 @@ class DarkroomPanel:
         )
         self.seed_strategy_combo.grid(row=11, column=1, sticky="w", pady=4)
         self.seed_strategy_combo.bind("<<ComboboxSelected>>", self._on_seed_strategy_selected)
-        ttk.Label(common, text=tr("label.random_seed")).grid(row=11, column=2, sticky="e", padx=(8, 4), pady=4)
-        self.random_seed_entry = ttk.Entry(common, textvariable=self.random_seed, width=14)
+        ui.Label(common, text=tr("label.random_seed")).grid(row=11, column=2, sticky="e", padx=(8, 4), pady=4)
+        self.random_seed_entry = ui.TextInput(common, textvariable=self.random_seed, width=14)
         self.random_seed_entry.grid(row=11, column=3, sticky="w", pady=4)
-        ttk.Label(
+        ui.Label(
             common,
             text=tr("seed.strategy.note"),
             wraplength=820,
         ).grid(row=12, column=0, columnspan=4, sticky="w", pady=(0, 4))
         self._update_seed_strategy_state()
 
-        ttk.Label(common, text=tr("label.language")).grid(row=13, column=0, sticky="w", pady=4)
+        ui.Label(common, text=tr("label.language")).grid(row=13, column=0, sticky="w", pady=4)
         self.language.set(language_label(current_language()))
-        language_combo = ttk.Combobox(common, textvariable=self.language, values=language_options(), width=14, state="readonly")
+        language_combo = ui.Choice(common, textvariable=self.language, values=language_options(), width=14, state="readonly")
         language_combo.grid(row=13, column=1, sticky="w", pady=4)
         language_combo.bind("<<ComboboxSelected>>", self._change_language)
         common.columnconfigure(1, weight=1)
         common.columnconfigure(2, weight=2)
 
-        self.develop_frame = ttk.LabelFrame(outer, text=tr("section.develop"), padding=10)
+        self.develop_frame = ui.Group(outer, text=tr("section.develop"), padding=10)
         self.develop_frame.pack(fill="x", pady=8)
-        ttk.Label(self.develop_frame, text=tr("label.developer")).grid(row=0, column=0, sticky="w", pady=4)
-        ttk.Combobox(
+        ui.Label(self.develop_frame, text=tr("label.developer")).grid(row=0, column=0, sticky="w", pady=4)
+        ui.Choice(
             self.develop_frame,
             textvariable=self.developer_type,
-            values=("standard", "fine_grain", "compensating", "high_contrast", "monobath"),
+            values=("standard", "fine_grain", "compensating", "high_acutance", "high_contrast", "monobath"),
             state="readonly",
         ).grid(row=0, column=1, columnspan=3, sticky="ew", pady=4)
 
-        ttk.Label(self.develop_frame, text=tr("label.frame_size")).grid(row=1, column=0, sticky="w", pady=4)
-        ttk.Combobox(
+        ui.Label(self.develop_frame, text=tr("label.frame_size")).grid(row=1, column=0, sticky="w", pady=4)
+        ui.Choice(
             self.develop_frame,
             textvariable=self.frame_size,
             values=("half_frame", "35mm", "6x6", "6x7", "4x5"),
@@ -1110,8 +483,8 @@ class DarkroomPanel:
         self._slider(self.develop_frame, tr("label.push"), self.push, -2.0, 3.0, 8, expert_min=-4.0, expert_max=6.0, help_key="help.push")
         self._slider(self.develop_frame, tr("label.developer_exhaustion"), self.exhaustion, 0.00, 1.00, 9, help_key="help.developer_exhaustion")
         self._slider(self.develop_frame, tr("label.compensation"), self.compensation, 0.00, 1.00, 10, help_key="help.compensation")
-        ttk.Label(self.develop_frame, text=tr("label.fixer")).grid(row=11, column=0, sticky="w", pady=4)
-        ttk.Combobox(
+        ui.Label(self.develop_frame, text=tr("label.fixer")).grid(row=11, column=0, sticky="w", pady=4)
+        ui.Choice(
             self.develop_frame,
             textvariable=self.fixer_type,
             values=("standard", "rapid", "hardening", "monobath"),
@@ -1120,36 +493,85 @@ class DarkroomPanel:
         self._slider(self.develop_frame, tr("label.fixer_exhaustion"), self.fixer_exhaustion, 0.00, 1.00, 12, help_key="help.fixer_exhaustion")
         self._slider(self.develop_frame, tr("label.silver_retention"), self.silver_retention, 0.00, 1.00, 13, help_key="help.silver_retention")
         self._slider(self.develop_frame, tr("label.silver_plating"), self.silver_plating, 0.00, 1.00, 14, help_key="help.silver_plating")
-        self._slider(self.develop_frame, tr("label.light_leak"), self.light_leak, 0.00, 1.00, 15, help_key="help.light_leak")
-        self._slider(self.develop_frame, tr("label.chemical_stain"), self.chemical_stain, 0.00, 1.00, 16, help_key="help.chemical_stain")
-        self._slider(self.develop_frame, tr("label.uneven_development"), self.uneven_development, 0.00, 1.00, 17, help_key="help.uneven_development")
-        self._slider(self.develop_frame, tr("label.development_adjacency_strength"), self.development_adjacency_strength, 0.00, 1.00, 18, help_key="help.development_adjacency_strength")
-        self._slider(self.develop_frame, tr("label.development_adjacency_radius"), self.development_adjacency_radius, 0.0002, 0.02, 19, help_key="help.development_adjacency_radius", decimals=4)
-        self._slider(self.develop_frame, tr("label.process_variation"), self.process_variation, 0.00, 1.00, 20, help_key="help.process_variation")
-        self._slider(self.develop_frame, tr("label.halation"), self.halation, 0.00, 2.00, 21, expert_min=0.0, expert_max=5.0, help_key="help.halation")
-        self._slider(self.develop_frame, tr("label.halation_sensitivity"), self.halation_sensitivity, -1.00, 1.00, 22, help_key="help.halation_sensitivity")
-        self._slider(self.develop_frame, tr("label.halation_edge"), self.halation_edge, 0.00, 1.00, 23, help_key="help.halation_edge")
-        ttk.Checkbutton(self.develop_frame, text="MTF", variable=self.enable_mtf).grid(row=24, column=0, sticky="w", pady=4)
-        ttk.Checkbutton(self.develop_frame, text=tr("label.enable_halation"), variable=self.enable_halation).grid(row=24, column=1, sticky="w", pady=4)
-        ttk.Checkbutton(self.develop_frame, text=tr("label.enable_grain"), variable=self.enable_grain).grid(row=24, column=2, sticky="w", pady=4)
-        ttk.Checkbutton(self.develop_frame, text=tr("label.bw_negative"), variable=self.force_bw).grid(row=24, column=3, sticky="w", pady=4)
+        self.light_leak_template_display.set(
+            light_leak_template_label(self.light_leak_template.get())
+        )
+        light_leak_label = ui.Label(
+            self.develop_frame,
+            text=tr("label.light_leak_template"),
+        )
+        light_leak_label.grid(row=15, column=0, sticky="w", pady=4)
+        light_leak_choice = ui.Choice(
+            self.develop_frame,
+            textvariable=self.light_leak_template_display,
+            values=tuple(light_leak_template_labels().values()),
+            state="readonly",
+        )
+        light_leak_choice.grid(row=15, column=1, columnspan=3, sticky="ew", pady=4)
+        attach_tooltip(light_leak_label, "help.light_leak_template")
+        attach_tooltip(light_leak_choice, "help.light_leak_template")
+        self._slider(self.develop_frame, tr("label.light_leak"), self.light_leak, 0.00, 1.00, 16, help_key="help.light_leak")
+        self._slider(self.develop_frame, tr("label.exposure_occlusion_dust"), self.exposure_occlusion_dust, 0.00, 1.00, 17, help_key="help.exposure_occlusion")
+        self._slider(self.develop_frame, tr("label.exposure_occlusion_hair"), self.exposure_occlusion_hair, 0.00, 1.00, 18, help_key="help.exposure_occlusion")
+        self._slider(self.develop_frame, tr("label.exposure_occlusion_insect"), self.exposure_occlusion_insect, 0.00, 1.00, 19, help_key="help.exposure_occlusion")
+        self._slider(self.develop_frame, tr("label.exposure_occlusion_debris"), self.exposure_occlusion_debris, 0.00, 1.00, 20, help_key="help.exposure_occlusion")
+        self.imprint_style_display.set(imprint_style_label(self.imprint_style.get()))
+        imprint_style_label_widget = ui.Label(self.develop_frame, text=tr("label.imprint_style"))
+        imprint_style_label_widget.grid(row=21, column=0, sticky="w", pady=4)
+        imprint_style_choice = ui.Choice(
+            self.develop_frame,
+            textvariable=self.imprint_style_display,
+            values=tuple(imprint_style_labels().values()),
+            state="readonly",
+        )
+        imprint_style_choice.grid(row=21, column=1, columnspan=3, sticky="ew", pady=4)
+        attach_tooltip(imprint_style_label_widget, "help.edge_imprint")
+        attach_tooltip(imprint_style_choice, "help.edge_imprint")
+        self.imprint_side_display.set(imprint_side_label(self.imprint_side.get()))
+        imprint_side_label_widget = ui.Label(self.develop_frame, text=tr("label.imprint_side"))
+        imprint_side_label_widget.grid(row=22, column=0, sticky="w", pady=4)
+        imprint_side_choice = ui.Choice(
+            self.develop_frame,
+            textvariable=self.imprint_side_display,
+            values=tuple(imprint_side_labels().values()),
+            state="readonly",
+        )
+        imprint_side_choice.grid(row=22, column=1, columnspan=3, sticky="ew", pady=4)
+        attach_tooltip(imprint_side_label_widget, "help.edge_imprint")
+        attach_tooltip(imprint_side_choice, "help.edge_imprint")
+        self._text_row(self.develop_frame, tr("label.imprint_text"), self.imprint_text, 23, help_key="help.edge_imprint")
+        self._text_row(self.develop_frame, tr("label.imprint_time"), self.imprint_time, 24, help_key="help.edge_imprint")
+        self._slider(self.develop_frame, tr("label.chemical_stain"), self.chemical_stain, 0.00, 1.00, 25, help_key="help.chemical_stain")
+        self._slider(self.develop_frame, tr("label.uneven_development"), self.uneven_development, 0.00, 1.00, 26, help_key="help.uneven_development")
+        self._slider(self.develop_frame, tr("label.reticulation_strength"), self.reticulation_strength, 0.00, 1.00, 27, help_key="help.reticulation_strength")
+        self._slider(self.develop_frame, tr("label.dye_damage_strength"), self.dye_damage_strength, 0.00, 1.00, 28, help_key="help.dye_damage_strength")
+        self._slider(self.develop_frame, tr("label.development_adjacency_strength"), self.development_adjacency_strength, 0.00, 1.00, 29, help_key="help.development_adjacency_strength")
+        self._slider(self.develop_frame, tr("label.development_adjacency_radius"), self.development_adjacency_radius, 0.0002, 0.02, 30, help_key="help.development_adjacency_radius", decimals=4)
+        self._slider(self.develop_frame, tr("label.process_variation"), self.process_variation, 0.00, 1.00, 31, help_key="help.process_variation")
+        self._slider(self.develop_frame, tr("label.halation"), self.halation, 0.00, 2.00, 32, expert_min=0.0, expert_max=5.0, help_key="help.halation")
+        self._slider(self.develop_frame, tr("label.halation_sensitivity"), self.halation_sensitivity, -1.00, 1.00, 33, help_key="help.halation_sensitivity")
+        self._slider(self.develop_frame, tr("label.halation_edge"), self.halation_edge, 0.00, 1.00, 34, help_key="help.halation_edge")
+        ui.Toggle(self.develop_frame, text="MTF", variable=self.enable_mtf).grid(row=35, column=0, sticky="w", pady=4)
+        ui.Toggle(self.develop_frame, text=tr("label.enable_halation"), variable=self.enable_halation).grid(row=35, column=1, sticky="w", pady=4)
+        ui.Toggle(self.develop_frame, text=tr("label.enable_grain"), variable=self.enable_grain).grid(row=35, column=2, sticky="w", pady=4)
+        ui.Toggle(self.develop_frame, text=tr("label.bw_negative"), variable=self.force_bw).grid(row=35, column=3, sticky="w", pady=4)
 
-        ttk.Checkbutton(self.develop_frame, text=tr("label.save_scanner_raw"), variable=self.save_scanner_raw).grid(row=25, column=0, sticky="w", pady=4)
-        self._slider(self.develop_frame, tr("label.scanner_raw_border"), self.scanner_raw_border, 0.0, 12.0, 26, expert_min=0.0, expert_max=30.0)
-        self.transparent_export_check = ttk.Checkbutton(self.develop_frame, text=tr("label.export_transparent_plate"), variable=self.export_transparent_plate)
-        self.plate_set_export_check = ttk.Checkbutton(self.develop_frame, text=tr("label.export_plate_set"), variable=self.export_plate_set)
-        self.layer_pack_export_check = ttk.Checkbutton(
+        ui.Toggle(self.develop_frame, text=tr("label.save_scanner_raw"), variable=self.save_scanner_raw).grid(row=36, column=0, sticky="w", pady=4)
+        self._slider(self.develop_frame, tr("label.scanner_raw_border"), self.scanner_raw_border, 0.0, 12.0, 37, expert_min=0.0, expert_max=30.0)
+        self.transparent_export_check = ui.Toggle(self.develop_frame, text=tr("label.export_transparent_plate"), variable=self.export_transparent_plate)
+        self.plate_set_export_check = ui.Toggle(self.develop_frame, text=tr("label.export_plate_set"), variable=self.export_plate_set)
+        self.layer_pack_export_check = ui.Toggle(
             self.develop_frame,
             text=tr("label.export_layer_pack"),
             variable=self.export_layer_pack,
             command=self._update_export_option_state,
         )
-        self.transparent_export_check.grid(row=27, column=0, sticky="w", pady=4)
-        self.plate_set_export_check.grid(row=27, column=1, sticky="w", pady=4)
-        self.layer_pack_export_check.grid(row=27, column=2, sticky="w", pady=4)
+        self.transparent_export_check.grid(row=38, column=0, sticky="w", pady=4)
+        self.plate_set_export_check.grid(row=38, column=1, sticky="w", pady=4)
+        self.layer_pack_export_check.grid(row=38, column=2, sticky="w", pady=4)
         self._update_export_option_state()
 
-        self.scan_frame = ttk.LabelFrame(outer, text=tr("section.scan"), padding=10)
+        self.scan_frame = ui.Group(outer, text=tr("section.scan"), padding=10)
         self.scan_frame.pack(fill="x", pady=8)
         self._slider(self.scan_frame, tr("label.print_contrast"), self.print_contrast, 0.70, 1.60, 0, expert_min=0.30, expert_max=3.00, help_key="help.print_contrast")
         self._slider(self.scan_frame, tr("label.print_exposure"), self.print_exposure, -2.0, 2.0, 1, expert_min=-5.0, expert_max=5.0, help_key="help.print_exposure")
@@ -1161,7 +583,7 @@ class DarkroomPanel:
         self._slider(self.scan_frame, tr("label.filter_b"), self.print_shift_b, -0.12, 0.12, 7, help_key="help.print_color_shift")
         self._slider(self.scan_frame, tr("label.highlight_green"), self.highlight_green, 0.85, 1.25, 8, help_key="help.highlight_color_bias")
         self._slider(self.scan_frame, tr("label.highlight_blue"), self.highlight_blue, 0.75, 1.10, 9, help_key="help.highlight_color_bias")
-        scan_normalize_check = ttk.Checkbutton(self.scan_frame, text=tr("label.scan_normalize"), variable=self.scan_normalize)
+        scan_normalize_check = ui.Toggle(self.scan_frame, text=tr("label.scan_normalize"), variable=self.scan_normalize)
         scan_normalize_check.grid(row=10, column=0, sticky="w", pady=4)
         attach_tooltip(scan_normalize_check, "help.scan_normalize")
         self._slider(self.scan_frame, tr("label.transmission_light_ev"), self.light_table_ev, -2.0, 2.0, 11, expert_min=-4.0, expert_max=4.0, help_key="help.transmission_light_ev")
@@ -1169,14 +591,14 @@ class DarkroomPanel:
         self._slider(self.scan_frame, tr("label.positive_color_control"), self.positive_color_control, 0.0, 1.0, 13)
         self._slider(self.scan_frame, tr("label.projection_white_softness"), self.projection_white_softness, 0.0, 0.75, 14)
         self._slider(self.scan_frame, tr("label.projection_black_adaptation"), self.projection_black_adaptation, 0.0, 0.75, 15)
-        self.scan_pipeline_label = ttk.Label(
+        self.scan_pipeline_label = ui.Label(
             self.scan_frame,
             textvariable=self.scan_pipeline_description,
             wraplength=820,
             foreground="#555555",
         )
         self.scan_pipeline_label.grid(row=16, column=0, columnspan=4, sticky="w", pady=(8, 2))
-        self.negative_channel_compensation_check = ttk.Checkbutton(
+        self.negative_channel_compensation_check = ui.Toggle(
             self.scan_frame,
             text=tr("label.negative_channel_compensation"),
             variable=self.negative_channel_compensation,
@@ -1192,7 +614,7 @@ class DarkroomPanel:
             18,
             help_key="help.negative_channel_compensation_strength",
         )
-        self.clear_base_border_check = ttk.Checkbutton(
+        self.clear_base_border_check = ui.Toggle(
             self.scan_frame,
             text=tr("label.include_clear_base_border"),
             variable=self.include_clear_base_border,
@@ -1216,17 +638,20 @@ class DarkroomPanel:
             expert_max=30.0,
         )
 
-        buttons = ttk.Frame(self.root, padding=(12, 8))
+        buttons = ui.Frame(self.root, padding=(12, 8))
         buttons.pack(fill="x", side="bottom")
-        ttk.Button(buttons, text=tr("button.preview"), command=self._start_preview).pack(side="left", fill="x", expand=True, padx=(0, 5))
-        self.process_button = ttk.Button(buttons, text=tr("button.process"), command=self._start_process)
+        self.preview_button = ui.Button(buttons, text=tr("button.preview"), command=self._start_preview)
+        self.preview_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        if self._preview_running:
+            self.preview_button.state(["disabled"])
+        self.process_button = ui.Button(buttons, text=tr("button.process"), command=self._start_process)
         self.process_button.pack(side="left", fill="x", expand=True, padx=(5, 0))
         if self._processing:
             self.process_button.state(["disabled"])
 
-        status_bar = ttk.Frame(self.root, padding=(12, 0, 12, 8))
+        status_bar = ui.Frame(self.root, padding=(12, 0, 12, 8))
         status_bar.pack(fill="x", side="bottom")
-        ttk.Label(status_bar, textvariable=self.status, wraplength=860).pack(fill="x")
+        ui.Label(status_bar, textvariable=self.status, wraplength=860).pack(fill="x")
 
         for frame in (self.paths_frame, self.develop_frame, self.scan_frame):
             frame.columnconfigure(1, weight=1)
@@ -1266,19 +691,28 @@ class DarkroomPanel:
         else:
             self.random_seed_entry.state(["!disabled"])
 
-    def _path_row(self, parent: ttk.Frame, label: str, var: tk.StringVar, file_cmd, folder_cmd, row: int) -> None:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
-        ttk.Entry(parent, textvariable=var).grid(row=row, column=1, columnspan=2, sticky="ew", pady=3)
-        buttons = ttk.Frame(parent)
+    def _path_row(self, parent: ui.Frame, label: str, var: ui.TextValue, file_cmd, folder_cmd, row: int) -> None:
+        ui.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
+        ui.TextInput(parent, textvariable=var).grid(row=row, column=1, columnspan=2, sticky="ew", pady=3)
+        buttons = ui.Frame(parent)
         buttons.grid(row=row, column=3, sticky="e", pady=3)
         if file_cmd is not None:
-            ttk.Button(buttons, text=tr("button.file"), command=file_cmd).pack(side="left", padx=2)
+            ui.Button(buttons, text=tr("button.file"), command=file_cmd).pack(side="left", padx=2)
         if folder_cmd is not None:
-            ttk.Button(buttons, text=tr("button.folder"), command=folder_cmd).pack(side="left", padx=2)
+            ui.Button(buttons, text=tr("button.folder"), command=folder_cmd).pack(side="left", padx=2)
+
+    def _text_row(self, parent: ui.Frame, label: str, var: ui.TextValue, row: int, help_key: str | None = None) -> None:
+        caption = ui.Label(parent, text=label)
+        caption.grid(row=row, column=0, sticky="w", pady=3)
+        entry = ui.TextInput(parent, textvariable=var)
+        entry.grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
+        if help_key:
+            attach_tooltip(caption, help_key)
+            attach_tooltip(entry, help_key)
 
     def _slider(
         self,
-        parent: ttk.Frame,
+        parent: ui.Frame,
         label: str,
         var,
         min_value: float,
@@ -1290,12 +724,12 @@ class DarkroomPanel:
         help_key: str | None = None,
         decimals: int = 2,
     ) -> None:
-        label_widget = ttk.Label(parent, text=label)
+        label_widget = ui.Label(parent, text=label)
         label_widget.grid(row=row, column=0, sticky="w", pady=4)
-        scale = ttk.Scale(parent, from_=min_value, to=max_value, variable=var)
+        scale = ui.Slider(parent, from_=min_value, to=max_value, variable=var)
         scale.grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
-        value_text = tk.StringVar()
-        entry = ttk.Entry(parent, textvariable=value_text, width=8)
+        value_text = ui.TextValue()
+        entry = ui.TextInput(parent, textvariable=value_text, width=8)
         attach_tooltip(label_widget, help_key)
         attach_tooltip(scale, help_key)
         attach_tooltip(entry, help_key)
@@ -1332,7 +766,7 @@ class DarkroomPanel:
             }
         )
 
-    def _set_grid_rows_visible(self, parent: ttk.Frame, rows: set[int], visible: bool) -> None:
+    def _set_grid_rows_visible(self, parent: ui.Frame, rows: set[int], visible: bool) -> None:
         for widget in parent.grid_slaves():
             info = widget.grid_info()
             if "row" in info:
@@ -1491,7 +925,11 @@ class DarkroomPanel:
         for spec in getattr(self, "slider_specs", []):
             min_value, max_value = spec["expert"] if visible else spec["base"]
             spec["scale"].configure(from_=min_value, to=max_value)
-        self._set_grid_rows_visible(self.develop_frame, {0, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20}, visible)
+        self._set_grid_rows_visible(
+            self.develop_frame,
+            {0, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21},
+            visible,
+        )
         if hasattr(self, "scan_frame"):
             self._set_grid_rows_visible(self.scan_frame, {5, 6, 7, 8, 9}, visible)
             self._update_scan_parameter_visibility(visible)
@@ -1590,9 +1028,19 @@ class DarkroomPanel:
         self.silver_retention.set(float(config.chemistry.silver_retention))
         self.silver_plating.set(float(config.chemistry.silver_plating))
         self.compensation.set(float(config.chemistry.compensation))
+        self.light_leak_template.set(str(config.chemistry.light_leak_template))
+        self.light_leak_template_display.set(
+            light_leak_template_label(config.chemistry.light_leak_template)
+        )
         self.light_leak.set(float(config.chemistry.light_leak_strength))
+        self.exposure_occlusion_dust.set(float(config.chemistry.exposure_occlusion_dust))
+        self.exposure_occlusion_hair.set(float(config.chemistry.exposure_occlusion_hair))
+        self.exposure_occlusion_insect.set(float(config.chemistry.exposure_occlusion_insect))
+        self.exposure_occlusion_debris.set(float(config.chemistry.exposure_occlusion_debris))
         self.chemical_stain.set(float(config.chemistry.chemical_stain))
         self.uneven_development.set(float(config.chemistry.uneven_development))
+        self.reticulation_strength.set(float(config.chemistry.reticulation_strength))
+        self.dye_damage_strength.set(float(config.chemistry.dye_damage_strength))
         self.development_adjacency_strength.set(float(config.chemistry.development_adjacency_strength))
         self.development_adjacency_radius.set(float(config.chemistry.development_adjacency_radius))
         self.process_variation.set(float(config.chemistry.process_variation))
@@ -1704,7 +1152,7 @@ class DarkroomPanel:
 
     def _choose_input_file(self) -> None:
         extensions = " ".join(f"*{ext}" for ext in sorted(SUPPORTED_EXTENSIONS))
-        path = filedialog.askopenfilename(filetypes=[("Images", extensions), ("All files", "*.*")])
+        path = file_dialog.askopenfilename(parent=self.root, filetypes=[("Images", extensions), ("All files", "*.*")])
         if path:
             self.input_path.set(path)
 
@@ -1712,24 +1160,25 @@ class DarkroomPanel:
         self._open_editor("film_foundry.tools.run_scanner_render_editor")
 
     def _choose_input_folder(self) -> None:
-        path = filedialog.askdirectory()
+        path = file_dialog.askdirectory(parent=self.root)
         if path:
             self.input_path.set(path)
 
     def _choose_negative_file(self) -> None:
-        path = filedialog.askopenfilename(
+        path = file_dialog.askopenfilename(
+            parent=self.root,
             filetypes=[("Darkroom negatives", "*.npz *.tif *.tiff"), ("All files", "*.*")]
         )
         if path:
             self.negative_path.set(path)
 
     def _choose_negative_folder(self) -> None:
-        path = filedialog.askdirectory()
+        path = file_dialog.askdirectory(parent=self.root)
         if path:
             self.negative_path.set(path)
 
     def _choose_output_folder(self) -> None:
-        path = filedialog.askdirectory()
+        path = file_dialog.askdirectory(parent=self.root)
         if path:
             self.output_path.set(path)
 
@@ -1771,7 +1220,8 @@ class DarkroomPanel:
         return payload
 
     def _save_session(self) -> None:
-        path = filedialog.asksaveasfilename(
+        path = file_dialog.asksaveasfilename(
+            parent=self.root,
             initialdir=str(USER_PRESET_DIR),
             initialfile="film_foundry_session.json",
             defaultextension=".json",
@@ -1789,7 +1239,7 @@ class DarkroomPanel:
         self.scan_interpretation.set("manual")
         self.scan_remove_base.set(bool(config.scanner.remove_base_mask))
         self.scan_invert.set(bool(config.scanner.invert_transmission))
-        self.fast_mode.set(bool(config.fast_mode))
+        self.fast_mode.set(resolve_execution_axes(config).lower_order_enabled)
         self.quality_mode.set(str(config.processing.quality_mode))
         strategy = str(config.seed_strategy).strip().lower()
         self.seed_strategy.set(strategy if strategy in SEED_STRATEGY_KEYS else "random")
@@ -1840,9 +1290,25 @@ class DarkroomPanel:
         self.silver_retention.set(float(config.chemistry.silver_retention))
         self.silver_plating.set(float(config.chemistry.silver_plating))
         self.compensation.set(float(config.chemistry.compensation))
+        self.light_leak_template.set(str(config.chemistry.light_leak_template))
+        self.light_leak_template_display.set(
+            light_leak_template_label(config.chemistry.light_leak_template)
+        )
         self.light_leak.set(float(config.chemistry.light_leak_strength))
+        self.exposure_occlusion_dust.set(float(config.chemistry.exposure_occlusion_dust))
+        self.exposure_occlusion_hair.set(float(config.chemistry.exposure_occlusion_hair))
+        self.exposure_occlusion_insect.set(float(config.chemistry.exposure_occlusion_insect))
+        self.exposure_occlusion_debris.set(float(config.chemistry.exposure_occlusion_debris))
+        self.imprint_style.set(str(config.film_border.imprint_style))
+        self.imprint_style_display.set(imprint_style_label(config.film_border.imprint_style))
+        self.imprint_side.set(str(config.film_border.imprint_side))
+        self.imprint_side_display.set(imprint_side_label(config.film_border.imprint_side))
+        self.imprint_text.set(str(config.film_border.imprint_text or ""))
+        self.imprint_time.set(str(config.film_border.imprint_time or ""))
         self.chemical_stain.set(float(config.chemistry.chemical_stain))
         self.uneven_development.set(float(config.chemistry.uneven_development))
+        self.reticulation_strength.set(float(config.chemistry.reticulation_strength))
+        self.dye_damage_strength.set(float(config.chemistry.dye_damage_strength))
         self.development_adjacency_strength.set(float(config.chemistry.development_adjacency_strength))
         self.development_adjacency_radius.set(float(config.chemistry.development_adjacency_radius))
         self.process_variation.set(float(config.chemistry.process_variation))
@@ -1888,7 +1354,8 @@ class DarkroomPanel:
         )
 
     def _load_session(self) -> None:
-        path = filedialog.askopenfilename(
+        path = file_dialog.askopenfilename(
+            parent=self.root,
             initialdir=str(USER_PRESET_DIR),
             filetypes=[("Film Foundry session", "*.json"), ("All files", "*.*")],
         )
@@ -2000,9 +1467,26 @@ class DarkroomPanel:
             config.chemistry.silver_retention = float(self.silver_retention.get())
             config.chemistry.silver_plating = float(self.silver_plating.get())
             config.chemistry.compensation = float(self.compensation.get())
+            config.chemistry.light_leak_template = light_leak_template_key_from_label(
+                self.light_leak_template_display.get()
+            )
             config.chemistry.light_leak_strength = float(self.light_leak.get())
+            config.chemistry.exposure_occlusion_dust = float(self.exposure_occlusion_dust.get())
+            config.chemistry.exposure_occlusion_hair = float(self.exposure_occlusion_hair.get())
+            config.chemistry.exposure_occlusion_insect = float(self.exposure_occlusion_insect.get())
+            config.chemistry.exposure_occlusion_debris = float(self.exposure_occlusion_debris.get())
+            config.film_border.imprint_style = imprint_style_key_from_label(
+                self.imprint_style_display.get()
+            )
+            config.film_border.imprint_side = imprint_side_key_from_label(
+                self.imprint_side_display.get()
+            )
+            config.film_border.imprint_text = str(self.imprint_text.get())
+            config.film_border.imprint_time = str(self.imprint_time.get())
             config.chemistry.chemical_stain = float(self.chemical_stain.get())
             config.chemistry.uneven_development = float(self.uneven_development.get())
+            config.chemistry.reticulation_strength = float(self.reticulation_strength.get())
+            config.chemistry.dye_damage_strength = float(self.dye_damage_strength.get())
             config.chemistry.development_adjacency_strength = float(self.development_adjacency_strength.get())
             config.chemistry.development_adjacency_radius = float(self.development_adjacency_radius.get())
             config.chemistry.process_variation = float(self.process_variation.get())
@@ -2058,28 +1542,28 @@ class DarkroomPanel:
         negatives = iter_developed_medium_files(Path(self.negative_path.get()))
         return negatives[0] if negatives else None
 
-    def _array_to_photo(self, image: np.ndarray) -> ImageTk.PhotoImage:
+    def _array_to_photo(self, image: np.ndarray) -> PhotoImage:
         image = np.clip(image, 0.0, 1.0)
         arr = np.round(image * 255.0).astype(np.uint8)
         pil_image = Image.fromarray(arr, mode="RGB")
         pil_image.thumbnail((PREVIEW_DISPLAY_LONG_EDGE, PREVIEW_DISPLAY_LONG_EDGE), Image.Resampling.LANCZOS)
-        return ImageTk.PhotoImage(pil_image)
+        return PhotoImage(pil_image)
 
     def _ensure_preview_window(self) -> None:
         if self.preview_window is not None and self.preview_window.winfo_exists():
             self.preview_window.lift()
             return
-        self.preview_window = tk.Toplevel(self.root)
+        self.preview_window = ui.Window(self.root)
         self.preview_window.title(tr("preview.window"))
         self.preview_window.geometry("1120x620")
 
-        frame = ttk.Frame(self.preview_window, padding=12)
+        frame = ui.Frame(self.preview_window, padding=12)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, textvariable=self.preview_left_title).grid(row=0, column=0, sticky="w", pady=(0, 8))
-        ttk.Label(frame, textvariable=self.preview_right_title).grid(row=0, column=1, sticky="w", pady=(0, 8))
-        self.preview_left_label = ttk.Label(frame)
+        ui.Label(frame, textvariable=self.preview_left_title).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        ui.Label(frame, textvariable=self.preview_right_title).grid(row=0, column=1, sticky="w", pady=(0, 8))
+        self.preview_left_label = ui.Label(frame)
         self.preview_left_label.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
-        self.preview_right_label = ttk.Label(frame)
+        self.preview_right_label = ui.Label(frame)
         self.preview_right_label.grid(row=1, column=1, sticky="nsew", padx=(8, 0))
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
@@ -2097,9 +1581,8 @@ class DarkroomPanel:
         self.status.set(f"预览已更新：{source_name}")
 
     def _start_preview(self) -> None:
-        Thread(target=self._render_preview, daemon=True).start()
-
-    def _render_preview(self) -> None:
+        if self._preview_running:
+            return
         try:
             mode = self.pipeline_mode.get()
             config = self._config()
@@ -2107,14 +1590,57 @@ class DarkroomPanel:
             config.debug_output = False
             config.comparison_grid = False
             config.save_sidecar = False
-
-            self.root.after(0, lambda: self.status.set(tr("status.previewing")))
             if mode in ("full", "develop"):
-                input_path = self._first_input_image()
-                if input_path is None:
-                    self.root.after(0, lambda: self.status.set(tr("status.no_input")))
+                source_path = self._first_input_image()
+                if source_path is None:
+                    self.status.set(tr("status.no_input"))
                     return
-                original = resize_to_long_edge(load_image(input_path), PREVIEW_PROCESS_LONG_EDGE)
+            else:
+                source_path = self._first_negative_file()
+                if source_path is None:
+                    self.status.set(tr("status.no_negative"))
+                    return
+        except Exception as exc:
+            self.status.set(f"预览失败：{exc}")
+            return
+
+        self._preview_generation += 1
+        request = PreviewRequest(
+            token=self._preview_generation,
+            mode=mode,
+            config=config,
+            source_path=source_path,
+        )
+        self._preview_running = True
+        if self.preview_button is not None:
+            self.preview_button.state(["disabled"])
+        self.status.set(tr("status.previewing"))
+        Thread(target=self._render_preview, args=(request,), daemon=True).start()
+
+    def _post_preview(self, token: int, callback: Callable[[], None]) -> None:
+        def apply() -> None:
+            if token == self._preview_generation and self.root.winfo_exists():
+                callback()
+
+        self.root.after(0, apply)
+
+    def _finish_preview(self, token: int) -> None:
+        if token != self._preview_generation:
+            return
+        self._preview_running = False
+        if self.preview_button is not None and self.preview_button.winfo_exists():
+            self.preview_button.state(["!disabled"])
+
+    def _render_preview(self, request: PreviewRequest) -> None:
+        try:
+            mode = request.mode
+            config = request.config
+            if mode in ("full", "develop"):
+                input_path = request.source_path
+                original = resize_to_long_edge(
+                    load_image(input_path, input_icc_policy=config.input_icc_policy),
+                    PREVIEW_PROCESS_LONG_EDGE,
+                )
                 if mode == "develop":
                     negative = develop_negative(original, config, rng=rng_for_develop(input_path, config))
                     preview = negative_visual_preview(negative.density_grain, config.film)
@@ -2134,17 +1660,14 @@ class DarkroomPanel:
                         tile_size=260,
                         columns=2,
                     )
-                    self.root.after(0, lambda: self._show_preview(input_path.name, original, inspector, tr("preview.input_image"), tr("preview.develop_inspector")))
+                    self._post_preview(request.token, lambda: self._show_preview(input_path.name, original, inspector, tr("preview.input_image"), tr("preview.develop_inspector")))
                 else:
                     result = process_array(original, config)
-                    self.root.after(0, lambda: self._show_preview(input_path.name, original, result, tr("preview.input_image"), tr("preview.final_positive")))
+                    self._post_preview(request.token, lambda: self._show_preview(input_path.name, original, result, tr("preview.input_image"), tr("preview.final_positive")))
                 return
 
-            negative_path = self._first_negative_file()
-            if negative_path is None:
-                self.root.after(0, lambda: self.status.set(tr("status.no_negative")))
-                return
-            scanned, scan_source, preview = scan_from_file(negative_path, config)
+            negative_path = request.source_path
+            scanned, scan_source, preview = scan_from_file(negative_path, config, retain_stages=True)
             positive_observation = str(scanned.input_polarity).strip().lower() == "positive"
             if positive_observation:
                 inspector_items = [
@@ -2168,7 +1691,7 @@ class DarkroomPanel:
                 columns=2,
             )
             diagnostic = scanner_capture_summary(scanned.metadata)
-            self.root.after(0, lambda: self._show_preview(
+            self._post_preview(request.token, lambda: self._show_preview(
                 negative_path.name,
                 preview,
                 inspector,
@@ -2177,7 +1700,9 @@ class DarkroomPanel:
             ))
         except Exception as exc:
             message = str(exc)
-            self.root.after(0, lambda: self.status.set(f"预览失败：{message}"))
+            self._post_preview(request.token, lambda: self.status.set(f"预览失败：{message}"))
+        finally:
+            self._post_preview(request.token, lambda: self._finish_preview(request.token))
 
     def _start_process(self) -> None:
         if self._processing:
@@ -2320,7 +1845,7 @@ class DarkroomPanel:
                     item_started_counter = perf_counter()
                     developed_path: Path | None = None
                     try:
-                        execution_mode = resolve_execution_mode(
+                        runtime_config, execution_axes = prepare_develop_runtime_config(
                             config,
                             scaled_override=preview,
                         )
@@ -2328,13 +1853,17 @@ class DarkroomPanel:
                             config,
                             scaled_override=preview,
                         )
-                        runtime_config = copy.deepcopy(config)
-                        runtime_config.processing.execution_mode = execution_mode
-                        runtime_config.fast_mode = execution_mode == "reduced_fast"
-                        if execution_mode == "scaled_fast":
-                            image = load_image(input_path, decode_long_edge=long_edge)
+                        if execution_axes.scaling_enabled:
+                            image = load_image(
+                                input_path,
+                                decode_long_edge=long_edge,
+                                input_icc_policy=runtime_config.input_icc_policy,
+                            )
                         else:
-                            image = load_image(input_path)
+                            image = load_image(
+                                input_path,
+                                input_icc_policy=runtime_config.input_icc_policy,
+                            )
                         image = resize_to_long_edge(image, long_edge)
                         develop_rng, resolved_seed = rng_and_resolved_seed_for_develop(
                             input_path,
@@ -2534,6 +2063,9 @@ class DarkroomPanel:
 
     def run(self) -> None:
         self.root.mainloop()
+
+
+MainConsole = DarkroomPanel
 
 
 if __name__ == "__main__":

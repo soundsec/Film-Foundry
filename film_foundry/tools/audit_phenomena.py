@@ -24,18 +24,18 @@ from typing import Callable
 import numpy as np
 
 from film_foundry.tools.benchmark_pipeline import synthetic_reference_image
-from half_frame_darkroom.core.accidents import (
+from film_foundry.core.accidents import (
     apply_density_accident_components,
     apply_light_leak_to_exposure,
     uneven_development_rate_field,
 )
-from half_frame_darkroom.core.atomic_io import atomic_write_json
-from half_frame_darkroom.core.color import srgb_to_linear
-from half_frame_darkroom.core.density_grain import apply_density_grain
-from half_frame_darkroom.core.development_adjacency import (
+from film_foundry.core.atomic_io import atomic_write_json
+from film_foundry.core.color import srgb_to_linear
+from film_foundry.core.density_grain import apply_density_grain
+from film_foundry.core.development_adjacency import (
     build_development_adjacency_field,
 )
-from half_frame_darkroom.core.film_process.integration import (
+from film_foundry.core.film_process.integration import (
     _color_material,
     _material_latent_state,
     develop_bw_negative_reduced,
@@ -43,10 +43,11 @@ from half_frame_darkroom.core.film_process.integration import (
     develop_color_negative_reduced,
     develop_color_reversal_reduced,
 )
-from half_frame_darkroom.core.halation import apply_halation
-from half_frame_darkroom.core.light_piping import light_piping_exposure_field
-from half_frame_darkroom.core.mtf import apply_emulsion_mtf
-from half_frame_darkroom.core.scanner import (
+from film_foundry.core.halation import apply_halation
+from film_foundry.core.emulsion_spread import emulsion_highlight_spread_field
+from film_foundry.core.light_piping import light_piping_exposure_field
+from film_foundry.core.mtf import apply_emulsion_mtf
+from film_foundry.core.scanner import (
     capture_optical_density,
     layer_density_to_optical_density_rgb,
     light_table_illuminant_rgb,
@@ -55,11 +56,11 @@ from half_frame_darkroom.core.scanner import (
     render_positive_transparency_scan,
     scanner_raw_to_positive_rgb,
 )
-from half_frame_darkroom.core.silver_grain import (
+from film_foundry.core.silver_grain import (
     SilverGrainPlan,
     apply_metallic_silver_grain,
 )
-from half_frame_darkroom.model.config import (
+from film_foundry.model.config import (
     DevelopRecipeConfig,
     FilmStockConfig,
     ScannerConfig,
@@ -166,6 +167,24 @@ def _case_halation(ctx: AuditContext) -> ArrayArtifacts:
             work_long_edge=None,
         )
     }
+
+
+def _case_emulsion_highlight_spread(ctx: AuditContext) -> ArrayArtifacts:
+    film = FilmStockConfig(
+        emulsion_highlight_spread_strength=0.35,
+        emulsion_highlight_spread_threshold=0.48,
+    )
+    field = emulsion_highlight_spread_field(
+        ctx.image_linear,
+        film,
+        layer_count=3,
+        work_long_edge=min(2200, max(ctx.height, ctx.width)),
+    )
+    if field is None:
+        raise RuntimeError("enabled emulsion highlight spread produced no field")
+    target = np.zeros((ctx.height, ctx.width, 3), dtype=np.float32)
+    field.add_scaled_to(target, np.ones(3, dtype=np.float32))
+    return {"layer_exposure_addition": target}
 
 
 def _case_light_leak(ctx: AuditContext) -> ArrayArtifacts:
@@ -517,6 +536,7 @@ def _case_scan_normalization(ctx: AuditContext) -> ArrayArtifacts:
 
 PHENOMENON_CASES: tuple[PhenomenonCase, ...] = (
     PhenomenonCase("emulsion_mtf", "pre_latent_exposure", "Emulsion spatial-frequency response", _case_mtf),
+    PhenomenonCase("emulsion_highlight_spread", "pre_latent_exposure", "Compact layer-coupled emulsion/interlayer highlight spread", _case_emulsion_highlight_spread),
     PhenomenonCase("halation", "pre_latent_exposure", "Film-side highlight return and spread", _case_halation),
     PhenomenonCase("light_leak", "pre_latent_exposure", "Accidental exposure entering from a local edge", _case_light_leak),
     PhenomenonCase("light_piping", "pre_latent_exposure", "Declared support-edge exposure propagation", _case_light_piping),

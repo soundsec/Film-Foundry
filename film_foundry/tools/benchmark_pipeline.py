@@ -2,8 +2,9 @@
 
 The benchmark deliberately calls the same public entry points as production.
 It does not replace operators, lower resolution internally, or save image
-products.  Fixed-seed output hashes are checked across repetitions so timing
-work cannot silently change the material or observation result.
+products.  By default it records one fixed-seed output digest for A/B work;
+checking every repetition is an explicit determinism diagnostic because hashing
+large arrays is not part of the image pipeline or the timed workload.
 """
 
 from __future__ import annotations
@@ -24,22 +25,33 @@ from typing import Any
 import cv2
 import numpy as np
 
-from half_frame_darkroom.core.atomic_io import atomic_write_json
-from half_frame_darkroom.core.engine import (
+from film_foundry.core.atomic_io import atomic_write_json
+from film_foundry.core.engine import (
+    _adjacency_work_long_edge,
+    _emulsion_spread_work_long_edge,
+    _processing_work_long_edge,
     _process_output_with_runtime,
     develop_negative,
     scan_negative,
 )
-from half_frame_darkroom.core.execution_topology import (
+from film_foundry.core.execution import resolve_execution_mode
+from film_foundry.core.execution_topology import (
     OPTIMIZED_TOPOLOGY,
     REFERENCE_TOPOLOGY,
     REFERENCE_TOPOLOGY_VERSION,
     execution_topology,
 )
-from half_frame_darkroom.model.config import DarkroomConfig
+from film_foundry.model.config import DarkroomConfig
 
 
 ACCIDENT_PROFILES = ("none", "combined")
+SPATIAL_PROFILES = (
+    "default",
+    "clean",
+    "emulsion_spread",
+    "layer_halation",
+    "combined",
+)
 
 
 def _apply_accident_profile(config: DarkroomConfig, profile: str) -> None:
@@ -64,6 +76,23 @@ def _apply_accident_profile(config: DarkroomConfig, profile: str) -> None:
     chemistry.developer_exhaustion = 0.28
     chemistry.fixer_exhaustion = 0.25
     chemistry.agitation = 0.45
+
+
+def _apply_spatial_profile(config: DarkroomConfig, profile: str) -> None:
+    """Apply fixed formation-only A/B profiles without changing scan logic."""
+    normalized = str(profile).strip().lower()
+    if normalized == "default":
+        return
+    if normalized not in SPATIAL_PROFILES:
+        raise ValueError(f"Unknown benchmark spatial profile: {profile!r}")
+    config.enable_halation = normalized in {"layer_halation", "combined"}
+    config.film.emulsion_highlight_spread_strength = (
+        0.24 if normalized in {"emulsion_spread", "combined"} else 0.0
+    )
+    if config.enable_halation:
+        config.film.halation_return_model = "layer_selective"
+        config.film.halation_strength = 0.12
+        config.film.halation_spread_scale_weights = (0.0, 1.0, 0.0)
 
 
 def synthetic_reference_image(width: int, height: int) -> np.ndarray:
@@ -244,9 +273,11 @@ def run_benchmark(
     scan_tile_threshold_megapixels: float = 8.0,
     native_thread_limit: int = 4,
     accident_profile: str = "none",
+    spatial_profile: str = "default",
     reference_topology: bool = False,
+    verify_determinism: bool = False,
 ) -> dict[str, Any]:
-    """Benchmark develop then scan while enforcing fixed-seed determinism."""
+    """Benchmark develop then scan, optionally checking repeat determinism."""
     if repeats <= 0:
         raise ValueError("Benchmark repeats must be positive.")
     image = synthetic_reference_image(width, height)
@@ -269,6 +300,7 @@ def run_benchmark(
     config.processing.scan_tile_threshold_megapixels = float(scan_tile_threshold_megapixels)
     config.processing.native_thread_limit = int(native_thread_limit)
     _apply_accident_profile(config, accident_profile)
+    _apply_spatial_profile(config, spatial_profile)
 
     develop_samples: list[float] = []
     scan_samples: list[float] = []
@@ -277,7 +309,8 @@ def run_benchmark(
     expected_medium_digest: str | None = None
     expected_scan_digest: str | None = None
 
-    for _ in range(repeats):
+    digests_computed = 0
+    for repeat_index in range(repeats):
         gc.collect()
         system_cpu_before = _system_cpu_times()
         tracemalloc.start()
@@ -294,16 +327,21 @@ def run_benchmark(
         _, traced_peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
 
-        medium_digest = _array_digest(medium.density_grain)
-        scan_digest = _array_digest(scanned.output_srgb)
-        if expected_medium_digest is None:
-            expected_medium_digest = medium_digest
-            expected_scan_digest = scan_digest
-        elif medium_digest != expected_medium_digest or scan_digest != expected_scan_digest:
-            raise RuntimeError(
-                "Fixed-seed benchmark output changed between repetitions; "
-                "timings are not comparable."
-            )
+        if repeat_index == 0 or verify_determinism:
+            medium_digest = _array_digest(medium.density_grain)
+            scan_digest = _array_digest(scanned.output_srgb)
+            digests_computed += 1
+            if expected_medium_digest is None:
+                expected_medium_digest = medium_digest
+                expected_scan_digest = scan_digest
+            elif (
+                medium_digest != expected_medium_digest
+                or scan_digest != expected_scan_digest
+            ):
+                raise RuntimeError(
+                    "Fixed-seed benchmark output changed between repetitions; "
+                    "timings are not comparable."
+                )
 
         develop_samples.append(developed - started)
         scan_samples.append(completed - developed)
@@ -318,8 +356,15 @@ def run_benchmark(
             "pixels": int(width * height),
         },
         "runtime": {
+            "execution_mode": resolve_execution_mode(config),
             "quality_mode": str(quality_mode),
             "fast_mode": bool(fast_mode),
+            "effective_work_long_edge": {
+                "halation": _processing_work_long_edge(config, "halation"),
+                "emulsion_highlight_spread": _emulsion_spread_work_long_edge(config),
+                "grain_and_accidents": _processing_work_long_edge(config, "grain"),
+                "development_adjacency": _adjacency_work_long_edge(config),
+            },
             "program_key": str(program_key),
             "seed": int(seed),
             "repeats": int(repeats),
@@ -332,6 +377,7 @@ def run_benchmark(
             "native_thread_limit": int(native_thread_limit),
             "opencv_threads_effective": int(cv2.getNumThreads()),
             "accident_profile": str(accident_profile),
+            "spatial_profile": str(spatial_profile),
             "execution_topology": topology,
             "reference_topology_version": int(REFERENCE_TOPOLOGY_VERSION),
         },
@@ -345,7 +391,11 @@ def run_benchmark(
         "determinism": {
             "density_grain_sha256": expected_medium_digest,
             "scan_output_sha256": expected_scan_digest,
-            "stable_across_repeats": True,
+            "hash_policy": "all_repeats" if verify_determinism else "first_repeat",
+            "hashed_repetitions": int(digests_computed),
+            "stable_across_repeats": (
+                True if verify_determinism and repeats > 1 else None
+            ),
         },
         "notes": [
             "Timing uses public develop_negative() and scan_negative() entry points.",
@@ -371,7 +421,9 @@ def run_production_benchmark(
     scan_tile_threshold_megapixels: float = 8.0,
     native_thread_limit: int = 4,
     accident_profile: str = "none",
+    spatial_profile: str = "default",
     reference_topology: bool = False,
+    verify_determinism: bool = False,
 ) -> dict[str, Any]:
     """Benchmark the output-only production path with discarded histories."""
     if repeats <= 0:
@@ -387,6 +439,7 @@ def run_production_benchmark(
     config.processing.scan_tile_threshold_megapixels = float(scan_tile_threshold_megapixels)
     config.processing.native_thread_limit = int(native_thread_limit)
     _apply_accident_profile(config, accident_profile)
+    _apply_spatial_profile(config, spatial_profile)
     config.fast_mode = bool(fast_mode)
     config.chemistry.program_key = program_key
     if str(program_key) == "color_negative_bleach_bypass":
@@ -411,7 +464,8 @@ def run_production_benchmark(
         for stage in ("after_develop", "after_scan")
     }
     expected_digest: str | None = None
-    for _ in range(repeats):
+    digests_computed = 0
+    for repeat_index in range(repeats):
         gc.collect()
         system_cpu_before = _system_cpu_times()
         tracemalloc.start()
@@ -461,11 +515,15 @@ def run_production_benchmark(
             for record in stage_records.values()
         )
         traced_peak_mib = max(stage_peak, tail_peak / (1024.0 * 1024.0))
-        digest = _array_digest(output)
-        if expected_digest is None:
-            expected_digest = digest
-        elif digest != expected_digest:
-            raise RuntimeError("Fixed-seed production output changed between repetitions.")
+        if repeat_index == 0 or verify_determinism:
+            digest = _array_digest(output)
+            digests_computed += 1
+            if expected_digest is None:
+                expected_digest = digest
+            elif digest != expected_digest:
+                raise RuntimeError(
+                    "Fixed-seed production output changed between repetitions."
+                )
         total_samples.append(completed - started)
         develop_samples.append(float(stage_records["after_develop"]["elapsed_seconds"]))
         scan_samples.append(float(stage_records["after_scan"]["elapsed_seconds"]))
@@ -488,8 +546,15 @@ def run_production_benchmark(
         "execution_path": "production_output_only",
         "image": {"width": int(width), "height": int(height), "pixels": int(width * height)},
         "runtime": {
+            "execution_mode": resolve_execution_mode(config),
             "quality_mode": str(quality_mode),
             "fast_mode": bool(fast_mode),
+            "effective_work_long_edge": {
+                "halation": _processing_work_long_edge(config, "halation"),
+                "emulsion_highlight_spread": _emulsion_spread_work_long_edge(config),
+                "grain_and_accidents": _processing_work_long_edge(config, "grain"),
+                "development_adjacency": _adjacency_work_long_edge(config),
+            },
             "program_key": str(program_key),
             "seed": int(seed),
             "repeats": int(repeats),
@@ -500,6 +565,7 @@ def run_production_benchmark(
             "native_thread_limit": int(native_thread_limit),
             "opencv_threads_effective": int(cv2.getNumThreads()),
             "accident_profile": str(accident_profile),
+            "spatial_profile": str(spatial_profile),
             "retain_cold_history": False,
             "retain_layer_masters": False,
             "execution_topology": topology,
@@ -513,7 +579,11 @@ def run_production_benchmark(
         "stage_memory": stage_summary,
         "determinism": {
             "scan_output_sha256": expected_digest,
-            "stable_across_repeats": True,
+            "hash_policy": "all_repeats" if verify_determinism else "first_repeat",
+            "hashed_repetitions": int(digests_computed),
+            "stable_across_repeats": (
+                True if verify_determinism and repeats > 1 else None
+            ),
         },
         "notes": [
             "Timing uses the same private production output-only entry point called by public process_array().",
@@ -590,11 +660,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional fixed process-accident workload for like-for-like profiling.",
     )
     parser.add_argument(
+        "--spatial-profile",
+        default="default",
+        choices=SPATIAL_PROFILES,
+        help="Fixed film-formation A/B profile for emulsion spread and layer halation.",
+    )
+    parser.add_argument(
         "--reference-topology",
         action="store_true",
         help=(
             "Developer-only allocation-heavy reference execution for "
             "same-version A/B; image semantics and precision are unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--verify-determinism",
+        action="store_true",
+        help=(
+            "Hash every repetition and fail on fixed-seed drift. By default "
+            "only the first repetition is hashed for an A/B digest."
         ),
     )
     parser.add_argument("--json-output", type=Path)
@@ -623,7 +707,9 @@ def main(argv: list[str] | None = None) -> int:
         scan_tile_threshold_megapixels=args.scan_tile_threshold_mp,
         native_thread_limit=args.native_threads,
         accident_profile=args.accident_profile,
+        spatial_profile=args.spatial_profile,
         reference_topology=args.reference_topology,
+        verify_determinism=args.verify_determinism,
     )
     if args.json_output is not None:
         atomic_write_json(args.json_output, result)

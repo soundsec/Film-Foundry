@@ -1,6 +1,8 @@
-# Film Foundry / Electronic Negative Factory
+# Film Foundry
 
-Film Foundry is a physics-inspired virtual darkroom and electronic film-medium generator. It first forms a developed negative or reversal-positive medium from a chosen material and process, then creates a digital image through a separate transmission-scanning workflow.
+Film Foundry is a physics-inspired virtual darkroom and imaging-medium generator. It first forms a developed negative or reversal-positive medium from a chosen material and process, then creates a digital image through a separate transmission-scanning workflow.
+
+Older materials, sidecars, and command entries may still say “Electronic Negative Factory” or import `half_frame_darkroom`; those are compatibility aliases, not a second product.
 
 The project is currently an early alpha. It is not a strict photochemical simulator and does not aim to clone a particular commercial film stock or scanner. Its focus is interpretable material behavior, darkroom controls, and creative flexibility.
 
@@ -11,7 +13,7 @@ The project is currently an early alpha. It is not a strict photochemical simula
 ## Features
 
 - Color negative, black-and-white negative, color reversal, and black-and-white reversal workflows.
-- Bleach bypass, cross processing, push/pull, retained silver, accidental silver plating, light leaks, chemistry exhaustion, uneven development, and material ageing controls.
+- Bleach bypass, cross processing, push/pull, retained silver, accidental silver plating, pre-latent light-leak templates, chemistry exhaustion, uneven development, explicit dye damage, reticulation damage, and material ageing controls.
 - Separate film-material, development-process, and scanner presets.
 - Independent Develop and Scan stages: a saved medium can be rescanned with different interpretations without changing the developed medium.
 - One shared transmission light table and scanner capture for negative and positive media; users independently control base removal, inversion, clear-base borders, and direct photographed-negative output.
@@ -37,6 +39,8 @@ conda activate film-foundry
 
 ## Starting the GUI
 
+The desktop interface uses PySide6. Installing from `requirements.txt` or `environment.yml` also installs the required Qt runtime.
+
 The launcher is the recommended entry point:
 
 ```bash
@@ -59,13 +63,15 @@ Material selection first distinguishes negative and positive stocks, then lists 
 
 ## Processing Modes and Large Images
 
-The CLI and runtime configuration provide three modes:
+The CLI and runtime configuration provide three independently composable controls:
 
-- `quality`: uses the requested final dimensions and is intended for final output.
-- `scaled_fast`: processes a smaller preview-sized image for fast visual tuning.
-- `reduced_fast`: preserves requested output dimensions while reducing selected internal detail calculations.
+- Long-edge scaling resizes before processing, for fast tuning or deliberately smaller output.
+- Reduced-order fast selects explicitly declared lower-order operators; coverage is still being expanded.
+- Processing quality (`draft` / `standard` / `high`) controls detail and sampling budgets inside the selected model.
 
-In the main GUI, **Fast mode** alone selects `reduced_fast`. **Use preview long edge** selects `scaled_fast` and has higher priority. When both are enabled, the effective mode is `scaled_fast`. Both are currently enabled by default and the preview long edge defaults to 1600 px, so pressing Process with the initial settings resizes first. Disable **Use preview long edge** to keep the requested dimensions with reduced internal detail; disable **Fast mode** as well to use `quality`.
+Long-edge scaling, reduced-order processing, and the quality tier are three orthogonal controls in the main GUI. When both acceleration switches are enabled, Film Foundry first scales to the target edge and then runs the selected quality tier with reduced-order operators. Scaling without reduction runs the full operators at the smaller size; reduction without scaling runs lower-order operators at the requested size. Both switches currently default to enabled and the target edge defaults to 1600 px.
+
+“Reduced-order fast” specifically means a user-selected approximate model that may trade internal mathematical or statistical detail for speed. Film Foundry also receives general algorithmic optimizations—such as removing duplicate work, reusing dead temporary buffers, and shortening array lifetimes. Those optimizations are not controlled by the fast switch, preserve material/process/scan semantics, and benefit both canonical and reduced-order paths.
 
 The current comfortable working range is up to about 30 megapixels. Larger images remain available on a best-effort basis; actual success depends on resolution, enabled exports, and available memory. Film Foundry does not resize an image automatically unless a scaled mode or long-edge limit is selected.
 
@@ -76,37 +82,43 @@ The CLI is intended for batch processing, automation, and replaying GUI sessions
 Show help:
 
 ```bash
-python -m half_frame_darkroom.app.cli --help
+python -m film_foundry.app.cli --help
 ```
 
 Full workflow:
 
 ```bash
-python -m half_frame_darkroom.app.cli full input_images outputs --film-preset clear_modern_negative --develop-preset standard_color_negative --scanner-preset neutral_scan
+python -m film_foundry.app.cli full input_images outputs --film-preset clear_modern_negative --develop-preset standard_color_negative --scanner-preset neutral_scan
 ```
 
 Develop reusable media:
 
 ```bash
-python -m half_frame_darkroom.app.cli develop input_images outputs/negatives --film-preset clear_modern_negative --develop-preset standard_color_negative
+python -m film_foundry.app.cli develop input_images outputs/negatives --film-preset clear_modern_negative --develop-preset standard_color_negative
 ```
 
 Rescan existing media:
 
 ```bash
-python -m half_frame_darkroom.app.cli scan outputs/negatives outputs/rescans --scanner-preset rich_color_scan
+python -m film_foundry.app.cli scan outputs/negatives outputs/rescans --scanner-preset rich_color_scan
 ```
 
 Use scaled-fast processing:
 
 ```bash
-python -m half_frame_darkroom.app.cli full input_images outputs --processing-mode scaled_fast --preview-long-edge 1600
+python -m film_foundry.app.cli full input_images outputs --processing-mode scaled_fast --preview-long-edge 1600
+```
+
+Combine scaling, reduced-order operators, and the draft tier:
+
+```bash
+python -m film_foundry.app.cli full input_images outputs --processing-mode scaled_fast --fast --quality-mode draft --preview-long-edge 1600
 ```
 
 Replay a GUI session:
 
 ```bash
-python -m half_frame_darkroom.app.cli full input_images outputs --session user_presets/film_foundry_session.json
+python -m film_foundry.app.cli full input_images outputs --session user_presets/film_foundry_session.json
 ```
 
 ## Presets and Editors
@@ -114,9 +126,9 @@ python -m half_frame_darkroom.app.cli full input_images outputs --session user_p
 Built-in presets are separated by purpose:
 
 ```text
-half_frame_darkroom/presets/film/      film materials
-half_frame_darkroom/presets/develop/   chemistry and process programs
-half_frame_darkroom/presets/scanner/   scanning and viewing interpretations
+film_foundry/presets/film/      film materials
+film_foundry/presets/develop/   chemistry and process programs
+film_foundry/presets/scanner/   scanning and viewing interpretations
 ```
 
 User presets are stored under `user_presets/` and take priority over built-in presets with the same name.
@@ -169,7 +181,7 @@ Current portable builds are unsigned alpha packages and may trigger a Windows Sm
 - Typical source images have already passed through a camera ISP and tone mapping, so exposure and linearization controls are visual approximations.
 - High resolution, multiple auxiliary exports, and Layer Packs can require substantial memory, processing time, and disk space.
 - Built-in presets are named by material or visual behavior and are not official simulations of manufacturer products.
-- On some Windows systems, moving the dense Tk GUI window may feel less responsive than a native application window; this does not affect processing or saved results.
+- The desktop interface currently prioritizes workflow parity during migration; visual design and dense parameter layout will be refined separately.
 
 ## License
 

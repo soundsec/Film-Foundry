@@ -25,9 +25,9 @@ from typing import Callable
 import numpy as np
 
 from film_foundry.tools.benchmark_pipeline import synthetic_reference_image
-from half_frame_darkroom.core.atomic_io import atomic_write_json
-from half_frame_darkroom.core.engine import develop_negative
-from half_frame_darkroom.model.config import DarkroomConfig
+from film_foundry.core.atomic_io import atomic_write_json
+from film_foundry.core.engine import develop_negative
+from film_foundry.model.config import DarkroomConfig
 
 
 ConfigMutation = Callable[[DarkroomConfig], None]
@@ -53,6 +53,14 @@ def _set_film(**values: object) -> ConfigMutation:
     def mutate(config: DarkroomConfig) -> None:
         for name, value in values.items():
             setattr(config.film, name, value)
+
+    return mutate
+
+
+def _set_border(**values: object) -> ConfigMutation:
+    def mutate(config: DarkroomConfig) -> None:
+        for name, value in values.items():
+            setattr(config.film_border, name, value)
 
     return mutate
 
@@ -142,6 +150,7 @@ PARAMETER_COST_CASES: tuple[ParameterCostCase, ...] = (
     ),
     ParameterCostCase("developer_fine_grain", "developer_profile", "Fine-grain developer profile", _set_chem(developer_type="fine_grain")),
     ParameterCostCase("developer_compensating", "developer_profile", "Compensating developer profile", _set_chem(developer_type="compensating")),
+    ParameterCostCase("developer_high_acutance", "developer_profile", "High-acutance developer profile", _set_chem(developer_type="high_acutance")),
     ParameterCostCase("developer_high_contrast", "developer_profile", "High-contrast developer profile", _set_chem(developer_type="high_contrast")),
     ParameterCostCase("developer_push", "developer_profile", "Push developer profile", _set_chem(developer_type="push")),
     ParameterCostCase("developer_exhausted_profile", "developer_profile", "Exhausted developer profile", _set_chem(developer_type="exhausted")),
@@ -172,6 +181,13 @@ PARAMETER_COST_CASES: tuple[ParameterCostCase, ...] = (
         _set_chem(uneven_development=0.70, agitation=0.25, developer_exhaustion=0.70),
     ),
     ParameterCostCase("silver_plating", "spatial_accident", "Surface metallic-silver deposition", _set_chem(silver_plating=0.65)),
+    ParameterCostCase("reticulation", "spatial_accident", "Explicit gelatin/emulsion reticulation", _set_chem(reticulation_strength=0.70)),
+    ParameterCostCase(
+        "dye_damage",
+        "material_operator",
+        "Explicit post-formation dye-pool loss",
+        _set_chem(dye_damage_strength=0.60),
+    ),
     ParameterCostCase(
         "silver_plating_monobath",
         "spatial_accident_interaction",
@@ -229,6 +245,59 @@ PARAMETER_COST_CASES: tuple[ParameterCostCase, ...] = (
             agitation=0.45,
         ),
     ),
+    ParameterCostCase(
+        "occlusion_dust",
+        "spatial_accident",
+        "Pre-develop dust occlusion of linearized exposure",
+        _set_chem(exposure_occlusion_dust=0.85),
+    ),
+    ParameterCostCase(
+        "occlusion_hair",
+        "spatial_accident",
+        "Pre-develop hair occlusion with sheet identity",
+        _set_chem(exposure_occlusion_hair=0.85),
+    ),
+    ParameterCostCase(
+        "occlusion_insect",
+        "spatial_accident",
+        "Pre-develop insect occlusion with sheet identity",
+        _set_chem(exposure_occlusion_insect=0.90),
+    ),
+    ParameterCostCase(
+        "occlusion_debris",
+        "spatial_accident",
+        "Pre-develop debris occlusion of linearized exposure",
+        _set_chem(exposure_occlusion_debris=0.85),
+    ),
+    ParameterCostCase(
+        "occlusion_combined",
+        "spatial_accident",
+        "Dust, hair, insects and debris occlusion together",
+        _set_chem(
+            exposure_occlusion_dust=0.70,
+            exposure_occlusion_hair=0.70,
+            exposure_occlusion_insect=0.70,
+            exposure_occlusion_debris=0.70,
+        ),
+    ),
+    ParameterCostCase(
+        "imprint_laser_dot",
+        "pre_latent_flash",
+        "Laser-dot film-plane flash after MTF",
+        _set_border(imprint_style="laser_dot", imprint_side="bottom", imprint_text="A12", imprint_time="12:00"),
+    ),
+    ParameterCostCase(
+        "imprint_optical_amber",
+        "pre_latent_flash",
+        "Optical-amber film-plane flash after MTF",
+        _set_border(imprint_style="optical_amber", imprint_side="bottom", imprint_text="FF", imprint_time="2026"),
+    ),
+    ParameterCostCase(
+        "imprint_lab_edge",
+        "pre_latent_flash",
+        "Lab-edge film-plane flash after MTF",
+        _set_border(imprint_style="lab_edge", imprint_side="top", imprint_text="LAB", imprint_time="2026-09-05"),
+    ),
 )
 
 
@@ -278,6 +347,7 @@ def _active_branches(medium) -> dict[str, object]:
         for key in (
             "grain_factor",
             "grain_radius_factor",
+            "grain_clump_factor",
             "residue_factor",
             "silvering_factor",
             "uneven_development",
@@ -286,6 +356,9 @@ def _active_branches(medium) -> dict[str, object]:
     }
     return {
         "has_light_leak_map": bool(metadata.get("has_light_leak_map", False)),
+        "has_exposure_occlusion_map": bool(metadata.get("has_exposure_occlusion_map", False)),
+        "has_edge_imprint_map": bool(metadata.get("has_edge_imprint_map", False)),
+        "imprint_style": metadata.get("imprint_style"),
         "accident_maps": list(metadata.get("accident_maps", ())),
         "development_adjacency_applied": bool(
             adjacency.get("applied", False) if isinstance(adjacency, dict) else False

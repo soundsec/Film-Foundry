@@ -9,3 +9,5 @@ dependencies:
   - pip
   - pip:
       - opencv-python>=4.8
+      - python-lcms2>=0.1.1,<0.2
+      - PySide6-Essentials>=6.8,<7

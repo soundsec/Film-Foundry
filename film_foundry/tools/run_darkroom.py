@@ -1,4 +1,4 @@
-"""Film Foundry / Electronic Negative Factory 的 IDE 运行入口。
+"""Film Foundry 的 IDE 运行入口。
 
 用法：在 PyCharm、VS Code、Spyder 等 IDE 中打开本文件，修改下面
 “用户常用设置”，然后点击 IDE 的 Run/运行按钮。
@@ -11,39 +11,28 @@
 
 from __future__ import annotations
 
-import copy
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 import sys
 
-import numpy as np
-
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from half_frame_darkroom.core.engine import apply_optical_observation_snapshot, develop_negative, process_file, save_developed_medium_at_path, scan_medium_output, scan_scanner_raw_direct, seed_from_path
-from half_frame_darkroom.core.electronic_negative import (
-    load_linear_rgb_tiff,
-    split_scanner_raw_border,
+from film_foundry.core.engine import process_file
+from film_foundry.core.io_utils import (
+    SUPPORTED_EXTENSIONS,
+    assert_unique_output_stems,
+    iter_images,
+    output_target_is_file,
+    save_image_bundle,
 )
-from half_frame_darkroom.core.execution import processing_long_edge, resolve_execution_mode
-from half_frame_darkroom.core.io_utils import SUPPORTED_EXTENSIONS, assert_unique_output_stems, iter_images, load_image, output_target_is_file, save_image_bundle, scan_output_stem
-from half_frame_darkroom.core.negative_io import load_developed_medium_for_scan
-from half_frame_darkroom.core.preview import resize_to_long_edge
-from half_frame_darkroom.core.sidecar import (
-    load_scanner_raw_sidecar,
-    scanner_raw_border_width_from_sidecar,
-    scanner_raw_optical_observation_from_sidecar,
-    transmission_raw_source_kind,
-)
-from half_frame_darkroom.core.states import DevelopedNegative
-from half_frame_darkroom.model.config import DarkroomConfig, merge_config_presets
-from film_foundry.tools.paths import app_root, resource_root
+from film_foundry.model.config import DarkroomConfig, merge_config_presets
+from film_foundry.tools.paths import app_root
+from film_foundry.app import workflow as _workflow
 
 PROJECT_ROOT = app_root()
-RESOURCE_ROOT = resource_root()
 
 
 # =========================
@@ -83,20 +72,21 @@ SCANNER_PRESET_NAME = "neutral_scan"
 # 尺寸与速度
 # =========================
 
-# full/develop 阶段是否按预览尺寸运行。scan 阶段不重新缩放底片。
+# full/develop 阶段是否按目标长边缩放。可与 FAST_MODE、QUALITY_MODE 叠加；
+# scan 阶段不重新缩放底片。
 RUN_AS_PREVIEW = False
 
 # 正式渲染长边。None 表示保留输入图片原始尺寸。
 RENDER_LONG_EDGE = None
 
-# 预览长边。只有 RUN_AS_PREVIEW=True 时生效。
+# 缩放目标长边。只有 RUN_AS_PREVIEW=True 时生效。
 PREVIEW_LONG_EDGE = 1600
 
-# 快速模式会用较低中间尺寸计算光晕/颗粒，适合反复试参数。
+# 降阶快速模型；不会因 RUN_AS_PREVIEW=True 而关闭。
 FAST_MODE = True
 
 # 内部处理质量：draft / standard / high。
-# draft 更快；standard 平衡；high 尽量使用原尺寸计算低频/颗粒模块。
+# draft 更快；standard 平衡；high 保留更多内部细节。该轴与上面两项独立。
 QUALITY_MODE = "standard"
 # None follows QUALITY_MODE. Set an explicit pixel edge only for manual tuning.
 HALATION_WORK_LONG_EDGE = None
@@ -188,7 +178,7 @@ DEBUG_OUTPUT = False
 COMPARISON_GRID = False
 SAVE_SIDECAR = True
 
-# develop 阶段额外保存电子负片：扫描器看到的 16-bit linear TIFF。
+# develop 阶段额外保存 scanner raw：扫描器看到的 16-bit linear TIFF。
 # 边框是未曝光片基区域，方便用户在外部软件里取样去橙罩。
 SAVE_SCANNER_RAW = True
 SCANNER_RAW_BORDER_PERCENT = 0.04
@@ -214,10 +204,12 @@ ANTI_BANDING_STRENGTH = 0.18
 # 内部运行逻辑
 # =========================
 
-PRESET_DIR = RESOURCE_ROOT / "half_frame_darkroom" / "presets"
-USER_PRESET_DIR = PROJECT_ROOT / "user_presets"
-NEGATIVE_SUFFIX = ".darkroom_negative.npz"
-POSITIVE_SUFFIX = ".darkroom_positive.npz"
+PRESET_DIR = _workflow.PRESET_DIR
+USER_PRESET_DIR = _workflow.USER_PRESET_DIR
+NEGATIVE_SUFFIX = _workflow.NEGATIVE_SUFFIX
+POSITIVE_SUFFIX = _workflow.POSITIVE_SUFFIX
+_output_path_for = _workflow.output_path_for
+_iter_negative_files = _workflow.iter_developed_medium_files
 
 
 def _preset_path(value: str | Path, kind: str) -> Path:
@@ -346,35 +338,6 @@ def _load_config() -> DarkroomConfig:
     return config
 
 
-def _scale_dye_selectivity(matrix, selectivity: float):
-    selectivity = max(0.0, float(selectivity))
-    rows = []
-    for row in matrix:
-        neutral = sum(float(v) for v in row) / 3.0
-        rows.append(tuple(max(0.0, neutral + (float(v) - neutral) * selectivity) for v in row))
-    return tuple(rows)
-
-
-def _output_path_for(input_path: Path, output_root: Path, output_format: str) -> Path:
-    if output_target_is_file(output_root):
-        return output_root
-    suffix = "." + output_format.lower().lstrip(".")
-    return output_root / f"{scan_output_stem(input_path)}_darkroom{suffix}"
-
-
-def _negative_path_for(input_path: Path, negative_root: Path) -> Path:
-    if negative_root.suffix.lower() == ".npz":
-        return negative_root
-    return negative_root / f"{input_path.stem}{NEGATIVE_SUFFIX}"
-
-
-def _developed_path_for(input_path: Path, output_root: Path, medium: DevelopedNegative) -> Path:
-    if output_root.suffix.lower() == ".npz":
-        return output_root
-    suffix = POSITIVE_SUFFIX if str(medium.image_polarity).lower() == "positive" else NEGATIVE_SUFFIX
-    return output_root / f"{input_path.stem}{suffix}"
-
-
 def _ensure_batch_output_target(items: list[Path], output_root: Path, label: str) -> bool:
     if len(items) > 1 and output_target_is_file(output_root):
         print(f"{label} output is a single file, but {len(items)} input files were found.")
@@ -386,155 +349,6 @@ def _ensure_batch_output_target(items: list[Path], output_root: Path, label: str
         print(exc)
         return False
     return True
-
-
-def _scanner_raw_path_for_negative(negative_path: Path) -> Path:
-    return negative_path.with_suffix(".scanner_raw.tiff")
-
-
-def _raw_path_for_medium(medium_path: Path) -> Path:
-    if medium_path.name.lower().endswith(POSITIVE_SUFFIX):
-        return medium_path.with_suffix(".light_table_raw.tiff")
-    return _scanner_raw_path_for_negative(medium_path)
-
-
-def _is_scanner_raw_tiff(path: Path) -> bool:
-    return path.suffix.lower() in {".tif", ".tiff"} and any(token in path.stem.lower() for token in (".scanner_raw", ".light_table_raw"))
-
-
-def _resolved_seed_for(path: Path, config: DarkroomConfig) -> int | None:
-    strategy = str(config.seed_strategy).lower()
-    if strategy == "fixed":
-        return 0 if config.random_seed is None else int(config.random_seed)
-    if strategy == "path":
-        return seed_from_path(path, 0 if config.random_seed is None else int(config.random_seed))
-    return None
-
-
-def _rng_for_develop(path: Path, config: DarkroomConfig) -> np.random.Generator:
-    rng, _ = _rng_and_resolved_seed_for_develop(path, config)
-    return rng
-
-
-def _rng_and_resolved_seed_for_develop(
-    path: Path,
-    config: DarkroomConfig,
-) -> tuple[np.random.Generator, int]:
-    seed = _resolved_seed_for(path, config)
-    if seed is None:
-        seed = int(np.random.SeedSequence().generate_state(1, dtype=np.uint32)[0])
-    return np.random.default_rng(seed), seed
-
-
-def _save_negative(
-    negative: DevelopedNegative,
-    path: Path,
-    input_path: Path,
-    config: DarkroomConfig,
-    *,
-    resolved_seed: int | None = None,
-) -> None:
-    """Compatibility name for the unified developed-medium exporter."""
-    save_developed_medium_at_path(
-        input_path,
-        path,
-        negative,
-        config,
-        resolved_seed=(
-            _resolved_seed_for(input_path, config)
-            if resolved_seed is None
-            else int(resolved_seed)
-        ),
-    )
-
-
-def _load_negative(path: Path) -> DevelopedNegative:
-    return load_developed_medium_for_scan(path)
-
-
-def _scan_from_file(path: Path, config: DarkroomConfig):
-    # Keep per-file sidecar optics out of persistent settings and later raws.
-    config = copy.deepcopy(config)
-    interpretation = str(config.scanner.interpretation_mode or "auto")
-    if _is_scanner_raw_tiff(path):
-        raw_sidecar = load_scanner_raw_sidecar(path)
-        apply_optical_observation_snapshot(
-            config,
-            scanner_raw_optical_observation_from_sidecar(raw_sidecar),
-        )
-        scanner_raw = load_linear_rgb_tiff(path)
-        source_kind = transmission_raw_source_kind(path, raw_sidecar)
-        border_width = scanner_raw_border_width_from_sidecar(raw_sidecar, scanner_raw.shape)
-        if border_width is not None:
-            inner, border_samples = split_scanner_raw_border(
-                scanner_raw,
-                border_width_px=border_width,
-            )
-        elif source_kind == "light_table_raw_tiff":
-            inner, border_samples = scanner_raw, None
-        else:
-            inner, border_samples = split_scanner_raw_border(
-                scanner_raw,
-                border_percent=config.output.scanner_raw_border_percent,
-                border_min_px=config.output.scanner_raw_border_min_px,
-            )
-        scanned = scan_scanner_raw_direct(
-            inner,
-            config,
-            interpretation,
-            base_samples=border_samples,
-            source_path=path,
-            raw_source_kind=source_kind,
-        )
-        return scanned, source_kind, path
-
-    scanner_raw_path = _raw_path_for_medium(path)
-    if scanner_raw_path.exists():
-        raw_sidecar = load_scanner_raw_sidecar(scanner_raw_path)
-        apply_optical_observation_snapshot(
-            config,
-            scanner_raw_optical_observation_from_sidecar(raw_sidecar),
-        )
-        scanner_raw = load_linear_rgb_tiff(scanner_raw_path)
-        source_kind = transmission_raw_source_kind(scanner_raw_path, raw_sidecar)
-        border_width = scanner_raw_border_width_from_sidecar(raw_sidecar, scanner_raw.shape)
-        if border_width is not None:
-            inner, border_samples = split_scanner_raw_border(
-                scanner_raw,
-                border_width_px=border_width,
-            )
-        elif source_kind == "light_table_raw_tiff":
-            inner, border_samples = scanner_raw, None
-        else:
-            inner, border_samples = split_scanner_raw_border(
-                scanner_raw,
-                border_percent=config.output.scanner_raw_border_percent,
-                border_min_px=config.output.scanner_raw_border_min_px,
-            )
-        return scan_scanner_raw_direct(
-            inner,
-            config,
-            interpretation,
-            base_samples=border_samples,
-            source_path=scanner_raw_path,
-            raw_source_kind=source_kind,
-        ), source_kind, scanner_raw_path
-
-    if path.suffix.lower() != ".npz":
-        raise ValueError(f"不支持的底片文件：{path}。请选择 .npz 或 .scanner_raw.tiff，不要选择 sidecar .json。")
-    negative = _load_negative(path)
-    return scan_medium_output(negative, config, interpretation), "density_npz", path
-
-
-def _iter_negative_files(path: Path) -> list[Path]:
-    if path.is_file():
-        return [path] if path.suffix.lower() == ".npz" or _is_scanner_raw_tiff(path) else []
-    if path.is_dir():
-        npz_paths = sorted(path.glob(f"*{NEGATIVE_SUFFIX}")) + sorted(path.glob(f"*{POSITIVE_SUFFIX}"))
-        raw_paths = sorted(item for item in path.glob("*.tif*") if _is_scanner_raw_tiff(item))
-        npz_raw_paths = {_raw_path_for_medium(item).resolve() for item in npz_paths}
-        return npz_paths + [item for item in raw_paths if item.resolve() not in npz_raw_paths]
-    return []
 
 
 def _print_input_help() -> None:
@@ -577,36 +391,11 @@ def _run_develop(config: DarkroomConfig) -> None:
     completed = 0
     for input_path in input_paths:
         try:
-            execution_mode = resolve_execution_mode(
+            _medium, negative_path, _paths = _workflow.develop_image_file(
+                input_path,
+                NEGATIVE_PATH,
                 config,
                 scaled_override=RUN_AS_PREVIEW,
-            )
-            long_edge = processing_long_edge(config, scaled_override=RUN_AS_PREVIEW)
-            runtime_config = copy.deepcopy(config)
-            runtime_config.processing.execution_mode = execution_mode
-            runtime_config.fast_mode = execution_mode == "reduced_fast"
-            if execution_mode == "scaled_fast":
-                image = load_image(input_path, decode_long_edge=long_edge)
-            else:
-                image = load_image(input_path)
-            image = resize_to_long_edge(image, long_edge)
-            develop_rng, resolved_seed = _rng_and_resolved_seed_for_develop(
-                input_path,
-                runtime_config,
-            )
-            negative = develop_negative(
-                image,
-                runtime_config,
-                rng=develop_rng,
-            )
-            del image
-            negative_path = _developed_path_for(input_path, NEGATIVE_PATH, negative)
-            _save_negative(
-                negative,
-                negative_path,
-                input_path,
-                runtime_config,
-                resolved_seed=resolved_seed,
             )
             print(f"已保存冲洗底片: {negative_path}")
             completed += 1
@@ -629,8 +418,11 @@ def _run_scan(config: DarkroomConfig) -> None:
     completed = 0
     for negative_path in negative_paths:
         try:
-            scanned, scan_source, source_path = _scan_from_file(negative_path, config)
-            output_path = _output_path_for(negative_path.with_suffix(""), OUTPUT_PATH, config.output.format)
+            scanned, scan_source, source_path, _preview = _workflow.observe_medium_file(
+                negative_path,
+                config,
+            )
+            output_path = _output_path_for(negative_path, OUTPUT_PATH, config.output.format)
             if SAVE_SIDECAR:
                 sidecar = {
                         "kind": "ScannedPositive",

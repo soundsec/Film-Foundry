@@ -19,16 +19,16 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from half_frame_darkroom.core.atomic_io import atomic_output_path
-from half_frame_darkroom.core.scanner import render_positive_scan
-from half_frame_darkroom.core.sensitometry import hd_density_curve
-from half_frame_darkroom.model.config import DarkroomConfig, merge_config_presets
+from film_foundry.core.atomic_io import atomic_output_path
+from film_foundry.core.scanner import render_positive_scan
+from film_foundry.core.sensitometry import hd_density_curve
+from film_foundry.model.config import DarkroomConfig, merge_config_presets
 from film_foundry.tools.paths import app_root, resource_root
 
 
 PROJECT_ROOT = app_root()
 RESOURCE_ROOT = resource_root()
-PRESET_DIR = RESOURCE_ROOT / "half_frame_darkroom" / "presets"
+PRESET_DIR = RESOURCE_ROOT / "film_foundry" / "presets"
 FILM_PRESET_DIR = PRESET_DIR / "film"
 DEVELOP_PRESET_DIR = PRESET_DIR / "develop"
 SCANNER_PRESET_DIR = PRESET_DIR / "scanner"
