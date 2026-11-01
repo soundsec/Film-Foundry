@@ -1,10 +1,12 @@
+import importlib
 import re
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 import film_foundry
-import half_frame_darkroom
 
 from film_foundry.tools.paths import app_root, resource_root
 
@@ -12,23 +14,22 @@ from film_foundry.tools.paths import app_root, resource_root
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_legacy_cli_module_entrypoint_matches_canonical():
+def test_cli_module_reports_help_and_rejects_unknown_commands():
     for arguments, expected in [(["--help"], 0), (["invalid-command"], 2)]:
-        results = [subprocess.run(
-            [sys.executable, "-m", name, *arguments], cwd=PROJECT_ROOT,
-            capture_output=True, text=True,
-        ) for name in ("film_foundry.app.cli", "half_frame_darkroom.app.cli")]
-        assert [result.returncode for result in results] == [expected, expected]
-        assert results[0].stdout == results[1].stdout
-        assert results[0].stderr == results[1].stderr
+        result = subprocess.run(
+            [sys.executable, "-m", "film_foundry.app.cli", *arguments],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == expected
 
 
 def test_release_version_and_license_metadata_are_consistent():
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     version_match = re.search(r'^version = "([^"]+)"$', pyproject, flags=re.MULTILINE)
     assert version_match is not None
-    assert version_match.group(1) == half_frame_darkroom.__version__ == "0.3.1"
-    assert film_foundry.__version__ == half_frame_darkroom.__version__
+    assert version_match.group(1) == film_foundry.__version__ == "0.4.0"
     assert 'license = "GPL-3.0-or-later"' in pyproject
 
     notice = (PROJECT_ROOT / "LICENSE").read_text(encoding="utf-8")
@@ -47,15 +48,19 @@ def test_release_sources_include_presets_and_reproducible_windows_build_files():
             (PROJECT_ROOT / "film_foundry" / "presets" / preset_kind).glob("*.json")
         )
 
+    if not (PROJECT_ROOT / "packaging").is_dir():
+        pytest.skip("Local Windows build scripts are not included in this source tree")
     assert (PROJECT_ROOT / "packaging" / "FilmFoundry.spec").is_file()
     assert (PROJECT_ROOT / "packaging" / "build_windows_exe.ps1").is_file()
     assert (PROJECT_ROOT / "packaging" / "PORTABLE_README.txt").is_file()
     build_script = (PROJECT_ROOT / "packaging" / "build_windows_exe.ps1").read_text(
         encoding="utf-8"
     )
-    assert 'docs\\public\\*.md' in build_script
     assert 'docs\\internal' not in build_script
-    assert 'Join-Path $ProjectRoot "README.md"' in build_script
+    assert 'Join-Path $ProjectRoot "README.md"' not in build_script
+    assert '--docs-only' not in build_script
+    assert 'PORTABLE_README.txt' in build_script
+    assert 'collect_windows_licenses.ps1' in build_script
     assert "README.zh-CN.md" not in build_script
 
 
@@ -93,6 +98,8 @@ def test_launcher_release_self_check_covers_bundled_tools_and_presets():
 
 
 def test_windows_builder_is_qt_only_and_verifies_platform_plugin():
+    if not (PROJECT_ROOT / "packaging").is_dir():
+        pytest.skip("Local Windows build scripts are not included in this source tree")
     build_script = (PROJECT_ROOT / "packaging" / "build_windows_exe.ps1").read_text(
         encoding="utf-8"
     )
@@ -136,17 +143,19 @@ def test_desktop_dependencies_include_qt_runtime():
         assert "python-lcms2>=0.1.1,<0.2" in content
 
 
-def test_public_and_internal_documents_are_physically_separated():
+def test_public_documents_are_available_in_development_and_source_release():
     public_docs = PROJECT_ROOT / "docs" / "public"
     internal_docs = PROJECT_ROOT / "docs" / "internal"
+    if not public_docs.is_dir():
+        public_docs = PROJECT_ROOT / "docs"
     assert public_docs.is_dir()
-    assert internal_docs.is_dir()
 
-    assert (public_docs / "RELEASE_NOTES_0.3.md").is_file()
-    assert (public_docs / "PRESET_GUIDE.md").is_file()
-    assert (internal_docs / "STRUCTURE.md").is_file()
-    assert (internal_docs / "EXE_PACKAGING.md").is_file()
-    assert (internal_docs / "RELEASE_CHECKLIST.md").is_file()
+    for document in ("DESKTOP_GUIDE.md", "REFERENCE.md", "SHOWCASE.md", "CHANGELOG.md"):
+        assert (public_docs / document).is_file()
+    if internal_docs.is_dir():
+        assert (internal_docs / "STRUCTURE.md").is_file()
+        assert (internal_docs / "EXE_PACKAGING.md").is_file()
+        assert (internal_docs / "RELEASE_CHECKLIST.md").is_file()
 
     forbidden_public_references = (
         "docs/internal",
@@ -166,7 +175,7 @@ def test_homepage_is_chinese_first_and_does_not_link_internal_docs():
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     assert readme.startswith("# Film Foundry\n")
     assert "## 主要功能" in readme
-    assert "[English README](README.en.md)" in readme
+    assert "[English](README.en.md)" in readme
     assert "EXE_PACKAGING" not in readme
     assert "docs/internal" not in readme
 
@@ -182,23 +191,16 @@ def test_written_project_identity_stays_on_historical_string():
 
     historical = "Film Foundry / Electronic Negative Factory"
     assert PROJECT_NAME == historical
-    assert film_foundry.__app_name__ == half_frame_darkroom.__app_name__ == historical
-    assert film_foundry.__display_name__ == half_frame_darkroom.__display_name__ == APP_DISPLAY_NAME == "Film Foundry"
+    assert film_foundry.__app_name__ == historical
+    assert film_foundry.__display_name__ == APP_DISPLAY_NAME == "Film Foundry"
     assert sidecar.PROJECT_NAME == provenance.PROJECT_NAME == session.PROJECT_NAME == PROJECT_NAME
     assert historical in KNOWN_PROJECT_NAMES
     assert APP_DISPLAY_NAME in KNOWN_PROJECT_NAMES
 
 
-def test_legacy_half_frame_darkroom_imports_are_the_same_modules():
-    import film_foundry.app.cli as canonical_cli
-    import film_foundry.core.engine as canonical_engine
-    import half_frame_darkroom.app.cli as legacy_cli
-    import half_frame_darkroom.core.engine as legacy_engine
-
-    assert canonical_engine is legacy_engine
-    assert canonical_cli is legacy_cli
-    assert canonical_engine.develop_negative is legacy_engine.develop_negative
-    assert canonical_engine.scan_negative is legacy_engine.scan_negative
-    assert canonical_cli.main is legacy_cli.main
-    assert canonical_engine.develop_medium is canonical_engine.develop_negative
-    assert canonical_engine.scan_medium is canonical_engine.scan_negative
+def test_removed_package_name_cannot_be_imported():
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("half_frame_darkroom")
+    pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "half-frame-darkroom" not in pyproject
+    assert "half_frame_darkroom" not in pyproject

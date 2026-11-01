@@ -5,14 +5,14 @@ from __future__ import annotations
 import numpy as np
 
 from film_foundry.core.development import build_effective_development
+from film_foundry.core.spectral_exposure import map_layer_exposure
 from film_foundry.model.config import ChemistryConfig, FilmStockConfig
 
 
 def rgb_exposure_to_layer_exposure(image: np.ndarray, film: FilmStockConfig) -> np.ndarray:
     """把近似线性 RGB 曝光代理映射到 C/M/Y 三层乳剂的相对曝光量 E。"""
     image = np.asarray(image, dtype=np.float32)
-    matrix = np.asarray(film.layer_sensitivity_matrix, dtype=np.float32).reshape(3, 3)
-    exposure = np.einsum("...c,lc->...l", np.clip(image, 0.0, None), matrix)
+    exposure = map_layer_exposure(image, film)
     np.maximum(exposure, 1e-6, out=exposure)
     return exposure.astype(np.float32, copy=False)
 

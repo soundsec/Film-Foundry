@@ -7,6 +7,32 @@ import numpy as np
 
 from film_foundry.core.color import luminance
 
+# Output dither v2: lowbias32 (Chris Wellons, Unlicense), with project-owned
+# coordinate composition. See THIRD_PARTY_NOTICES.md. This intentionally changes
+# the dither realization, not its amplitude, mask, or the developed medium.
+
+
+def _dither_mix(values: np.ndarray) -> np.ndarray:
+    """lowbias32 on a private uint32 array; wraparound is intentional."""
+    values = np.array(values, dtype=np.uint32, copy=True)
+    values ^= values >> np.uint32(16)
+    values *= np.uint32(0x7FEB352D)
+    values ^= values >> np.uint32(15)
+    values *= np.uint32(0x846CA68B)
+    values ^= values >> np.uint32(16)
+    return values
+
+
+def _coordinate_fields(y: np.ndarray, x: np.ndarray) -> np.ndarray:
+    # Mix axes separately before combining; absolute coordinates keep row tiles
+    # independent from tile size, image content, and the application's RNG.
+    base = _dither_mix(x) ^ _dither_mix(y ^ np.uint32(0xA511E9B3))
+    fields = []
+    for salt in (0x9E3779B9, 0x85EBCA6B, 0xC2B2AE35):
+        value = _dither_mix(base ^ np.uint32(salt))
+        fields.append(value.astype(np.float32) / np.float32(2**32 - 1) - 0.5)
+    return np.stack(fields, axis=-1).astype(np.float32)
+
 
 def _smooth_mask(image: np.ndarray) -> np.ndarray:
     gray = luminance(image)
@@ -20,15 +46,10 @@ def _smooth_mask(image: np.ndarray) -> np.ndarray:
 
 
 def _coordinate_noise(height: int, width: int) -> np.ndarray:
-    y, x = np.indices((height, width), dtype=np.uint32)
-    fields = []
-    for salt in (0x9E3779B9, 0x85EBCA6B, 0xC2B2AE35):
-        value = x * np.uint32(374761393) + y * np.uint32(668265263) + np.uint32(salt)
-        value = (value ^ (value >> np.uint32(13))) * np.uint32(1274126177)
-        value = value ^ (value >> np.uint32(16))
-        fields.append((value.astype(np.float32) / np.float32(2**32 - 1)) - 0.5)
-    noise = np.stack(fields, axis=-1).astype(np.float32)
-    # Add a half-pixel shifted field to make a deterministic triangular-ish dither.
+    y = np.arange(height, dtype=np.uint32)[:, None]
+    x = np.arange(width, dtype=np.uint32)[None, :]
+    noise = _coordinate_fields(y, x)
+    # Average with a wrapped field shifted by three rows and five columns.
     return (noise + np.roll(noise, shift=(3, 5), axis=(0, 1))) * 0.5
 
 
@@ -44,20 +65,7 @@ def _coordinate_noise_region(
     shifted_y = ((y.astype(np.int64) - 3) % full_height).astype(np.uint32)
     shifted_x = ((x.astype(np.int64) - 5) % width).astype(np.uint32)
 
-    def fields_at(field_y: np.ndarray, field_x: np.ndarray) -> np.ndarray:
-        fields = []
-        for salt in (0x9E3779B9, 0x85EBCA6B, 0xC2B2AE35):
-            value = (
-                field_x * np.uint32(374761393)
-                + field_y * np.uint32(668265263)
-                + np.uint32(salt)
-            )
-            value = (value ^ (value >> np.uint32(13))) * np.uint32(1274126177)
-            value = value ^ (value >> np.uint32(16))
-            fields.append((value.astype(np.float32) / np.float32(2**32 - 1)) - 0.5)
-        return np.stack(fields, axis=-1).astype(np.float32)
-
-    return (fields_at(y, x) + fields_at(shifted_y, shifted_x)) * 0.5
+    return (_coordinate_fields(y, x) + _coordinate_fields(shifted_y, shifted_x)) * 0.5
 
 
 def apply_output_antibanding_region(

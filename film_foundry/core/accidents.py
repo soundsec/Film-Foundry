@@ -1,10 +1,7 @@
-"""Intentional darkroom accident effects.
+"""冲洗事故。
 
-These helpers model expert-mode accidents as part of negative formation. Dirty
-chemistry and uneven development are modulated by EffectiveDevelopmentState, so
-bad process conditions amplify the base accident tendency. They are deliberately
-bounded so playful controls can be pulled hard without making the numeric
-pipeline unstable.
+漏光在曝光阶段。灰尘、毛发、飞虫、碎屑挡在潜影前。
+污染、不匀、网裂和染料损伤在密度形成之后。扫描不在这里。
 """
 
 from __future__ import annotations
@@ -18,6 +15,7 @@ import numpy as np
 from film_foundry.core.derived_cache import pseudoinverse_3x3
 
 from film_foundry.core.development import build_effective_development
+from film_foundry.core.incident_identity import incident_rng
 from film_foundry.core.io_utils import cv_imread_unicode
 from film_foundry.model.config import DevelopRecipeConfig, FilmStockConfig
 
@@ -85,6 +83,9 @@ EXPOSURE_OCCLUSION_IDENTITY_AMOUNT_FIELDS = (
 EXPOSURE_OCCLUSION_FIXED_IDENTITY_SEED = 0x51F11D01
 _HAIR_IDENTITY_SALT = 0xA11F11D0
 _INSECT_IDENTITY_SALT = 0x1B5EC701
+_DUST_IDENTITY_SALT = 0xD0570101
+_DEBRIS_IDENTITY_SALT = 0xDEB20101
+_INCIDENT_IDENTITY_LONG_EDGE = 900
 LIGHT_LEAK_TEMPLATE_KEYS = (
     "local_edge",
     "perimeter",
@@ -130,6 +131,15 @@ def _bounded_control_shape(
         max(1, int(round(height * scale))),
         max(1, int(round(width * scale))),
     )
+
+
+def _incident_control_shape(shape,recipe,legacy_edge):
+    if recipe.incident_identity_seed is None:
+        return _bounded_control_shape(shape,long_edge=legacy_edge)
+    # One normalized gate grid fixes object counts and positions across a
+    # preview and a full-resolution frame of the same format/aspect ratio.
+    scale=_INCIDENT_IDENTITY_LONG_EDGE/float(max(shape))
+    return tuple(max(1,int(round(length*scale))) for length in shape)
 
 
 def sample_light_leak_pattern(
@@ -728,12 +738,13 @@ def _reticulation_texture_map(
 
 
 def uneven_development_rate_field(
-    image_linear: np.ndarray,
+    image_linear: np.ndarray | None,
     recipe: DevelopRecipeConfig,
     rng: np.random.Generator | None = None,
     *,
     fast: bool = False,
     work_long_edge: int | None = None,
+    frame_shape: tuple[int, int] | None = None,
 ) -> np.ndarray | None:
     """Build a bounded spatial developer-rate field for process operators.
 
@@ -760,8 +771,13 @@ def uneven_development_rate_field(
     )
     effective_strength = float(np.clip(strength * pathology, 0.0, 1.0))
 
-    image_linear = np.asarray(image_linear, dtype=np.float32)
-    height, width = image_linear.shape[:2]
+    if frame_shape is None:
+        if image_linear is None:
+            raise ValueError("uneven development needs a frame extent")
+        frame_shape = np.asarray(image_linear).shape[:2]
+    height, width = frame_shape
+    if height <= 0 or width <= 0:
+        raise ValueError("uneven development needs a non-empty frame extent")
     if work_long_edge is None and fast:
         work_long_edge = 1200
     if work_long_edge is not None and int(work_long_edge) > 0 and max(height, width) > int(work_long_edge):
@@ -770,7 +786,7 @@ def uneven_development_rate_field(
     else:
         work_shape = (height, width)
 
-    rng = rng or np.random.default_rng()
+    rng = incident_rng(recipe,rng or np.random.default_rng(),"uneven_development")
     uneven_sigma = max(2.0, float(max(work_shape)) * 0.16 * (1.0 + 0.24 * agitation_deficit))
     uneven = _resize_work_map(
         _uneven_development_map(work_shape, rng, uneven_sigma, agitation_deficit),
@@ -804,7 +820,7 @@ def apply_light_leak_to_exposure(
     rng = rng or np.random.default_rng()
     identity_seed = getattr(recipe, "light_leak_identity_seed", None)
     sample_rng = (
-        rng
+        incident_rng(recipe,rng,"light_leak")
         if identity_seed is None
         else np.random.default_rng(int(identity_seed))
     )
@@ -837,10 +853,7 @@ def apply_light_leak_to_exposure(
             )
     image_linear = np.asarray(image_linear, dtype=np.float32)
     height, width = image_linear.shape[:2]
-    work_shape = _bounded_control_shape(
-        (height, width),
-        long_edge=_LIGHT_LEAK_CONTROL_LONG_EDGE,
-    )
+    work_shape = _incident_control_shape((height,width),recipe,_LIGHT_LEAK_CONTROL_LONG_EDGE)
     work_height, work_width = work_shape
     xx = np.linspace(0.0, 1.0, work_width, dtype=np.float32)[None, :]
     yy = np.linspace(0.0, 1.0, work_height, dtype=np.float32)[:, None]
@@ -1023,7 +1036,7 @@ def apply_density_accident_components(
 
     if stain_strength > 1e-6:
         stain_sigma = max(2.0, float(max(work_shape)) * 0.10 * (1.0 + 0.18 * residue_factor))
-        stain_map = _resize_work_map(_stain_deposit_map(work_shape, rng, stain_sigma), (height, width))
+        stain_map = _resize_work_map(_stain_deposit_map(work_shape, incident_rng(recipe,rng,"chemical_stain"), stain_sigma), (height, width))
         stain_map = np.clip(0.34 + stain_map * 0.86, 0.0, 1.0).astype(np.float32)
         # CMY density bias: murky retained chemistry leans yellow/green-brown
         # after scanning, while still being stored as a physical negative stain.
@@ -1037,12 +1050,13 @@ def apply_density_accident_components(
         maps["chemical_stain"] = stain_map
 
     if plating_strength > 1e-6:
+        plating_rng=incident_rng(recipe,rng,"silver_plating")
         deposit_sigma = max(2.0, float(max(work_shape)) * 0.075)
-        deposit = _stain_deposit_map(work_shape, rng, deposit_sigma)
-        along_y = bool(rng.integers(0, 2))
+        deposit = _stain_deposit_map(work_shape, plating_rng, deposit_sigma)
+        along_y = bool(plating_rng.integers(0, 2))
         streaks = _axis_streaks(
             work_shape,
-            rng,
+            plating_rng,
             along_y=along_y,
             long_sigma=max(5.0, float(max(work_shape)) * 0.20),
             short_sigma=max(0.8, float(min(work_shape)) * 0.006),
@@ -1085,7 +1099,7 @@ def apply_density_accident_components(
                 else min(int(work_long_edge), _RETICULATION_CONTROL_LONG_EDGE)
             ),
         )
-        reticulation_map = _reticulation_texture_map(reticulation_shape, rng)
+        reticulation_map = _reticulation_texture_map(reticulation_shape, incident_rng(recipe,rng,"reticulation"))
         reticulation_map = _resize_work_map(
             reticulation_map,
             (height, width),
@@ -1216,24 +1230,22 @@ def apply_exposure_occlusion_to_linear(
 
     Dust, hair, insects and debris block incoming exposure after inverse gamma.
     They are not scan dirt, developed-density overlays, or RGB textures.
-    Hair and insects keep a sheet identity independent of the frame RNG;
-    dust and debris stay per-frame.
+    An explicit roll/batch identity fixes all four gate obstructions. Legacy
+    recipes without it retain fixed hair/insects and per-frame dust/debris.
     """
     image_linear = np.asarray(image_linear, dtype=np.float32)
     if not exposure_occlusion_is_active(recipe):
         return image_linear, None
 
     height, width = image_linear.shape[:2]
-    work_shape = _bounded_control_shape(
-        (height, width),
-        long_edge=_EXPOSURE_OCCLUSION_CONTROL_LONG_EDGE,
-    )
+    work_shape = _incident_control_shape((height,width),recipe,_EXPOSURE_OCCLUSION_CONTROL_LONG_EDGE)
     occlusion = np.zeros(work_shape, dtype=np.float32)
     amounts = {
         key: float(np.clip(getattr(recipe, key, 0.0), 0.0, 1.0))
         for key in EXPOSURE_OCCLUSION_AMOUNT_FIELDS
     }
-    needs_frame_rng = any(
+    fixed_gate = recipe.incident_identity_seed is not None or recipe.exposure_occlusion_identity_seed is not None
+    needs_frame_rng = not fixed_gate and any(
         amounts[key] > 1e-6 for key in EXPOSURE_OCCLUSION_FRAME_AMOUNT_FIELDS
     )
     if needs_frame_rng:
@@ -1241,7 +1253,7 @@ def apply_exposure_occlusion_to_linear(
     if amounts["exposure_occlusion_dust"] > 1e-6:
         np.maximum(
             occlusion,
-            _dust_occlusion_field(work_shape, amounts["exposure_occlusion_dust"], rng),
+            _dust_occlusion_field(work_shape, amounts["exposure_occlusion_dust"], _occlusion_identity_rng(recipe,_DUST_IDENTITY_SALT) if fixed_gate else rng),
             out=occlusion,
         )
     if amounts["exposure_occlusion_hair"] > 1e-6:
@@ -1267,7 +1279,7 @@ def apply_exposure_occlusion_to_linear(
     if amounts["exposure_occlusion_debris"] > 1e-6:
         np.maximum(
             occlusion,
-            _debris_occlusion_field(work_shape, amounts["exposure_occlusion_debris"], rng),
+            _debris_occlusion_field(work_shape, amounts["exposure_occlusion_debris"], _occlusion_identity_rng(recipe,_DEBRIS_IDENTITY_SALT) if fixed_gate else rng),
             out=occlusion,
         )
     if float(np.max(occlusion)) > 1e-8:
@@ -1289,26 +1301,12 @@ def apply_exposure_occlusion_to_linear(
 def _occlusion_identity_seed(recipe: DevelopRecipeConfig) -> int:
     seed = getattr(recipe, "exposure_occlusion_identity_seed", None)
     if seed is None or str(seed).strip() == "":
-        return EXPOSURE_OCCLUSION_FIXED_IDENTITY_SEED
+        return EXPOSURE_OCCLUSION_FIXED_IDENTITY_SEED if recipe.incident_identity_seed is None else int(recipe.incident_identity_seed)
     return int(seed)
 
 
 def _occlusion_identity_rng(recipe: DevelopRecipeConfig, salt: int) -> np.random.Generator:
     return np.random.default_rng(int(_occlusion_identity_seed(recipe)) ^ int(salt))
-    if float(np.max(occlusion)) > 1e-8:
-        occlusion = cv2.GaussianBlur(occlusion, (0, 0), sigmaX=0.55, sigmaY=0.55)
-        np.clip(occlusion, 0.0, 1.0, out=occlusion)
-    if work_shape != (height, width):
-        occlusion = cv2.resize(
-            occlusion,
-            (width, height),
-            interpolation=cv2.INTER_LINEAR,
-        ).astype(np.float32, copy=False)
-        np.clip(occlusion, 0.0, 1.0, out=occlusion)
-
-    occluded = image_linear.copy()
-    occluded *= (1.0 - occlusion)[..., None]
-    return occluded, occlusion
 
 
 def _dust_occlusion_field(
@@ -1319,12 +1317,12 @@ def _dust_occlusion_field(
     height, width = shape
     field = np.zeros(shape, dtype=np.float32)
     area = float(height * width)
-    count = max(1, int(round(amount * (6.0 + area / 8500.0))))
+    count = max(1, int(round(amount * (4.2 + area / 12000.0))))
     for _ in range(count):
         cx = float(rng.uniform(0.0, width - 1.0))
         cy = float(rng.uniform(0.0, height - 1.0))
-        radius = float(rng.uniform(0.45, 2.6))
-        opacity = float(rng.uniform(0.28, 0.95)) * amount
+        radius = float(rng.uniform(0.4, 2.1))
+        opacity = float(rng.uniform(0.30, 0.70)) * amount
         cv2.circle(
             field,
             (int(round(cx)), int(round(cy))),
@@ -1355,16 +1353,16 @@ def _hair_occlusion_field(
 ) -> np.ndarray:
     height, width = shape
     field = np.zeros(shape, dtype=np.float32)
-    count = max(1, int(round(amount * 3.5)))
+    count = max(1, int(round(amount * 2.2)))
     short_edge = float(min(height, width))
     for _ in range(count):
-        length = float(rng.uniform(0.18, 0.62)) * short_edge
-        n_points = int(rng.integers(10, 28))
+        length = float(rng.uniform(0.14, 0.46)) * short_edge
+        n_points = int(rng.integers(8, 22))
         points = _hair_polyline(rng, width, height, length, n_points)
         if len(points) < 2:
             continue
-        thickness = max(1, int(round(float(rng.uniform(0.8, 2.3)))))
-        opacity = float(rng.uniform(0.55, 1.0)) * amount
+        thickness = max(1, int(round(float(rng.uniform(0.7, 1.7)))))
+        opacity = float(rng.uniform(0.35, 0.72)) * amount
         cv2.polylines(
             field,
             [points],
@@ -1431,15 +1429,15 @@ def _insect_occlusion_field(
 ) -> np.ndarray:
     height, width = shape
     field = np.zeros(shape, dtype=np.float32)
-    count = max(1, int(np.floor(amount * 2.2 + 1e-6)))
+    count = max(1, int(np.floor(amount * 1.5 + 1e-6)))
     scale = max(0.65, float(min(height, width)) / 420.0)
     for _ in range(count):
         cx = int(round(float(rng.uniform(0.12, 0.88) * (width - 1.0))))
         cy = int(round(float(rng.uniform(0.12, 0.88) * (height - 1.0))))
-        body_len = max(3, int(round(float(rng.uniform(5.5, 14.0)) * scale)))
+        body_len = max(3, int(round(float(rng.uniform(4.2, 10.0)) * scale)))
         body_w = max(1, int(round(body_len * float(rng.uniform(0.28, 0.42)))))
         angle = float(rng.uniform(0.0, 180.0))
-        opacity = float(rng.uniform(0.62, 1.0)) * amount
+        opacity = float(rng.uniform(0.4, 0.72)) * amount
         cv2.ellipse(
             field,
             (cx, cy),
@@ -1478,19 +1476,19 @@ def _debris_occlusion_field(
 ) -> np.ndarray:
     height, width = shape
     field = np.zeros(shape, dtype=np.float32)
-    count = max(1, int(round(amount * 11.0)))
+    count = max(1, int(round(amount * 7.0)))
     scale = max(0.7, float(min(height, width)) / 380.0)
     for _ in range(count):
         cx = float(rng.uniform(0.04, 0.96) * (width - 1.0))
         cy = float(rng.uniform(0.04, 0.96) * (height - 1.0))
-        radius = float(rng.uniform(2.2, 8.5)) * scale
+        radius = float(rng.uniform(1.6, 5.8)) * scale
         n_verts = int(rng.integers(4, 8))
         angles = np.sort(rng.uniform(0.0, 2.0 * np.pi, size=n_verts))
         radii = radius * rng.uniform(0.45, 1.15, size=n_verts)
         xs = np.clip(np.round(cx + radii * np.cos(angles)), 0, width - 1).astype(np.int32)
         ys = np.clip(np.round(cy + radii * np.sin(angles)), 0, height - 1).astype(np.int32)
         polygon = np.stack((xs, ys), axis=1)
-        opacity = float(rng.uniform(0.4, 0.95)) * amount
+        opacity = float(rng.uniform(0.28, 0.66)) * amount
         cv2.fillPoly(field, [polygon], float(opacity), lineType=cv2.LINE_AA)
     return field
 

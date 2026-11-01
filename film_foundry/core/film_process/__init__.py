@@ -20,6 +20,7 @@ from film_foundry.core.film_process.integration import (
     develop_bw_reversal_reduced,
     develop_color_negative_reduced,
     develop_color_reversal_reduced,
+    freeze_material_latent_state,
     shape_positive_density_fraction,
     shape_positive_dye_chroma,
 )
@@ -66,6 +67,7 @@ __all__ = [
     "develop_bw_reversal_reduced",
     "develop_color_negative_reduced",
     "develop_color_reversal_reduced",
+    "freeze_material_latent_state",
     "shape_positive_density_fraction",
     "shape_positive_dye_chroma",
     "process_program_payload",

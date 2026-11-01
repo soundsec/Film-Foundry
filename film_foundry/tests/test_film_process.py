@@ -1322,7 +1322,9 @@ def test_monochrome_stock_color_program_keeps_zero_coupler_capacity():
     film = FilmStockConfig()
     film.color_process = "monochrome"
     material = _color_material(film)
-    assert material.coupler_capacity == (0.0, 0.0, 0.0)
+    assert material.layer_count == 1
+    assert material.coupler_capacity == (0.0,)
+    assert _color_material(film, 3).coupler_capacity == (0.0, 0.0, 0.0)
     assert material.color_system == "silver_bw"
 
     image = np.full((4, 5, 3), 0.62, dtype=np.float32)

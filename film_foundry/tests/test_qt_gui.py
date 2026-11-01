@@ -55,10 +55,11 @@ def test_qt_launcher_button_does_not_forward_qt_checked_state(monkeypatch):
     )
     window = launcher.FoundryLauncher()
     try:
-        open_button = window.root.qt.findChildren(QtWidgets.QPushButton)[0]
+        open_button = next(button for button in window.root.qt.findChildren(QtWidgets.QPushButton)
+                           if button.text() == launcher.tr("launcher.open"))
         QTest.mouseClick(open_button, QtCore.Qt.MouseButton.LeftButton)
         assert calls
-        assert calls[0][0][-1] == "film_foundry.tools.run_darkroom_gui"
+        assert calls[0][0][-1] == "film_foundry.tools.run_desktop_gui"
     finally:
         window.root.destroy()
 
@@ -250,3 +251,30 @@ def test_shared_qt_numeric_control_keeps_exact_value_and_one_callback():
         assert changes == [0.375]
     finally:
         root.destroy()
+
+
+def test_launcher_descriptions_use_the_available_width():
+    from PySide6 import QtWidgets
+    import run_film_foundry_launcher as launcher
+    from film_foundry.ui.i18n import current_language, set_language
+
+    previous = current_language()
+    set_language("zh_CN")
+    window = launcher.FoundryLauncher()
+    try:
+        window.root.qt.resize(860, 740)
+        window.root.qt.show()
+        window.root.update()
+        labels = window.root.qt.findChildren(QtWidgets.QLabel)
+        description = next(label for label in labels if label.text().startswith("完整流程"))
+        assert description.width() >= 520
+        assert description.height() <= 56
+        folders = next(box for box in window.root.qt.findChildren(QtWidgets.QGroupBox) if "常用文件夹" in box.title())
+        scroll = window.root.qt.findChild(QtWidgets.QScrollArea)
+        assert scroll is not None and scroll.widget() is not None
+        bottom = folders.mapTo(scroll.widget(), folders.rect().bottomLeft()).y()
+        assert bottom <= scroll.widget().height()
+        assert "打开" in window.root.qt.findChildren(QtWidgets.QPushButton)[0].text()
+    finally:
+        window.root.destroy()
+        set_language(previous)

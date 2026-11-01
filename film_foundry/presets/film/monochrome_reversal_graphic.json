@@ -1,0 +1,76 @@
+{
+  "film": {
+    "name": "Graphic Monochrome Reversal",
+    "medium_family": "film",
+    "medium_process": "reversal",
+    "image_polarity": "positive",
+    "color_process": "monochrome",
+    "halation_strength": 0.035,
+    "halation_threshold": 0.83,
+    "halation_softness": 0.14,
+    "halation_core_radius": 0.0022,
+    "halation_outer_radius": 0.008,
+    "halation_exponential_radius": 0.008,
+    "halation_color": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "hd_gamma": [
+      1.65,
+      1.65,
+      1.65
+    ],
+    "density_min": [
+      0.045,
+      0.045,
+      0.045
+    ],
+    "density_max": [
+      3.0,
+      3.0,
+      3.0
+    ],
+    "log_exposure_toe": [
+      -2.1,
+      -2.1,
+      -2.1
+    ],
+    "log_exposure_shoulder": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "hd_toe_width": 0.13,
+    "hd_shoulder_width": 0.17,
+    "film_base_density_rgb": [
+      0.045,
+      0.045,
+      0.045
+    ],
+    "retained_halide_density_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "granularity_sigma": [
+      0.035,
+      0.035,
+      0.035
+    ],
+    "grain_density_correlation_radius": 0.0008,
+    "positive_density_contrast": 1.55,
+    "positive_density_bias": 0.02,
+    "positive_latitude_compression": 0.44,
+    "positive_dye_saturation": 0.0,
+    "positive_midtone_density": 0.18,
+    "positive_shadow_toe": 0.25,
+    "positive_shadow_toe_width": 0.27,
+    "positive_highlight_shoulder": 0.4,
+    "positive_highlight_shoulder_width": 0.24,
+    "contrast": 1.35,
+    "grain_strength": 0.045,
+    "silver_grain_strength": 0.06,
+    "silver_grain_clump_mix": 0.6
+  }
+}

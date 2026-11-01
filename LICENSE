@@ -19,3 +19,8 @@ Commercial / proprietary licensing:
 If you want to use, distribute, or integrate this project in a closed-source
 or proprietary commercial product, please contact the project author for a
 separate commercial license.
+
+Any separate license covers only rights the project author can grant.
+Third-party code, algorithms and runtime components remain subject to their
+own licenses; such an agreement does not replace those terms. See
+THIRD_PARTY_NOTICES.md for source acknowledgements and outstanding review items.

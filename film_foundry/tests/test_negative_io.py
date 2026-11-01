@@ -368,3 +368,87 @@ def test_partial_positive_metadata_receives_consistent_positive_defaults(tmp_pat
     assert medium.medium_process == "slide"
     assert medium.base_type == "clear_base"
     assert medium.compatible_interpreters == ("positive_transparency_scan",)
+
+
+def test_frame_identity_round_trips_and_scan_does_not_write_back(tmp_path):
+    path = tmp_path / "frame.darkroom_negative.npz"
+    density = np.linspace(0.2, 1.1, 4 * 5 * 3, dtype=np.float32).reshape(4, 5, 3)
+    identity = {"roll_id": "roll-a", "frame_id": "A12", "frame_index": 12}
+    metadata = {
+        "medium_family": "film",
+        "medium_process": "negative",
+        "image_polarity": "negative",
+        "view_mode": "transmissive",
+        "base_type": "orange_mask",
+        "color_system": "color_negative_dye",
+        "compatible_interpreters": ["negative_scan"],
+        "frame_identity": identity,
+    }
+    np.savez_compressed(
+        path,
+        density_cmy=density,
+        density_grain=density,
+        optical_density_rgb=density,
+        developed_medium_metadata=np.asarray(json.dumps(metadata, ensure_ascii=False)),
+    )
+    medium = load_developed_medium_for_scan(path)
+    assert medium.metadata["frame_identity"] == identity
+    identity_before = dict(medium.metadata["frame_identity"])
+    optical_before = np.array(medium.optical_density_rgb, copy=True)
+    config = DarkroomConfig()
+    config.scanner.scan_normalize = False
+    scanned = scan_negative(medium, config)
+    output_only = scan_medium_output(medium, config, "auto")
+    assert scanned.metadata["frame_identity"] == identity
+    assert output_only.metadata["frame_identity"] == identity
+    scanned.metadata["frame_identity"]["roll_id"] = "mutated"
+    output_only.metadata["frame_identity"]["roll_id"] = "mutated"
+    assert medium.metadata["frame_identity"] == identity_before
+    np.testing.assert_array_equal(medium.optical_density_rgb, optical_before)
+    reloaded = load_developed_medium_for_scan(path)
+    assert reloaded.metadata["frame_identity"] == identity
+
+
+def test_developed_npz_without_frame_identity_still_loads(tmp_path):
+    path = tmp_path / "legacy.darkroom_negative.npz"
+    density = np.full((3, 4, 3), 0.4, dtype=np.float32)
+    metadata = {
+        "medium_family": "film",
+        "medium_process": "negative",
+        "image_polarity": "negative",
+        "view_mode": "transmissive",
+        "base_type": "orange_mask",
+        "color_system": "color_negative_dye",
+        "compatible_interpreters": ["negative_scan"],
+    }
+    np.savez_compressed(
+        path,
+        density_cmy=density,
+        density_grain=density,
+        optical_density_rgb=density,
+        developed_medium_metadata=np.asarray(json.dumps(metadata, ensure_ascii=False)),
+    )
+    medium = load_developed_medium_for_scan(path)
+    assert "frame_identity" not in medium.metadata
+    config = DarkroomConfig()
+    config.scanner.scan_normalize = False
+    scanned = scan_negative(medium, config)
+    assert "frame_identity" not in scanned.metadata
+
+
+def test_developed_npz_rejects_invalid_frame_identity(tmp_path):
+    path = tmp_path / "bad.darkroom_negative.npz"
+    density = np.full((2, 3, 3), 0.4, dtype=np.float32)
+    metadata = {
+        "image_polarity": "negative",
+        "compatible_interpreters": ["negative_scan"],
+        "frame_identity": {"frame_id": "A12"},
+    }
+    np.savez_compressed(
+        path,
+        density_cmy=density,
+        density_grain=density,
+        developed_medium_metadata=np.asarray(json.dumps(metadata, ensure_ascii=False)),
+    )
+    with pytest.raises(ValueError, match="roll_id"):
+        load_developed_medium_for_scan(path)

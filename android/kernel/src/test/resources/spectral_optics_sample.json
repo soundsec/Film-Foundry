@@ -1,0 +1,118 @@
+{
+  "material": {
+    "profile_id": "synthetic_pool_optics",
+    "wavelengths_nm": [
+      400.0,
+      450.0,
+      600.0,
+      700.0
+    ],
+    "component_absorbance": [
+      [
+        0.15,
+        0.25,
+        0.7,
+        1.0
+      ],
+      [
+        0.3,
+        0.8,
+        0.4,
+        0.1
+      ],
+      [
+        1.0,
+        0.65,
+        0.2,
+        0.08
+      ],
+      [
+        0.7,
+        0.7,
+        0.7,
+        0.7
+      ],
+      [
+        0.25,
+        0.2,
+        0.15,
+        0.1
+      ],
+      [
+        0.3,
+        0.3,
+        0.2,
+        0.1
+      ],
+      [
+        0.06,
+        0.08,
+        0.12,
+        0.15
+      ],
+      [
+        0.3,
+        0.25,
+        0.1,
+        0.02
+      ],
+      [
+        0.05,
+        0.04,
+        0.02,
+        0.01
+      ]
+    ],
+    "component_names": [
+      "dye_c",
+      "dye_m",
+      "dye_y",
+      "metallic_silver",
+      "residual_halide",
+      "bleached_halide",
+      "clear_support",
+      "masking_coupler",
+      "auxiliary_layer"
+    ],
+    "coefficient_unit": "normalized_final_pool_v1",
+    "model": "normalized_pool_absorbance_v1"
+  },
+  "observer": {
+    "profile_id": "synthetic_scanner",
+    "wavelengths_nm": [
+      400.0,
+      450.0,
+      600.0,
+      700.0
+    ],
+    "illuminant": [
+      1.0,
+      0.8,
+      1.2,
+      1.0
+    ],
+    "response_rgb": [
+      [
+        0.05,
+        0.2,
+        0.8,
+        1.0
+      ],
+      [
+        0.2,
+        1.0,
+        0.4,
+        0.05
+      ],
+      [
+        1.0,
+        0.5,
+        0.1,
+        0.01
+      ]
+    ],
+    "working_space": "srgb_linear_iec61966_2_1_v0",
+    "normalization": "open_gate_per_channel_v1",
+    "model": "spectral_transmission_observer_v1"
+  }
+}

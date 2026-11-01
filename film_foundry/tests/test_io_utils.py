@@ -573,9 +573,7 @@ def test_image_sidecar_bundle_restores_previous_generation_on_sidecar_failure(tm
         raise RuntimeError("simulated sidecar failure")
 
     import film_foundry.core.io_utils as io_utils
-    import half_frame_darkroom.core.io_utils as legacy_io_utils
 
-    assert io_utils is legacy_io_utils
     monkeypatch.setattr(io_utils, "atomic_write_json", fail_sidecar)
     with pytest.raises(RuntimeError, match="simulated sidecar failure"):
         save_image_bundle(
@@ -1076,7 +1074,8 @@ def test_process_file_with_chinese_paths_exports_negative_materials(tmp_path):
         medium_metadata = json.loads(str(negative_data["developed_medium_metadata"]))
     assert provenance["kind"] == "FilmFoundryProvenance"
     assert provenance["project"] == PROJECT_NAME
-    assert provenance["project_version"] == "0.3.1"
+    from film_foundry import __version__
+    assert provenance["project_version"] == __version__
     assert medium_metadata["medium_process"] == "negative"
     assert medium_metadata["image_polarity"] == "negative"
     assert medium_metadata["compatible_interpreters"] == ["negative_scan"]

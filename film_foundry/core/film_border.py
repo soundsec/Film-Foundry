@@ -18,6 +18,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from film_foundry.model.config import FilmBorderConfig
+from film_foundry.contracts.edge_marks import normalize_edge_pattern
 
 
 FILM_BORDER_PIPELINE_STATUS = "interface_only"
@@ -33,10 +34,16 @@ _DEFAULT_SPROCKET_COUNTS = {
     "120": 0,
 }
 _EDGE_IMPRINT_EXPOSURE = {
-    "laser_dot": (np.array([1.00, 0.16, 0.05], dtype=np.float32), 72.0),
-    "optical_amber": (np.array([1.00, 0.55, 0.12], dtype=np.float32), 56.0),
-    "lab_edge": (np.array([0.55, 1.00, 0.48], dtype=np.float32), 48.0),
+    "laser_dot": (np.array([1.00, 0.16, 0.05], dtype=np.float32), 9.0),
+    "optical_amber": (np.array([1.00, 0.55, 0.12], dtype=np.float32), 4.5),
+    "lab_edge": (np.array([0.55, 1.00, 0.48], dtype=np.float32), 6.0),
 }
+_IMPRINT_LATIN_FONT_CANDIDATES = (
+    Path(r"C:\Windows\Fonts\consola.ttf"),
+    Path(r"C:\Windows\Fonts\arial.ttf"),
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
+    Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+)
 _IMPRINT_FONT_CANDIDATES = (
     Path(r"C:\Windows\Fonts\msyh.ttc"),
     Path(r"C:\Windows\Fonts\msyh.ttf"),
@@ -66,6 +73,16 @@ class FilmBorderImprintSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class FactoryEdgeSpec:
+    """Factory-stencil slot outside the holes; desktop layout only."""
+
+    side: str
+    normalized_rect: tuple[float, float, float, float]
+    pattern_code: str
+    flip: bool
+
+
+@dataclass(frozen=True, slots=True)
 class FilmBorderLayout:
     """Resolved rebate geometry. Contains no pixels and is not pipeline-applied."""
 
@@ -75,6 +92,7 @@ class FilmBorderLayout:
     sprocket_holes: tuple[SprocketHoleSpec, ...]
     imprint: FilmBorderImprintSpec | None
     pipeline_status: str = FILM_BORDER_PIPELINE_STATUS
+    factory_edges: tuple[FactoryEdgeSpec, ...] = ()
 
 
 def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
@@ -113,12 +131,26 @@ def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
             raise ValueError("film_border.sprocket_count must be an integer or None.") from exc
         if sprocket_count < 0:
             raise ValueError("film_border.sprocket_count must be non-negative.")
+    if config.factory_mark_type not in {"hard", "laser"}:
+        raise ValueError("film_border.factory_mark_type must be hard or laser.")
+    spread = float(config.factory_mark_spread)
+    if not math.isfinite(spread) or not 0 <= spread <= 3:
+        raise ValueError("film_border.factory_mark_spread must be between 0 and 3.")
     return FilmBorderConfig(
         enabled=bool(config.enabled),
         format_key=format_key,
         sprocket_rows=sprocket_rows,
         rebate_height_ratio=rebate,
         sprocket_count=sprocket_count,
+        factory_marks=bool(config.factory_marks),
+        stock_label=str(config.stock_label),
+        factory_pattern_top=normalize_edge_pattern(config.factory_pattern_top),
+        factory_pattern_bottom=normalize_edge_pattern(config.factory_pattern_bottom),
+        factory_pattern_linked=bool(config.factory_pattern_linked),
+        factory_flip_top=bool(config.factory_flip_top),
+        factory_flip_bottom=bool(config.factory_flip_bottom),
+        factory_mark_type=config.factory_mark_type,
+        factory_mark_spread=spread,
         imprint_style=imprint_style,
         imprint_side=imprint_side,
         imprint_text=str(config.imprint_text or ""),
@@ -158,6 +190,19 @@ def resolve_film_border_layout(
         sprocket_holes=holes,
         imprint=imprint,
         pipeline_status=FILM_BORDER_PIPELINE_STATUS,
+        factory_edges=_factory_edges(validated, canvas_w, canvas_h, rebate),
+    )
+
+
+def _factory_edges(config, width, height, rebate):
+    if not config.factory_marks:
+        return ()
+    inner, outer = (0.12, 0.84) if config.format_key == "120" else (0.72, 0.96)
+    top = config.factory_pattern_top
+    bottom = top if config.factory_pattern_linked else config.factory_pattern_bottom
+    return (
+        FactoryEdgeSpec("top", (0.04, rebate * (1 - outer) / height, 0.82, rebate * (1 - inner) / height), top, config.factory_flip_top),
+        FactoryEdgeSpec("bottom", (0.04, (height - rebate + rebate * inner) / height, 0.82, (height - rebate + rebate * outer) / height), bottom, config.factory_flip_bottom),
     )
 
 
@@ -168,7 +213,7 @@ def _sprocket_holes(
     rebate: int,
 ) -> tuple[SprocketHoleSpec, ...]:
     rows = str(config.sprocket_rows)
-    if rows == "none":
+    if rows == "none" or config.format_key == "120":
         return ()
     count = config.sprocket_count
     if count is None:
@@ -176,15 +221,15 @@ def _sprocket_holes(
     if count <= 0:
         return ()
     hole_w = max(2, int(round(canvas_w / (count * 2.35))))
-    hole_h = max(2, int(round(rebate * 0.62)))
+    hole_h = max(1, int(round(rebate * 0.50)))
     margin_x = hole_w * 0.55
     usable = max(float(canvas_w) - 2.0 * margin_x - float(hole_w), 1.0)
     specs: list[SprocketHoleSpec] = []
     row_ys: list[float] = []
     if rows in {"top", "both"}:
-        row_ys.append((rebate - hole_h) * 0.5)
+        row_ys.append(rebate * 0.38)
     if rows in {"bottom", "both"}:
-        row_ys.append(float(canvas_h - rebate) + (rebate - hole_h) * 0.5)
+        row_ys.append(float(canvas_h - rebate) + rebate * 0.12)
     for top in row_ys:
         for index in range(count):
             left = margin_x + usable * (float(index) / float(max(count - 1, 1)))
@@ -214,9 +259,9 @@ def _imprint_spec(
     height_ratio = min(0.12, max(0.018, float(rebate) / float(max(canvas_h, 1)) * 0.55))
     x = 0.08
     if side == "top":
-        y = (float(rebate) / float(canvas_h)) * 0.42
+        y = (float(rebate) / float(canvas_h)) * 0.16
     else:
-        y = 1.0 - (float(rebate) / float(canvas_h)) * 0.58
+        y = 1.0 - (float(rebate) / float(canvas_h)) * 0.16
     return FilmBorderImprintSpec(
         style=style,
         side=side,
@@ -272,30 +317,42 @@ def _render_imprint_mask(
     if not label:
         return None
     font_size = max(8, int(round(min(height, width) * 0.045)))
-    font = _imprint_font(font_size)
-    canvas = Image.new("L", (width, height), 0)
-    draw = ImageDraw.Draw(canvas)
-    bbox = draw.textbbox((0, 0), label, font=font)
-    text_w = max(1, int(bbox[2] - bbox[0]))
-    text_h = max(1, int(bbox[3] - bbox[1]))
-    x = int(round(width * 0.045)) - int(bbox[0])
+    style = str(config.imprint_style)
+    scale=4
+    font = _imprint_font(font_size*scale,label)
+    bbox=font.getbbox(label)
+    available=max(1,int(width*.91))
+    if bbox[2]-bbox[0] > available*scale:
+        font_size=max(4,int(font_size*available*scale/(bbox[2]-bbox[0])))
+        font=_imprint_font(font_size*scale,label);bbox=font.getbbox(label)
+    text_w=max(1,int(math.ceil((bbox[2]-bbox[0])/scale)))
+    text_h=max(1,int(math.ceil((bbox[3]-bbox[1])/scale)))
+    # Supersample only the small text strip, never a full frame at 4x.
+    strip=Image.new("L",(min(available,text_w)*scale,text_h*scale),0)
+    ImageDraw.Draw(strip).text((-bbox[0],-bbox[1]),label,font=font,fill=255)
+    high=np.asarray(strip,dtype=np.uint8)
+    if style == "optical_amber":
+        # Quarter-pixel thinning keeps counters open without erasing strokes.
+        high=cv2.erode(high,np.ones((2,2),np.uint8))
+    ink=cv2.resize(high,(strip.width//scale,text_h),interpolation=cv2.INTER_AREA).astype(np.float32)/255.
+    x=int(round(width*.045))
+    text_w=ink.shape[1]
     margin_y = max(2, int(round(height * 0.014)))
     if str(config.imprint_side) == "top":
-        y = margin_y - int(bbox[1])
+        y = margin_y
     else:
-        y = height - margin_y - text_h - int(bbox[1])
-    y = int(np.clip(y, -int(bbox[1]), max(0, height - text_h)))
-    style = str(config.imprint_style)
-    draw.text((x, y), label, font=font, fill=255)
+        y = height - margin_y - text_h
+    y = int(np.clip(y,0,max(0,height-text_h)))
+    glyph=np.zeros((height,width),np.float32)
+    used_h=min(text_h,height-y);used_w=min(text_w,width-x)
+    if used_h > 0 and used_w > 0:glyph[y:y+used_h,x:x+used_w]=ink[:used_h,:used_w]
     if style == "lab_edge":
-        underline_y = int(np.clip(y + int(bbox[3]) + 1, 0, height - 1))
-        draw.line((x, underline_y, x + text_w, underline_y), fill=200, width=1)
-    glyph = np.asarray(canvas, dtype=np.float32)
-    glyph *= np.float32(1.0 / 255.0)
+        underline_y=min(height-1,y+text_h+1)
+        glyph[underline_y,x:min(width,x+text_w)]=.45
     if style == "laser_dot":
         mask = _laser_dot_mask(glyph, font_size)
     elif style == "optical_amber":
-        sigma = max(0.65, float(font_size) / 16.0)
+        sigma = max(0.30, float(font_size) / 80.0)
         mask = cv2.GaussianBlur(glyph, (0, 0), sigmaX=sigma, sigmaY=sigma)
     else:
         mask = glyph
@@ -305,24 +362,29 @@ def _render_imprint_mask(
 
 def _laser_dot_mask(glyph: np.ndarray, font_size: int) -> np.ndarray:
     height, width = glyph.shape
-    block = max(2, int(round(font_size / 6.0)))
-    yy = np.arange(block // 2, height, block, dtype=np.int32)
-    xx = np.arange(block // 2, width, block, dtype=np.int32)
-    if yy.size == 0 or xx.size == 0:
+    block = max(2, int(round(font_size / 11.0)))
+    rows,columns=int(math.ceil(height/block)),int(math.ceil(width/block))
+    if rows == 0 or columns == 0:
         return glyph
-    sampled = glyph[np.ix_(yy, xx)]
+    padded=np.zeros((rows*block,columns*block),np.float32)
+    padded[:height,:width]=glyph
+    # Area occupancy catches fine strokes between dot centres. Point samples
+    # previously lost those strokes and even whole digits at preview sizes.
+    coverage=padded.reshape(rows,block,columns,block).mean(axis=(1,3))
     mask = np.zeros_like(glyph, dtype=np.float32)
-    on = sampled > 0.08
+    on = coverage > .10
     if not np.any(on):
         return glyph
     ys, xs = np.nonzero(on)
-    mask[yy[ys], xx[xs]] = sampled[ys, xs]
-    kernel = np.ones((2, 2), dtype=np.uint8)
-    return cv2.dilate(mask, kernel, iterations=1)
+    radius=max(0, int(round(block*.28)))
+    for row,column in zip(ys,xs):
+        cv2.circle(mask,(int(column*block+block//2),int(row*block+block//2)),radius,1.,-1)
+    return mask
 
 
-def _imprint_font(size: int):
-    for path in _IMPRINT_FONT_CANDIDATES:
+def _imprint_font(size: int,label: str = ""):
+    candidates=_IMPRINT_FONT_CANDIDATES if any(ord(char)>127 for char in label) else _IMPRINT_LATIN_FONT_CANDIDATES+_IMPRINT_FONT_CANDIDATES
+    for path in candidates:
         if not path.is_file():
             continue
         try:

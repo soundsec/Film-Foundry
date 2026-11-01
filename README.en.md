@@ -1,204 +1,78 @@
 # Film Foundry
 
-Film Foundry is a physics-inspired virtual darkroom and imaging-medium generator. It first forms a developed negative or reversal-positive medium from a chosen material and process, then creates a digital image through a separate transmission-scanning workflow.
+![Input, color negative, reversal, negative-to-reversal processing and bath accidents](docs/images/showcase.jpg)
 
-Older materials, sidecars, and command entries may still say “Electronic Negative Factory” or import `half_frame_darkroom`; those are compatibility aliases, not a second product.
+## About the project
 
-The project is currently an early alpha. It is not a strict photochemical simulator and does not aim to clone a particular commercial film stock or scanner. Its focus is interpretable material behavior, darkroom controls, and creative flexibility.
+Film Foundry is an image-creation tool built around materials and processes. Exposure leaves a latent image; materials and baths form the developed medium; viewing and scanning bring it to the screen. Try cross processing, silver retention and processing accidents with the same material.
 
-[中文说明](README.md)
+**Desktop 0.4.0 Alpha** · [中文](README.md) · [Release notes](docs/CHANGELOG.md)
 
-[v0.3.1 alpha release notes](https://github.com/soundsec/Film-Foundry/blob/main/docs/RELEASE_NOTES_0.3.md)
+## Mobile
+
+Load a roll, shoot, develop and view. Currently an **Android 0.1.0 test version**, requiring Android 8.0 or later, with testing focused on **ARM64 phones**. There is no iOS version. See [Android source and build instructions](android/README.md).
+
+[Illustrated mobile overview](docs/MOBILE_SHOWCASE.en.md) · [Mobile guide](docs/MOBILE_GUIDE.en.md)
+
+![Mobile workflow illustration: load, shoot, develop, scan and organize](docs/images/mobile-0.1.0/workflow.svg)
+
+Manual or automatic advance, multiple exposure and text imprinting. Develop a sealed roll with presets or custom baths, then scan with light, color and curves. Browse three-column, five-column or list layouts, with separate ratings and favorites. Originals, developed film and scans remain available independently for further experiments.
+
+| Camera home | Development preparation | Scan curves |
+| --- | --- | --- |
+| <img src="docs/images/mobile-0.1.0/camera-home.png" width="240" alt="Camera home and film loading"> | <img src="docs/images/mobile-0.1.0/development.png" width="240" alt="Development preparation and process order"> | <img src="docs/images/mobile-0.1.0/scan-curves.png" width="240" alt="Scan preview and tone curve"> |
+
+Actual phone UI with synthetic rolls in a separate demo installation. See the [illustrated mobile overview](docs/MOBILE_SHOWCASE.en.md) for more layouts and controls.
+
+## Desktop
+
+For individual images, batches and recipe experiments. Includes separate material, bath and scanner editors, tone / RGB curves, Chinese / English and Dark / Light themes.
+
+![Desktop workbench](docs/images/desktop-0.4.0/workbench-dark.png)
 
 ## Features
 
-- Color negative, black-and-white negative, color reversal, and black-and-white reversal workflows.
-- Bleach bypass, cross processing, push/pull, retained silver, accidental silver plating, pre-latent light-leak templates, chemistry exhaustion, uneven development, explicit dye damage, reticulation damage, and material ageing controls.
-- Separate film-material, development-process, and scanner presets.
-- Independent Develop and Scan stages: a saved medium can be rescanned with different interpretations without changing the developed medium.
-- One shared transmission light table and scanner capture for negative and positive media; users independently control base removal, inversion, clear-base borders, and direct photographed-negative output.
-- Density-domain grain, frame-size behavior, halation, emulsion sharpness, and scan color controls.
-- Transparent-medium, physical-transmission TIFF, scanner/light-table raw, plate-layer, and Layer Pack exports.
+- Color and black-and-white negatives and reversal stocks, with shared processing, cross processing, push / pull and silver retention.
+- Grain, MTF, halation, light leaks, gate debris, imprinting, material ageing and processing accidents.
+- Separate latent images, developed media and scans. Rescan and grade the same medium repeatedly.
+- Spectral exposure and transmission viewing, tone / RGB curves, transparent media, 16-bit TIFF and plate-layer export.
 
-## Installation
+## One material, different processes
 
-Python 3.10 or newer is recommended. The supplied developing environment uses Python 3.11.
+The same latent image is developed as a standard color negative, a reversal positive with mask-dye removal, and a silver-retaining negative. Media are above, scans below.
 
-With pip:
+![One latent image, three processes](docs/images/shared-process.jpg)
+
+[Recipes and grain / MTF / halation close-ups](docs/SHOWCASE.md)
+
+## Quick start
+
+Python 3.10 or newer:
 
 ```bash
 pip install -r requirements.txt
-```
-
-With conda:
-
-```bash
-conda env create -f environment.yml
-conda activate film-foundry
-```
-
-## Starting the GUI
-
-The desktop interface uses PySide6. Installing from `requirements.txt` or `environment.yml` also installs the required Qt runtime.
-
-The launcher is the recommended entry point:
-
-```bash
 python run_film_foundry_launcher.py
 ```
 
-The main workflow GUI can also be opened directly:
+Desktop inputs: JPEG, PNG, TIFF, BMP and WebP. For the Windows portable build, keep the complete FilmFoundry folder and run `FilmFoundry.exe`. Alpha packages are unsigned.
 
-```bash
-python -m film_foundry.tools.run_darkroom_gui
-```
+## Guides and reference
 
-The main GUI provides three workflows:
+| Document | Contents |
+| --- | --- |
+| [Mobile overview](docs/MOBILE_SHOWCASE.en.md) / [Guide](docs/MOBILE_GUIDE.en.md) | Mobile workflow, interface and synthetic examples, installation, operation and resource handling |
+| [Desktop guide](docs/DESKTOP_GUIDE.md) | Tasks, presets, development, scanning, export, CLI and material masters |
+| [Technical reference](docs/REFERENCE.md) | Material / process model, parameter dictionary, spectra and performance |
+| [Examples and recipes](docs/SHOWCASE.md) | Style comparisons, settings and detail crops |
+| [Changelog](docs/CHANGELOG.md) | Current and earlier releases |
+| [Build instructions](packaging/README.md) | Build Windows EXE / Android APK from the public source |
 
-- **Full**: input image → developed negative or reversal positive → scanned output.
-- **Develop**: create a reusable negative or positive medium.
-- **Scan**: load an existing medium and scan it as a negative or positive.
+The detailed desktop documents are primarily in Chinese, with an English workbench summary in the guide.
 
-Material selection first distinguishes negative and positive stocks, then lists matching presets with clear color or black-and-white labels. Diagnostic, accident, and experimental presets are hidden from the normal list but remain available through editors and the CLI.
+## Acknowledgements and license
 
-## Processing Modes and Large Images
+Thanks to spektrafilm, SpektraLab, Fotufilm, Smits's spectral research and the dependency authors. [Acknowledgements](docs/REFERENCE.md#acknowledgements) distinguish design references from adopted algorithms. AI tools assisted development.
 
-The CLI and runtime configuration provide three independently composable controls:
+[GPL-3.0-or-later](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Source status](docs/REFERENCE.md#source). Contact the author for other licensing arrangements.
 
-- Long-edge scaling resizes before processing, for fast tuning or deliberately smaller output.
-- Reduced-order fast selects explicitly declared lower-order operators; coverage is still being expanded.
-- Processing quality (`draft` / `standard` / `high`) controls detail and sampling budgets inside the selected model.
-
-Long-edge scaling, reduced-order processing, and the quality tier are three orthogonal controls in the main GUI. When both acceleration switches are enabled, Film Foundry first scales to the target edge and then runs the selected quality tier with reduced-order operators. Scaling without reduction runs the full operators at the smaller size; reduction without scaling runs lower-order operators at the requested size. Both switches currently default to enabled and the target edge defaults to 1600 px.
-
-“Reduced-order fast” specifically means a user-selected approximate model that may trade internal mathematical or statistical detail for speed. Film Foundry also receives general algorithmic optimizations—such as removing duplicate work, reusing dead temporary buffers, and shortening array lifetimes. Those optimizations are not controlled by the fast switch, preserve material/process/scan semantics, and benefit both canonical and reduced-order paths.
-
-The current comfortable working range is up to about 30 megapixels. Larger images remain available on a best-effort basis; actual success depends on resolution, enabled exports, and available memory. Film Foundry does not resize an image automatically unless a scaled mode or long-edge limit is selected.
-
-## Command Line
-
-The CLI is intended for batch processing, automation, and replaying GUI sessions.
-
-Show help:
-
-```bash
-python -m film_foundry.app.cli --help
-```
-
-Full workflow:
-
-```bash
-python -m film_foundry.app.cli full input_images outputs --film-preset clear_modern_negative --develop-preset standard_color_negative --scanner-preset neutral_scan
-```
-
-Develop reusable media:
-
-```bash
-python -m film_foundry.app.cli develop input_images outputs/negatives --film-preset clear_modern_negative --develop-preset standard_color_negative
-```
-
-Rescan existing media:
-
-```bash
-python -m film_foundry.app.cli scan outputs/negatives outputs/rescans --scanner-preset rich_color_scan
-```
-
-Use scaled-fast processing:
-
-```bash
-python -m film_foundry.app.cli full input_images outputs --processing-mode scaled_fast --preview-long-edge 1600
-```
-
-Combine scaling, reduced-order operators, and the draft tier:
-
-```bash
-python -m film_foundry.app.cli full input_images outputs --processing-mode scaled_fast --fast --quality-mode draft --preview-long-edge 1600
-```
-
-Replay a GUI session:
-
-```bash
-python -m film_foundry.app.cli full input_images outputs --session user_presets/film_foundry_session.json
-```
-
-## Presets and Editors
-
-Built-in presets are separated by purpose:
-
-```text
-film_foundry/presets/film/      film materials
-film_foundry/presets/develop/   chemistry and process programs
-film_foundry/presets/scanner/   scanning and viewing interpretations
-```
-
-User presets are stored under `user_presets/` and take priority over built-in presets with the same name.
-
-Standalone editors:
-
-- `python -m film_foundry.tools.run_film_material_editor` — silver-halide material editor.
-- `python -m film_foundry.tools.run_develop_process_editor` — process and chemistry editor.
-- `python -m film_foundry.tools.run_scanner_render_editor` — negative/positive transmission scanner editor.
-
-See the [Preset Guide](https://github.com/soundsec/Film-Foundry/blob/main/docs/PRESET_GUIDE.md) for details.
-
-## Output Files
-
-In the main GUI, Full and Develop runs no longer write new generations back to fixed filenames. Every processing run creates a separate timestamped directory under the selected output root and stores a reloadable `film_foundry_run.json` snapshot of the complete settings.
-
-Develop-only runs place reusable medium masters in the run directory's `negative/` subfolder. Scan-only defaults to the parent of the selected medium folder: selecting `.../A/negative/` writes timestamped scan results and a scan settings snapshot to `.../A/`, so repeated scans do not overwrite earlier generations. This source-relative policy can be disabled in the GUI to use a manually selected output folder. The CLI continues to use its explicitly supplied output paths for predictable automation.
-
-The Full workflow normally creates a final PNG, JPEG, or TIFF and an optional sidecar.
-
-Develop writes media according to the final polarity inside the run's `negative/` folder:
-
-```text
-outputs/2026-07-15_15-42-08_develop/
-  film_foundry_run.json
-  negative/
-    *.darkroom_negative.npz
-    *.darkroom_positive.npz
-```
-
-Depending on export settings, Film Foundry can also create:
-
-- A negative visual preview or positive viewing preview.
-- A 16-bit scanner-raw or light-table-raw TIFF.
-- Transparent PNG, transparent 16-bit TIFF, and physical-transmission TIFF.
-- CMY/density, grain, and halation plate helpers.
-- A Layer Pack containing the medium, previews, available raw, transparency, plate layers, and manifest.
-
-Layer Pack is the complete archive option and already contains transparency and plate products; it is not a third duplicate layer system.
-
-## Windows Portable Build
-
-When the Releases page provides `FilmFoundry-portable-win64.zip`, extract and keep the complete FilmFoundry folder. Do not copy only the executable.
-
-Current portable builds are unsigned alpha packages and may trigger a Windows SmartScreen “unknown publisher” warning. If you do not want to bypass the warning, inspect the source and run the project from Python instead.
-
-## Current Limitations
-
-- JPG, JPEG, PNG, TIFF, BMP, and WebP are supported; RAW files are not read directly.
-- Typical source images have already passed through a camera ISP and tone mapping, so exposure and linearization controls are visual approximations.
-- High resolution, multiple auxiliary exports, and Layer Packs can require substantial memory, processing time, and disk space.
-- Built-in presets are named by material or visual behavior and are not official simulations of manufacturer products.
-- The desktop interface currently prioritizes workflow parity during migration; visual design and dense parameter layout will be refined separately.
-
-## License
-
-Film Foundry is licensed under **GNU General Public License version 3 (GPL-3.0-or-later)**.
-
-You may use, study, modify, and distribute this project under GPLv3. Distribution of modified versions or derivative works must follow the applicable GPLv3 obligations.
-
-For closed-source commercial products, proprietary redistribution, or commercial SDK/plugin use that cannot comply with GPLv3, contact the project author.
-
-## Code Provenance Notice
-
-AI agents have assisted with code organization, refactoring, documentation, and debugging during development. If you believe that specific code, comments, documentation, naming, or structure infringes your rights, contact the author with the relevant file, location, and reason so it can be reviewed.
-
-## Notice
-
-Film Foundry is not affiliated with, endorsed by, sponsored by, or officially authorized by any film manufacturer, scanner manufacturer, camera manufacturer, or commercial film-emulation software vendor.
-
-Author: **soundsec**
-
-Repository: [soundsec/Film-Foundry](https://github.com/soundsec/Film-Foundry)
+Author: **soundsec** · [GitHub](https://github.com/soundsec/Film-Foundry)

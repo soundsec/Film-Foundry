@@ -1,10 +1,12 @@
 import pytest
+import numpy as np
 
 from film_foundry.core import engine
 from film_foundry.core.resource_planning import (
     dimensions_for_long_edge,
     enforce_memory_budget,
     estimate_pipeline_memory,
+    estimate_scan_memory,
     estimated_untiled_material_peak_mib,
     exact_material_tiling_required,
     warn_outside_comfort_zone,
@@ -121,3 +123,49 @@ def test_invalid_memory_policy_is_rejected(policy):
     estimate = estimate_pipeline_memory(32, 24)
     with pytest.raises(ValueError, match="memory_budget_policy"):
         enforce_memory_budget(estimate, 1.0, policy)
+
+
+def test_scan_preflight_counts_selected_spectral_fields_without_loading_pixels(tmp_path, monkeypatch):
+    from film_foundry.core.negative_io import probe_scan_archive_memory
+    from film_foundry.app import workflow
+
+    path = tmp_path / "medium.npz"
+    np.savez_compressed(path, optical_density_rgb=np.zeros((4, 6, 3), np.float32),
+        spectral_component_amounts=np.zeros((4, 6, 9), np.float32),
+        spectral_post_process_density_rgb=np.zeros((4, 6, 3), np.float32),
+        density_cmy=np.zeros((4, 6, 3), np.float32))
+    # np.load is lazy, but the preflight must not invoke it at all.
+    monkeypatch.setattr(np, "load", lambda *a, **k: pytest.fail("header probe loaded arrays"))
+    assert probe_scan_archive_memory(path) == (6, 4, 24 * 15 * 4, 24 * (15 + 18) * 4)
+    monkeypatch.setattr(workflow, "load_developed_medium", lambda *a: pytest.fail("decoded before budget rejection"))
+    config = DarkroomConfig()
+    config.processing.memory_budget_mb = 0.001
+    config.processing.memory_budget_policy = "error"
+    with pytest.raises(MemoryError, match="will not silently resize"):
+        workflow.observe_medium_file(path, config)
+
+
+def test_scan_preview_estimate_preserves_full_source_decode_and_24mp_dimensions():
+    resident = 6000 * 4000 * 15 * 4
+    estimate = estimate_scan_memory(6000, 4000, resident_bytes=resident,
+        decode_peak_bytes=resident * 2, preview_long_edge=1000)
+    assert (estimate.source_width, estimate.source_height) == (6000, 4000)
+    assert (estimate.work_width, estimate.work_height) == (1000, 667)
+    assert estimate.planning_peak_bytes >= resident * 2
+
+
+def test_scan_header_preflight_rejects_truncated_payload_and_keeps_legacy_fallback(tmp_path):
+    import zipfile
+    from io import BytesIO
+    from film_foundry.core.negative_io import probe_scan_archive_memory
+
+    path = tmp_path / "bad.npz"
+    header = BytesIO()
+    np.lib.format.write_array_header_1_0(header, dict(descr="<f4", fortran_order=False, shape=(4000, 6000, 3)))
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("optical_density_rgb.npy", header.getvalue())
+    with pytest.raises(ValueError, match="truncated"):
+        probe_scan_archive_memory(path)
+    legacy = tmp_path / "legacy.npz"
+    np.savez(legacy, negative=np.array({"old": True}, dtype=object))
+    assert probe_scan_archive_memory(legacy) is None

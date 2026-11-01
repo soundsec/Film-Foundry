@@ -1,8 +1,8 @@
 """Selective process operators for reduced silver-halide material pools.
 
-Evidence and reduction boundaries are registered in
-``docs/internal/EVIDENCE_AND_VALIDATION.md``.  ``OP-*`` comments below point to that
-registry; they do not claim microscopic or quantitatively calibrated chemistry.
+The public unified film process model explains the stage boundaries. ``OP-*``
+labels identify individual operators; they do not claim microscopic or
+quantitatively calibrated chemistry.
 """
 
 from __future__ import annotations
@@ -349,8 +349,11 @@ def provisional_formed_dye_for_program(
                 local_development_rate=local_development_rate,
             )
             continue
+        if state.coupler is None and state.dye is None:
+            # A silver-only stock can enter colour chemistry without acquiring dye.
+            return np.zeros_like(state.halide), step
         if state.coupler is None or state.dye is None:
-            raise ValueError("provisional color development requires dye pools")
+            raise ValueError("provisional color development requires paired dye pools")
         delta_silver = provisional_developed_halide(
             state,
             step,
@@ -428,8 +431,10 @@ def _develop(
     reacted = float(np.sum(delta_silver, dtype=np.float64))
     if not color:
         return reacted
+    if state.coupler is None and state.dye is None:
+        return reacted
     if state.coupler is None or state.dye is None:
-        raise ValueError("color development requires coupler and dye pools")
+        raise ValueError("color development requires paired coupler and dye pools")
     layers = state.halide.shape[-1]
     ratio = np.ones(layers, dtype=np.float32)
     if step.dye_coupling_ratio is not None:
@@ -731,6 +736,12 @@ def apply_process_program(
     compatibility = compatibility or CompatibilityProfile()
     state = latent_state if consume_latent_state else latent_state.copy()
     state.validate()
+    if (state.coupler is None) != (state.dye is None):
+        raise ValueError("coupler and dye pools must be paired")
+    if (material.coupler_capacity is not None
+            and any(value > 0.0 for value in material.coupler_capacity)
+            and (state.coupler is None or state.dye is None)):
+        raise ValueError("coupler-bearing material requires coupler and dye pools")
     reports: list[FilmProcessStepReport] = []
     for index, step in enumerate(program.steps):
         reacted = _apply_step(

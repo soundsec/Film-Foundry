@@ -752,6 +752,7 @@ def _batch_test_panel():
     panel.root = _ImmediateRoot()
     panel.process_button = None
     panel._processing = True
+    panel._cancel_flag = None
     panel.negative_path = SimpleNamespace(set=lambda _value: None)
     panel.recorded_statuses = []
     panel._post_status = panel.recorded_statuses.append
@@ -782,16 +783,18 @@ def test_full_gui_batch_persists_one_final_mixed_result_manifest(monkeypatch, tm
     monkeypatch.setattr(gui, "iter_images", lambda _root: inputs)
     monkeypatch.setattr(gui, "run_timestamp", lambda _now=None: "2026-08-02_12-00-00")
 
-    def fake_process(input_path, _output_path, _config, preview=False):
-        assert preview is False
-        if input_path.name == "b.jpg":
+    def fake_run(request):
+        assert request.command == "full"
+        assert request.scaled_override is False
+        if request.input_path.name == "b.jpg":
             raise RuntimeError("scan failed")
+        return SimpleNamespace(output_path=request.output_path, extra={})
 
     def counted_save(path, payload):
         save_calls.append(Path(path))
         real_save(path, payload)
 
-    monkeypatch.setattr(gui, "process_file", fake_process)
+    monkeypatch.setattr(gui, "_run_request", fake_run)
     monkeypatch.setattr(gui, "save_session", counted_save)
     panel = _batch_test_panel()
 
@@ -826,19 +829,26 @@ def test_develop_and_scan_gui_batches_finalize_manifests(monkeypatch, tmp_path):
     panel = _batch_test_panel()
     monkeypatch.setattr(gui, "run_timestamp", lambda _now=None: "2026-08-02_12-10-00")
     monkeypatch.setattr(gui, "iter_images", lambda _root: [source])
-    monkeypatch.setattr(gui, "load_image", lambda *_args, **_kwargs: np.zeros((8, 12, 3), dtype=np.float32))
-    monkeypatch.setattr(gui, "resize_to_long_edge", lambda image, _edge: image)
-    monkeypatch.setattr(
-        gui,
-        "rng_and_resolved_seed_for_develop",
-        lambda *_args, **_kwargs: (np.random.default_rng(1), 1),
-    )
-    monkeypatch.setattr(
-        gui,
-        "develop_negative",
-        lambda *_args, **_kwargs: SimpleNamespace(image_polarity="negative"),
-    )
-    monkeypatch.setattr(gui, "save_developed_medium", lambda *_args, **_kwargs: None)
+
+    def fake_run(request):
+        if request.command == "develop":
+            developed = Path(request.output_path) / f"{request.input_path.stem}.darkroom_negative.npz"
+            return SimpleNamespace(output_path=developed, extra={})
+        if request.command == "scan":
+            return SimpleNamespace(
+                output_path=None,
+                source_kind="scanner_raw_tiff",
+                source_path=request.input_path,
+                extra={
+                    "scanned": SimpleNamespace(
+                        metadata={},
+                        output_srgb=np.zeros((8, 12, 3), dtype=np.float32),
+                    )
+                },
+            )
+        raise AssertionError(request.command)
+
+    monkeypatch.setattr(gui, "_run_request", fake_run)
 
     output_root = tmp_path / "develop-output"
     panel._process(
@@ -859,15 +869,6 @@ def test_develop_and_scan_gui_batches_finalize_manifests(monkeypatch, tmp_path):
     medium = tmp_path / "negative" / "frame.darkroom_negative.npz"
     monkeypatch.setattr(gui, "iter_developed_medium_files", lambda _root: [medium])
     monkeypatch.setattr(gui, "unique_scan_run_id", lambda *_args, **_kwargs: "2026-08-02_12-20-00_scan")
-    monkeypatch.setattr(
-        gui,
-        "scan_from_file",
-        lambda *_args, **_kwargs: (
-            SimpleNamespace(metadata={}, output_srgb=np.zeros((8, 12, 3), dtype=np.float32)),
-            "scanner_raw_tiff",
-            False,
-        ),
-    )
     monkeypatch.setattr(gui, "final_positive_sidecar", lambda **_kwargs: None)
     monkeypatch.setattr(gui, "save_image_bundle", lambda *_args, **_kwargs: None)
     scan_root = tmp_path / "scan-output"
@@ -885,6 +886,29 @@ def test_develop_and_scan_gui_batches_finalize_manifests(monkeypatch, tmp_path):
     scan_payload = json.loads(scan_manifest.read_text(encoding="utf-8"))
     assert scan_payload["batch"]["operation"] == "scan"
     assert scan_payload["batch"]["completed"] == 1
+
+
+def test_gui_batch_process_uses_run_request():
+    import inspect
+    from film_foundry.app import api as api
+
+    source = inspect.getsource(gui.DarkroomPanel._process)
+    assert gui._run_request is api.run_request
+    assert "_run_request" in source
+    assert "WorkflowRequest" in source
+    assert "process_file(" not in source
+    assert "develop_negative(" not in source
+    assert "scan_from_file(" not in source
+
+
+def test_gui_saves_film_and_scanner_presets_through_workflow():
+    import inspect
+
+    source = inspect.getsource(gui.DarkroomPanel._save_section_preset)
+    assert "save_user_film_preset" in source
+    assert "save_user_scanner_preset" in source
+    assert gui.save_user_film_preset is not None
+    assert gui.save_user_scanner_preset is not None
 
 
 def test_scanner_editor_save_json_uses_utf8_without_bom(tmp_path):
@@ -1131,3 +1155,110 @@ def test_film_process_program_keeps_material_response_mode_consistent():
     assert process_editor.bleach_completion_for_program(
         "color_negative", 0.20, "color_negative_bleach_bypass"
     ) == 1.0
+
+
+def test_gui_start_process_requests_cancel_when_already_running():
+    from film_foundry.app.control import CancelFlag
+
+    panel = gui.DarkroomPanel.__new__(gui.DarkroomPanel)
+    flag = CancelFlag()
+    panel._processing = True
+    panel._cancel_flag = flag
+    texts: list[str] = []
+    states: list[object] = []
+    statuses: list[str] = []
+    panel.process_button = SimpleNamespace(
+        configure=lambda **kwargs: texts.append(str(kwargs.get("text"))),
+        state=lambda value: states.append(value),
+        winfo_exists=lambda: True,
+    )
+    panel.status = SimpleNamespace(set=lambda value: statuses.append(str(value)))
+
+    panel._start_process()
+
+    assert flag.requested()
+    assert tr("button.cancelling") in texts
+    assert ["disabled"] in states
+    assert statuses == [tr("status.cancelling")]
+
+
+def test_gui_full_batch_stops_remaining_after_cancel(monkeypatch, tmp_path):
+    from film_foundry.app.control import CancelFlag
+
+    inputs = [tmp_path / "a.jpg", tmp_path / "b.jpg"]
+    for path in inputs:
+        path.touch()
+    attempted: list[Path] = []
+    flag = CancelFlag()
+    flag.cancel()
+    monkeypatch.setattr(gui, "iter_images", lambda _root: inputs)
+    monkeypatch.setattr(gui, "run_timestamp", lambda _now=None: "2026-09-16_21-00-00")
+
+    def fake_run(request):
+        attempted.append(request.input_path)
+        raise AssertionError("cancelled item should not start run_request")
+
+    monkeypatch.setattr(gui, "_run_request", fake_run)
+    panel = _batch_test_panel()
+    output_root = tmp_path / "output"
+    panel._process(
+        "full",
+        DarkroomConfig(),
+        tmp_path / "input",
+        tmp_path / "negative",
+        output_root,
+        False,
+        False,
+        _batch_snapshot(tmp_path),
+        flag,
+    )
+
+    assert attempted == []
+    manifest = output_root / "2026-09-16_21-00-00_full" / "film_foundry_run.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload["batch"]["completed"] == 0
+    assert payload["batch"]["failed"] == 1
+    assert payload["batch"]["items"][0]["status"] == "failed"
+    assert "cancelled" in str(payload["batch"]["items"][0]["error"]["message"]).lower()
+    joined = "\n".join(panel.recorded_statuses)
+    assert "1" in joined
+    assert "未开始" in joined or "not started" in joined
+
+
+def test_gui_full_batch_cancel_after_first_success_skips_rest(monkeypatch, tmp_path):
+    from film_foundry.app.control import CancelFlag
+
+    inputs = [tmp_path / "a.jpg", tmp_path / "b.jpg"]
+    for path in inputs:
+        path.touch()
+    attempted: list[Path] = []
+    flag = CancelFlag()
+    monkeypatch.setattr(gui, "iter_images", lambda _root: inputs)
+    monkeypatch.setattr(gui, "run_timestamp", lambda _now=None: "2026-09-16_21-10-00")
+
+    def fake_run(request):
+        attempted.append(request.input_path)
+        flag.cancel()
+        return SimpleNamespace(output_path=request.output_path, extra={})
+
+    monkeypatch.setattr(gui, "_run_request", fake_run)
+    panel = _batch_test_panel()
+    output_root = tmp_path / "output"
+    panel._process(
+        "full",
+        DarkroomConfig(),
+        tmp_path / "input",
+        tmp_path / "negative",
+        output_root,
+        False,
+        False,
+        _batch_snapshot(tmp_path),
+        flag,
+    )
+
+    assert attempted == [inputs[0]]
+    manifest = output_root / "2026-09-16_21-10-00_full" / "film_foundry_run.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload["batch"]["completed"] == 1
+    assert payload["batch"]["failed"] == 0
+    assert len(payload["batch"]["items"]) == 1

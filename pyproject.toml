@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "film-foundry"
-version = "0.3.1"
-description = "Physics-inspired film and developed-medium workflow."
+version = "0.4.0"
+description = "Material-based film and developed-medium workflow."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
@@ -31,18 +31,18 @@ Issues = "https://github.com/soundsec/Film-Foundry/issues"
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+video = ["av>=16.1,<17"]
 
 [project.scripts]
 film-foundry = "film_foundry.app.cli:main"
 electronic-negative-factory = "film_foundry.app.cli:main"
-half-frame-darkroom = "film_foundry.app.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["film_foundry*", "half_frame_darkroom*"]
+include = ["film_foundry*"]
 
 [tool.setuptools.package-data]
-film_foundry = ["presets/*.json", "presets/*/*.json"]
+film_foundry = ["presets/*.json", "presets/*/*.json", "assets/*.svg", "assets/*.png", "assets/*.ico", "assets/*.bin"]
 
 [tool.pytest.ini_options]
 testpaths = ["film_foundry/tests"]

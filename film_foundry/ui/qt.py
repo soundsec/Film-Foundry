@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import os
 import re
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
@@ -29,7 +30,20 @@ def _application() -> QtWidgets.QApplication:
     if app is None:
         app = QtWidgets.QApplication(sys.argv[:1])
         app.setApplicationName("Film Foundry")
+        from film_foundry import __version__
+        app.setApplicationVersion(__version__)
+        app.setWindowIcon(QtGui.QIcon(str(Path(__file__).resolve().parents[1] / "assets" / "film_foundry_icon.svg")))
         app.setQuitOnLastWindowClosed(True)
+        # Use CJK metrics as well as CJK glyphs. Segoe UI fallback glyphs can
+        # exceed the height Qt reserved for a Latin-only font on Windows.
+        if sys.platform == "win32":
+            families = QtGui.QFontDatabase.families()
+            if "Microsoft YaHei UI" in families:
+                app.setFont(QtGui.QFont("Microsoft YaHei UI", 10))
+            elif "Microsoft YaHei" in families:
+                app.setFont(QtGui.QFont("Microsoft YaHei", 10))
+    from film_foundry.ui.theme import initialize_theme
+    initialize_theme(app)
     return app
 
 
@@ -272,20 +286,26 @@ class Widget:
         rowspan = int(kwargs.get("rowspan", 1))
         columnspan = int(kwargs.get("columnspan", 1))
         sticky = str(kwargs.get("sticky", ""))
-        horizontal_expand = "e" in sticky and "w" in sticky
+        wraps = isinstance(self.qt, QtWidgets.QLabel) and self.qt.wordWrap()
+        # A left-aligned word-wrapped label otherwise stays at Qt's narrow
+        # size hint. Chinese then breaks every few characters inside the cell.
+        horizontal_expand = ("e" in sticky and "w" in sticky) or wraps
         vertical_expand = "n" in sticky and "s" in sticky
         policy_x = QtWidgets.QSizePolicy.Policy.Expanding if horizontal_expand else QtWidgets.QSizePolicy.Policy.Preferred
         policy_y = QtWidgets.QSizePolicy.Policy.Expanding if vertical_expand else QtWidgets.QSizePolicy.Policy.Preferred
-        self.qt.setSizePolicy(policy_x, policy_y)
+        policy = QtWidgets.QSizePolicy(policy_x, policy_y)
+        policy.setHeightForWidth(wraps or self.qt.hasHeightForWidth())
+        self.qt.setSizePolicy(policy)
         alignment = QtCore.Qt.AlignmentFlag(0)
-        if not horizontal_expand:
+        # Any non-zero cell alignment keeps the label at its size hint.
+        if not wraps and not horizontal_expand:
             if "w" in sticky:
                 alignment |= QtCore.Qt.AlignmentFlag.AlignLeft
             elif "e" in sticky:
                 alignment |= QtCore.Qt.AlignmentFlag.AlignRight
             else:
                 alignment |= QtCore.Qt.AlignmentFlag.AlignHCenter
-        if not vertical_expand:
+        if not wraps and not vertical_expand:
             if "n" in sticky:
                 alignment |= QtCore.Qt.AlignmentFlag.AlignTop
             elif "s" in sticky:
@@ -308,11 +328,14 @@ class Widget:
         layout = self.master._ensure_pack_layout(side)
         fill = str(kwargs.get("fill", ""))
         expand = bool(kwargs.get("expand", False))
-        policy_x = QtWidgets.QSizePolicy.Policy.Expanding if fill in {"x", "both"} or expand else QtWidgets.QSizePolicy.Policy.Preferred
+        wraps = isinstance(self.qt, QtWidgets.QLabel) and self.qt.wordWrap()
+        policy_x = QtWidgets.QSizePolicy.Policy.Expanding if fill in {"x", "both"} or expand or wraps else QtWidgets.QSizePolicy.Policy.Preferred
         policy_y = QtWidgets.QSizePolicy.Policy.Expanding if fill in {"y", "both"} or expand else QtWidgets.QSizePolicy.Policy.Preferred
-        self.qt.setSizePolicy(policy_x, policy_y)
+        policy = QtWidgets.QSizePolicy(policy_x, policy_y)
+        policy.setHeightForWidth(wraps or self.qt.hasHeightForWidth())
+        self.qt.setSizePolicy(policy)
         if layout.indexOf(self.qt) < 0:
-            stretch = 1 if expand else 0
+            stretch = 1 if expand or (wraps and side in {"left", "right"}) else 0
             if side in {"right", "bottom"}:
                 layout.addWidget(self.qt, stretch)
             else:
@@ -593,9 +616,50 @@ def _apply_font(widget: QtWidgets.QWidget, font: Any) -> None:
     widget.setFont(current)
 
 
+class _FormLabel(QtWidgets.QLabel):
+    """Reserve height at the actual assigned width, including aligned labels.
+
+    QGridLayout can use the unwrapped size hint for a left-aligned spanning
+    label even though its final width needs multiple lines. QLabel's own
+    height-for-width also underestimates Chinese, so the row is measured
+    from the font instead.
+    """
+    def hasHeightForWidth(self):
+        return self.wordWrap() or super().hasHeightForWidth()
+
+    def heightForWidth(self, width):
+        if not self.wordWrap() or width <= 0:
+            return super().heightForWidth(width)
+        flags = int(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.TextFlag.TextWordWrap)
+        rect = self.fontMetrics().boundingRect(0, 0, max(1, int(width) - 2), 10000, flags, self.text())
+        return max(self.fontMetrics().height(), rect.height() + 2)
+
+    def _fit_wrapped_height(self):
+        if self.wordWrap() and self.width() > 0:
+            height=self.heightForWidth(self.width())
+            if height >= 0 and self.minimumHeight() != height:
+                self.setMinimumHeight(height)
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        self._fit_wrapped_height()
+
+    def setText(self,text):
+        super().setText(text)
+        # Hidden/new controls still have a placeholder width. Reserving that
+        # height inflates their parent before the page receives its real grid.
+        if self.isVisible():
+            self._fit_wrapped_height()
+
+    def changeEvent(self,event):
+        super().changeEvent(event)
+        if self.isVisible() and event.type() in (QtCore.QEvent.Type.FontChange,QtCore.QEvent.Type.StyleChange):
+            self._fit_wrapped_height()
+
+
 class Label(Widget):
     def __init__(self, parent: Widget, text: str = "", textvariable: ObservableValue | None = None, **kwargs: Any) -> None:
-        label = QtWidgets.QLabel(str(text), parent._content_widget())
+        label = _FormLabel(str(text), parent._content_widget())
         label.setAlignment(_alignment(kwargs.get("anchor", "w")))
         if kwargs.get("wraplength"):
             label.setWordWrap(True)
@@ -652,6 +716,28 @@ class TextInput(Widget):
         return self.qt.text()
 
 
+class _ScrollSafeChoice(QtWidgets.QComboBox):
+    def wheelEvent(self, event):
+        # A closed preset menu must not replace a recipe while its page scrolls.
+        event.ignore()
+
+
+class _ScrollSafeSlider(QtWidgets.QSlider):
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class _ScrollSafeNumber(QtWidgets.QDoubleSpinBox):
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
 class Choice(Widget):
     def __init__(
         self,
@@ -661,7 +747,8 @@ class Choice(Widget):
         state: str = "normal",
         **kwargs: Any,
     ) -> None:
-        combo = QtWidgets.QComboBox(parent._content_widget())
+        combo = _ScrollSafeChoice(parent._content_widget())
+        combo.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         combo.addItems([str(value) for value in values])
         combo.setEditable(state != "readonly")
         super().__init__(parent, combo, state=state, **kwargs)
@@ -769,7 +856,8 @@ class Slider(Widget):
         **kwargs: Any,
     ) -> None:
         orientation = QtCore.Qt.Orientation.Vertical if orient == "vertical" else QtCore.Qt.Orientation.Horizontal
-        slider = QtWidgets.QSlider(orientation, parent._content_widget())
+        slider = _ScrollSafeSlider(orientation, parent._content_widget())
+        slider.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         slider.setRange(0, self._STEPS)
         self.minimum = float(from_)
         self.maximum = float(to)
@@ -815,7 +903,8 @@ class NumberInput(Widget):
         command: Callable[[], Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        spin = QtWidgets.QDoubleSpinBox(parent._content_widget())
+        spin = _ScrollSafeNumber(parent._content_widget())
+        spin.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         spin.setRange(float(from_), float(to))
         spin.setSingleStep(max(abs(float(increment)), 1e-9))
         spin.setDecimals(min(8, max(2, len(f"{abs(float(increment)):.8f}".rstrip("0").split(".")[-1]))))

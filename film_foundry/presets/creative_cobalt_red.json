@@ -1,0 +1,216 @@
+{
+  "film": {
+    "name": "Red Rich Negative",
+    "medium_family": "film",
+    "medium_process": "negative",
+    "image_polarity": "negative",
+    "color_process": "color",
+    "halation_strength": 0.16,
+    "halation_threshold": 0.7,
+    "halation_softness": 0.2,
+    "halation_core_radius": 0.0042,
+    "halation_outer_radius": 0.02,
+    "halation_color": [
+      1.0,
+      0.28,
+      0.1
+    ],
+    "hd_gamma": [
+      0.64,
+      0.67,
+      0.6
+    ],
+    "density_min": [
+      0.1,
+      0.11,
+      0.1
+    ],
+    "density_max": [
+      1.84,
+      1.94,
+      1.72
+    ],
+    "log_exposure_toe": [
+      -2.16,
+      -2.12,
+      -2.24
+    ],
+    "log_exposure_shoulder": [
+      0.42,
+      0.48,
+      0.4
+    ],
+    "hd_toe_width": 0.18,
+    "hd_shoulder_width": 0.24,
+    "layer_sensitivity_matrix": [
+      [
+        0.88,
+        0.09,
+        0.03
+      ],
+      [
+        0.11,
+        0.77,
+        0.12
+      ],
+      [
+        0.05,
+        0.21,
+        0.74
+      ]
+    ],
+    "dye_absorption_matrix": [
+      [
+        1.12,
+        0.18,
+        0.06
+      ],
+      [
+        0.11,
+        1.0,
+        0.17
+      ],
+      [
+        0.05,
+        0.22,
+        0.92
+      ]
+    ],
+    "film_base_density_rgb": [
+      0.18,
+      0.56,
+      0.86
+    ],
+    "granularity_sigma": [
+      0.025,
+      0.023,
+      0.027
+    ],
+    "grain_density_correlation_radius": 0.0014,
+    "halation_exponential_radius": 0.021,
+    "cross_process_layer_balance": [
+      1.23,
+      0.87,
+      0.73
+    ],
+    "cross_process_dye_coupling": 0.95,
+    "cross_process_dye_stability": 0.92,
+    "cross_process_silver_development": 0.96,
+    "cross_process_activation": 0.97,
+    "cross_process_halide_fixing": 0.97,
+    "auxiliary_layer_amount": 1.0,
+    "auxiliary_layer_density_rgb": [
+      0.08,
+      0.07,
+      0.06
+    ]
+  },
+  "develop": {
+    "program_key": "color_negative",
+    "chemistry": "native",
+    "developer_type": "push",
+    "push_stops": 0.5,
+    "time_min": 10.0
+  },
+  "scanner": {
+    "remove_base_mask": true,
+    "print_mapping_mode": "printlike",
+    "scan_normalize": true,
+    "scan_normalize_strength": 1.0,
+    "scan_normalize_mode": "luma",
+    "scan_black_percentile": 0.25,
+    "scan_white_percentile": 99.7,
+    "scan_saturation": 1.55,
+    "tone_curve": [
+      [
+        0,
+        0
+      ],
+      [
+        0.18,
+        0.1
+      ],
+      [
+        0.5,
+        0.46
+      ],
+      [
+        0.8,
+        0.88
+      ],
+      [
+        1,
+        1
+      ]
+    ],
+    "color_curve_rgb": [
+      [
+        [
+          0,
+          0
+        ],
+        [
+          0.2,
+          0.14
+        ],
+        [
+          0.5,
+          0.58
+        ],
+        [
+          0.8,
+          0.95
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          0.2,
+          0.09
+        ],
+        [
+          0.5,
+          0.39
+        ],
+        [
+          0.8,
+          0.76
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          0.2,
+          0.35
+        ],
+        [
+          0.5,
+          0.51
+        ],
+        [
+          0.8,
+          0.65
+        ],
+        [
+          1,
+          1
+        ]
+      ]
+    ],
+    "invert_transmission": true
+  }
+}

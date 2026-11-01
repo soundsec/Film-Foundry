@@ -36,6 +36,8 @@ class SilverGrainPlan:
 
 def _mix_u32(values: np.ndarray) -> np.ndarray:
     """Vectorized 32-bit avalanche hash with intentional wraparound."""
+    # Chris Wellons, hash-prospector lowbias32 (Unlicense).
+    # https://github.com/skeeto/hash-prospector ; see THIRD_PARTY_NOTICES.md.
     values = np.asarray(values, dtype=np.uint32)
     values ^= values >> np.uint32(16)
     values *= np.uint32(0x7FEB352D)

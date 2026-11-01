@@ -7,6 +7,7 @@ material classes, identities, curve previews, and material-side controls.
 from __future__ import annotations
 
 from dataclasses import asdict
+import copy
 import json
 from pathlib import Path
 import sys
@@ -24,6 +25,7 @@ from film_foundry.core.film_process import shape_positive_density_fraction
 from film_foundry.ui.components import add_numeric_control
 from film_foundry.ui.qt import PhotoImage, message_box, text_dialog, ui
 from film_foundry.ui.widgets import VerticalScrolledFrame
+from film_foundry.ui.config_fields import OptionalNumberField, NumberListField, ProfileField, add_apply_button
 from film_foundry.model.config import DarkroomConfig
 from film_foundry.tools.editor_ui import local_text, localize_widget_tree, localized_preset_name, unique_choice_map
 from film_foundry.tools.paths import app_root, resource_root
@@ -210,6 +212,8 @@ def safe_preset_stem(name: str) -> str:
 
 def film_preset_names() -> list[str]:
     names = {path.stem for path in FILM_PRESET_DIR.glob("*.json")}
+    from film_foundry.app.seasonal_collection import visible_builtin_names
+    names = visible_builtin_names(names, "film")
     names.update(path.stem for path in USER_FILM_PRESET_DIR.glob("*.json"))
     supported: list[str] = []
     for name in sorted(names):
@@ -226,6 +230,10 @@ def film_preset_path(name: str) -> Path:
     user_path = USER_FILM_PRESET_DIR / f"{name}.json"
     if user_path.exists():
         return user_path
+    from film_foundry.app.seasonal_collection import preset_path
+    optional=preset_path("film",name)
+    if optional is not None:
+        return optional
     return FILM_PRESET_DIR / f"{name}.json"
 
 
@@ -296,11 +304,13 @@ color_process_for_mode = lambda mode: "monochrome" if str(mode) == "bw_negative"
 
 
 class FilmMaterialEditor:
-    def __init__(self) -> None:
+    def __init__(self, *, parent=None, config=None, on_apply=None) -> None:
         USER_FILM_PRESET_DIR.mkdir(parents=True, exist_ok=True)
 
-        self.root = ui.Application()
-        self.root.title(local_text("Film Foundry - 银盐胶片材料编辑器", APP_TITLE))
+        self._base_config = None
+        self._on_apply = on_apply
+        self.root = ui.Application() if parent is None else ui.Window(parent)
+        self.root.title(local_text("Film Foundry · 材料编辑组件", "Film Foundry · Material editor component"))
         self.root.geometry("1080x780")
         self.root.minsize(860, 620)
 
@@ -329,16 +339,20 @@ class FilmMaterialEditor:
         self._build()
         self._refresh_preset_choices()
         self.material_class.trace_add("write", lambda *_: self._apply_material_class())
-        self._load_selected_preset()
+        if config is None:
+            self._load_selected_preset()
+        else:
+            self._set_controls_from_config(config)
+            self._refresh_curve()
 
     def _build(self) -> None:
         shell = ui.Frame(self.root, padding=12)
         shell.pack(fill="both", expand=True)
-        shell.columnconfigure(0, weight=0)
+        shell.columnconfigure(0, weight=1)
         shell.columnconfigure(1, weight=1)
         shell.rowconfigure(1, weight=1)
 
-        header = ui.Group(shell, text="银盐胶片材料预设（分类共享外壳）", padding=10)
+        header = ui.Group(shell, text=local_text("Film Foundry 组件 · 材料配置", "Film Foundry component · Material settings"), padding=10)
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ui.Label(header, text="基准材料").grid(row=0, column=0, sticky="w", pady=3)
         self.preset_combo = ui.Choice(header, textvariable=self.preset_display, state="readonly")
@@ -354,24 +368,46 @@ class FilmMaterialEditor:
         ui.Label(header, text="当前介质").grid(row=2, column=0, sticky="w", pady=3)
         medium_row = ui.Frame(header)
         medium_row.grid(row=2, column=1, columnspan=3, sticky="ew", pady=3, padx=(8, 0))
-        ui.Label(medium_row, textvariable=self.identity_summary).pack(side="left", padx=(0, 10))
-        ui.Label(
-            medium_row,
-            text="负片与反转片共享编辑器外壳，但调用身份、原生极性和曲线预览分开；即时成像、撕拉片和银版仍使用独立入口。",
-            wraplength=560,
-        ).pack(side="left")
+        ui.Label(medium_row, textvariable=self.identity_summary).pack(side="left")
         header.columnconfigure(1, weight=1)
+        ui.Label(
+            header,
+            text="负片与反转片共享编辑器外壳，但调用身份、原生极性和曲线预览分开；即时成像、撕拉片和银版仍使用独立入口。",
+            wraplength=760,
+        ).grid(row=3, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+        add_apply_button(header, self, row=4)
 
         controls_shell = ui.Frame(shell)
         controls_shell.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
-        controls_shell.rowconfigure(0, weight=1)
+        controls_shell.rowconfigure(1, weight=1)
         controls_shell.columnconfigure(0, weight=1)
 
+        spectral_actions = ui.Frame(controls_shell)
+        spectral_actions.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        spectral_actions.columnconfigure(0, weight=1)
+        ui.Button(spectral_actions, text=local_text("开启七色升维", "Turn on seven-color lift"),
+                  command=self._enable_smits_exposure).grid(row=0, column=0, sticky="ew", pady=2)
+        ui.Button(spectral_actions, text=local_text("编辑已开启的曝光谱", "Edit the exposure spectrum"),
+                  command=lambda: self._edit_spectral_profile(False)).grid(row=1, column=0, sticky="ew", pady=2)
+        ui.Button(spectral_actions, text=local_text("编辑材料吸收谱", "Edit material absorbance"),
+                  command=lambda: self._edit_spectral_profile(True)).grid(row=2, column=0, sticky="ew", pady=2)
+        ui.Label(spectral_actions, text=local_text(
+            "没有附带光谱 JSON。七色升维直接开启；材料吸收谱只有自己有档案时才需要载入。",
+            "No spectrum JSON is included. Seven-color lift turns on directly. Load a material absorbance only if you have your own file.",
+        ), wraplength=420).grid(row=3, column=0, sticky="ew", pady=(4, 0))
+
         self.controls_scroller = VerticalScrolledFrame(controls_shell, canvas_width=560)
-        self.controls_scroller.grid(row=0, column=0, sticky="nsew")
+        self.controls_scroller.grid(row=1, column=0, sticky="nsew")
         controls = self.controls_scroller.content
 
         row = 0
+        row = self._section(controls, local_text("材料尺度与谱定义", "Material geometry and spectral profiles"), row)
+        self.spatial_reference_field = OptionalNumberField(controls, local_text("材料参考短边 mm（空=旧尺度）", "Material reference short edge mm (blank: legacy)"), row=row)
+        row += 1
+        self.exposure_profile_field = ProfileField(controls, "spectral_exposure_profile", row=row)
+        row += 1
+        self.material_profile_field = ProfileField(controls, "spectral_material_profile", row=row)
+        row += 1
         row = self._section(controls, "H-D 曲线 / 染料密度", row)
         row = self._vector(controls, "hd_gamma", "H-D gamma RGB", 0.20, 1.20, row)
         row = self._vector(controls, "density_min", "D-min / 片基灰雾", 0.00, 0.35, row)
@@ -446,6 +482,10 @@ class FilmMaterialEditor:
         row = self._vector(controls, "degradation_layer_balance", "满强度退化层间感度平衡", 0.00, 1.50, row)
         row = self._vector(controls, "granularity_sigma", "颗粒密度 sigma RGB", 0.00, 0.08, row)
         row = self._scalar(controls, "grain_density_correlation_radius", "颗粒相关半径", 0.0003, 0.0040, row)
+        self.grain_scales_field = NumberListField(controls, local_text("颗粒多尺度半径（分号分隔）", "Grain scale radii (semicolon-separated)"), row=row)
+        row += 1
+        self.grain_weights_field = NumberListField(controls, local_text("颗粒尺度权重（与半径对应）", "Grain scale weights (matching radii)"), row=row)
+        row += 1
         row = self._scalar(controls, "silver_grain_strength", "实验性金属银颗粒强度", 0.00, 0.20, row)
         row = self._scalar(controls, "silver_grain_radius", "金属银颗粒相关半径", 0.0001, 0.0040, row)
         row = self._scalar(controls, "silver_grain_clump_mix", "金属银粗团聚混合", 0.00, 1.00, row)
@@ -734,7 +774,30 @@ class FilmMaterialEditor:
             ))
         self._refresh_curve()
 
+    def _enable_smits_exposure(self):
+        from film_foundry.contracts.spectral_exposure import make_smits_exposure_profile
+        layers = 1 if self.material_class.get() in {"bw_negative", "bw_reversal"} else 3
+        self.exposure_profile_field.load(make_smits_exposure_profile(layers))
+        self.status.set(local_text("已开启七色升维。应用到当前任务后才会进入这次冲洗。", "Seven-color lift is on. Apply it to the current task before this development uses it."))
+
+    def _edit_spectral_profile(self, material=False):
+        from film_foundry.ui.spectral_editor import SpectralProfileDialog
+        field = self.material_profile_field if material else self.exposure_profile_field
+        layers = 1 if self.material_class.get() in {"bw_negative", "bw_reversal"} else 3
+        dialog = SpectralProfileDialog(field.profile, material=material, layers=layers, parent=self.root.qt)
+        try:
+            if dialog.exec():
+                field.load(dialog.profile)
+        finally:
+            dialog.deleteLater()
+
     def _set_controls_from_config(self, config: DarkroomConfig) -> bool:
+        self._base_config = copy.deepcopy(config)
+        self.spatial_reference_field.load(config.film.spatial_reference_short_edge_mm)
+        self.grain_scales_field.load(config.film.grain_scales)
+        self.grain_weights_field.load(config.film.grain_scale_weights)
+        self.exposure_profile_field.load(config.film.spectral_exposure_profile)
+        self.material_profile_field.load(config.film.spectral_material_profile)
         supported = is_supported_silver_halide_material(config)
         self.material_name.set(str(config.film.name))
         self.material_class.set(material_class_for_config(config))
@@ -776,7 +839,13 @@ class FilmMaterialEditor:
 
     def _config_from_controls(self) -> DarkroomConfig:
         base_path = film_preset_path(self.preset_name.get())
-        config = DarkroomConfig.from_json(base_path) if base_path.exists() else DarkroomConfig()
+        config = (copy.deepcopy(self._base_config) if self._base_config is not None
+                  else DarkroomConfig.from_json(base_path) if base_path.exists() else DarkroomConfig())
+        config.film.spatial_reference_short_edge_mm = self.spatial_reference_field.read()
+        config.film.grain_scales = self.grain_scales_field.read()
+        config.film.grain_scale_weights = self.grain_weights_field.read()
+        config.film.spectral_exposure_profile = self.exposure_profile_field.profile
+        config.film.spectral_material_profile = self.material_profile_field.profile
         config.film.name = self.material_name.get().strip() or "Custom Film Material"
         identity = material_identity_for_class(self.material_class.get())
         config.mode = identity["mode"]

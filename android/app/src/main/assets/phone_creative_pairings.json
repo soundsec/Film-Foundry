@@ -1,0 +1,995 @@
+{
+  "model": "phone_creative_pairings_v1",
+  "entries": [
+    {
+      "id": "chrome_day",
+      "label_zh": "铬彩日光",
+      "label_en": "Chrome daylight",
+      "material_id": "color_reversal_vivid",
+      "source": "film_foundry/presets/creative_chrome_day.json",
+      "summary_zh": "鲜彩反转片 · 常规反转 · 铬彩硬调",
+      "summary_en": "Vivid reversal · native reversal · chrome",
+      "recipe": {
+        "film": {
+          "name": "Vivid High-Contrast Color Reversal",
+          "image_polarity": "positive",
+          "color_process": "color",
+          "hd_gamma": [
+            0.9,
+            0.906,
+            0.894
+          ],
+          "density_max": [
+            2.3057,
+            2.3207,
+            2.2937
+          ],
+          "log_exposure_toe": [
+            -2.0,
+            -1.994,
+            -2.006
+          ],
+          "log_exposure_shoulder": [
+            0.18,
+            0.183,
+            0.177
+          ],
+          "layer_sensitivity_matrix": [
+            [
+              0.88,
+              0.09,
+              0.03
+            ],
+            [
+              0.07,
+              0.86,
+              0.07
+            ],
+            [
+              0.03,
+              0.14,
+              0.83
+            ]
+          ],
+          "dye_absorption_matrix": [
+            [
+              1.0216,
+              0.0613,
+              0.0204
+            ],
+            [
+              0.0493,
+              0.9851,
+              0.069
+            ],
+            [
+              0.0199,
+              0.0895,
+              0.994
+            ]
+          ],
+          "film_base_density_rgb": [
+            0.036,
+            0.035,
+            0.04
+          ],
+          "cross_process_layer_balance": [
+            0.76,
+            1.19,
+            1.08
+          ],
+          "cross_process_dye_coupling": 0.89,
+          "cross_process_dye_stability": 0.91,
+          "cross_process_silver_development": 0.96,
+          "cross_process_activation": 0.97,
+          "cross_process_halide_fixing": 0.97,
+          "auxiliary_layer_amount": 1.0,
+          "auxiliary_layer_density_rgb": [
+            0.08,
+            0.07,
+            0.06
+          ]
+        },
+        "develop": {
+          "program_key": "color_reversal",
+          "chemistry": "native",
+          "time_min": 8.0
+        },
+        "scanner": {
+          "remove_base_mask": true,
+          "print_mapping_mode": "printlike",
+          "scan_normalize": true,
+          "scan_normalize_strength": 1.0,
+          "scan_normalize_mode": "luma",
+          "scan_black_percentile": 0.25,
+          "scan_white_percentile": 99.7,
+          "scan_saturation": 1.45,
+          "tone_curve": [
+            [
+              0,
+              0
+            ],
+            [
+              0.18,
+              0.1
+            ],
+            [
+              0.5,
+              0.46
+            ],
+            [
+              0.8,
+              0.88
+            ],
+            [
+              1,
+              1
+            ]
+          ],
+          "invert_transmission": false
+        }
+      }
+    },
+    {
+      "id": "amber_city",
+      "label_zh": "暖城青影",
+      "label_en": "Amber city",
+      "material_id": "cyan_shadow_warm_highlight_negative",
+      "source": "film_foundry/presets/creative_amber_city.json",
+      "summary_zh": "青影暖光材料 · 常规彩负 · 青影暖光",
+      "summary_en": "Cyan/warm stock · native negative · cyan & amber",
+      "recipe": {
+        "film": {
+          "name": "Cyan Shadow Warm Highlight Negative",
+          "image_polarity": "negative",
+          "color_process": "color",
+          "hd_gamma": [
+            0.7,
+            0.62,
+            0.5
+          ],
+          "density_max": [
+            1.9,
+            1.8,
+            1.1
+          ],
+          "log_exposure_toe": [
+            -2.0,
+            -2.25,
+            -2.8
+          ],
+          "log_exposure_shoulder": [
+            0.7,
+            0.2,
+            -0.2
+          ],
+          "layer_sensitivity_matrix": [
+            [
+              0.86,
+              0.1,
+              0.04
+            ],
+            [
+              0.09,
+              0.8,
+              0.11
+            ],
+            [
+              0.04,
+              0.18,
+              0.78
+            ]
+          ],
+          "dye_absorption_matrix": [
+            [
+              1.04,
+              0.1,
+              0.04
+            ],
+            [
+              0.07,
+              1.0,
+              0.11
+            ],
+            [
+              0.03,
+              0.14,
+              0.96
+            ]
+          ],
+          "film_base_density_rgb": [
+            0.17,
+            0.53,
+            0.82
+          ],
+          "cross_process_layer_balance": [
+            0.74,
+            1.16,
+            0.95
+          ],
+          "cross_process_dye_coupling": 0.94,
+          "cross_process_dye_stability": 0.89,
+          "cross_process_silver_development": 0.96,
+          "cross_process_activation": 0.97,
+          "cross_process_halide_fixing": 0.97,
+          "auxiliary_layer_amount": 1.0,
+          "auxiliary_layer_density_rgb": [
+            0.08,
+            0.07,
+            0.06
+          ]
+        },
+        "develop": {
+          "program_key": "color_negative",
+          "chemistry": "native",
+          "developer_type": "standard",
+          "time_min": 8.0
+        },
+        "scanner": {
+          "remove_base_mask": true,
+          "print_mapping_mode": "printlike",
+          "scan_normalize": true,
+          "scan_normalize_strength": 1.0,
+          "scan_normalize_mode": "luma",
+          "scan_black_percentile": 0.25,
+          "scan_white_percentile": 99.7,
+          "scan_saturation": 1.35,
+          "tone_curve": [
+            [
+              0,
+              0
+            ],
+            [
+              0.18,
+              0.1
+            ],
+            [
+              0.5,
+              0.46
+            ],
+            [
+              0.8,
+              0.88
+            ],
+            [
+              1,
+              1
+            ]
+          ],
+          "color_curve_rgb": [
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0.2,
+                0.15
+              ],
+              [
+                0.5,
+                0.54
+              ],
+              [
+                0.8,
+                0.9
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0.2,
+                0.22
+              ],
+              [
+                0.5,
+                0.52
+              ],
+              [
+                0.8,
+                0.83
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0.2,
+                0.3
+              ],
+              [
+                0.5,
+                0.5
+              ],
+              [
+                0.8,
+                0.71
+              ],
+              [
+                1,
+                1
+              ]
+            ]
+          ],
+          "invert_transmission": true
+        }
+      }
+    },
+    {
+      "id": "violet_cross",
+      "label_zh": "紫夜负冲",
+      "label_en": "Violet cross",
+      "material_id": "color_reversal_transparency",
+      "source": "film_foundry/presets/creative_violet_cross.json",
+      "summary_zh": "彩色正片 · 交叉负冲 · 紫夜",
+      "summary_en": "Reversal stock · cross negative · violet",
+      "recipe": {
+        "film": {
+          "name": "Standard Color Reversal Transparency",
+          "image_polarity": "positive",
+          "color_process": "color",
+          "hd_gamma": [
+            0.82,
+            0.826,
+            0.814
+          ],
+          "density_max": [
+            2.15,
+            2.165,
+            2.135
+          ],
+          "log_exposure_toe": [
+            -2.1,
+            -2.0925,
+            -2.1075
+          ],
+          "log_exposure_shoulder": [
+            0.22,
+            0.223,
+            0.217
+          ],
+          "layer_sensitivity_matrix": [
+            [
+              0.86,
+              0.1,
+              0.04
+            ],
+            [
+              0.08,
+              0.84,
+              0.08
+            ],
+            [
+              0.04,
+              0.16,
+              0.8
+            ]
+          ],
+          "dye_absorption_matrix": [
+            [
+              1.0182,
+              0.0713,
+              0.0305
+            ],
+            [
+              0.0589,
+              0.9825,
+              0.0786
+            ],
+            [
+              0.02,
+              0.1,
+              1.0
+            ]
+          ],
+          "film_base_density_rgb": [
+            0.035,
+            0.035,
+            0.04
+          ]
+        },
+        "develop": {
+          "program_key": "color_negative",
+          "chemistry": "cross",
+          "developer_type": "high_contrast",
+          "time_min": 9.0
+        },
+        "scanner": {
+          "remove_base_mask": true,
+          "print_mapping_mode": "printlike",
+          "scan_normalize": true,
+          "scan_normalize_strength": 1.0,
+          "scan_normalize_mode": "luma",
+          "scan_black_percentile": 0.25,
+          "scan_white_percentile": 99.7,
+          "scan_saturation": 1.5,
+          "tone_curve": [
+            [
+              0,
+              0
+            ],
+            [
+              0.18,
+              0.1
+            ],
+            [
+              0.5,
+              0.46
+            ],
+            [
+              0.8,
+              0.88
+            ],
+            [
+              1,
+              1
+            ]
+          ],
+          "color_curve_rgb": [
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0.2,
+                0.24
+              ],
+              [
+                0.5,
+                0.6
+              ],
+              [
+                0.8,
+                0.9
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0.2,
+                0.1
+              ],
+              [
+                0.5,
+                0.38
+              ],
+              [
+                0.8,
+                0.72
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0.2,
+                0.29
+              ],
+              [
+                0.5,
+                0.64
+              ],
+              [
+                0.8,
+                0.9
+              ],
+              [
+                1,
+                1
+              ]
+            ]
+          ],
+          "invert_transmission": true
+        }
+      }
+    },
+    {
+      "id": "acid_reversal",
+      "label_zh": "酸绿逆冲",
+      "label_en": "Acid reversal",
+      "material_id": "warm_consumer_negative",
+      "source": "film_foundry/presets/creative_acid_reversal.json",
+      "summary_zh": "暖调彩负 · 交叉反转（保留片基）· 酸绿",
+      "summary_en": "Warm negative · cross reversal (base retained) · acid green",
+      "recipe": {
+        "film": {
+          "name": "Warm Consumer Negative",
+          "image_polarity": "negative",
+          "color_process": "color",
+          "hd_gamma": [
+            0.6,
+            0.64,
+            0.58
+          ],
+          "density_max": [
+            1.78,
+            1.9,
+            1.7
+          ],
+          "log_exposure_toe": [
+            -2.18,
+            -2.1,
+            -2.22
+          ],
+          "log_exposure_shoulder": [
+            0.42,
+            0.46,
+            0.4
+          ],
+          "layer_sensitivity_matrix": [
+            [
+              0.84,
+              0.12,
+              0.04
+            ],
+            [
+              0.1,
+              0.77,
+              0.13
+            ],
+            [
+              0.06,
+              0.22,
+              0.72
+            ]
+          ],
+          "dye_absorption_matrix": [
+            [
+              1.08,
+              0.18,
+              0.08
+            ],
+            [
+              0.12,
+              0.98,
+              0.18
+            ],
+            [
+              0.06,
+              0.24,
+              0.9
+            ]
+          ],
+          "film_base_density_rgb": [
+            0.18,
+            0.56,
+            0.86
+          ],
+          "cross_process_layer_balance": [
+            1.16,
+            0.91,
+            0.72
+          ],
+          "cross_process_dye_coupling": 0.9,
+          "cross_process_dye_stability": 0.92,
+          "cross_process_silver_development": 0.96,
+          "cross_process_activation": 0.97,
+          "cross_process_halide_fixing": 0.97,
+          "auxiliary_layer_amount": 1.0,
+          "auxiliary_layer_density_rgb": [
+            0.08,
+            0.07,
+            0.06
+          ]
+        },
+        "develop": {
+          "program_key": "color_reversal",
+          "chemistry": "cross",
+          "time_min": 8.0
+        },
+        "scanner": {
+          "remove_base_mask": true,
+          "print_mapping_mode": "printlike",
+          "scan_normalize": true,
+          "scan_normalize_strength": 1.0,
+          "scan_normalize_mode": "luma",
+          "scan_black_percentile": 0.25,
+          "scan_white_percentile": 99.7,
+          "scan_saturation": 1.6,
+          "tone_curve": [
+            [
+              0,
+              0
+            ],
+            [
+              0.18,
+              0.1
+            ],
+            [
+              0.5,
+              0.46
+            ],
+            [
+              0.8,
+              0.88
+            ],
+            [
+              1,
+              1
+            ]
+          ],
+          "color_curve_rgb": [
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0.2,
+                0.12
+              ],
+              [
+                0.5,
+                0.37
+              ],
+              [
+                0.8,
+                0.86
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0.2,
+                0.32
+              ],
+              [
+                0.5,
+                0.67
+              ],
+              [
+                0.8,
+                0.94
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0.2,
+                0.18
+              ],
+              [
+                0.5,
+                0.33
+              ],
+              [
+                0.8,
+                0.68
+              ],
+              [
+                1,
+                1
+              ]
+            ]
+          ],
+          "invert_transmission": false
+        }
+      }
+    },
+    {
+      "id": "cobalt_red",
+      "label_zh": "钴蓝红潮",
+      "label_en": "Cobalt red",
+      "material_id": "red_rich_negative",
+      "source": "film_foundry/presets/creative_cobalt_red.json",
+      "summary_zh": "浓红材料 · 迫冲药浴 · 钴蓝红光",
+      "summary_en": "Red-rich stock · push bath · cobalt & red",
+      "recipe": {
+        "film": {
+          "name": "Red Rich Negative",
+          "image_polarity": "negative",
+          "color_process": "color",
+          "hd_gamma": [
+            0.64,
+            0.67,
+            0.6
+          ],
+          "density_max": [
+            1.84,
+            1.94,
+            1.72
+          ],
+          "log_exposure_toe": [
+            -2.16,
+            -2.12,
+            -2.24
+          ],
+          "log_exposure_shoulder": [
+            0.42,
+            0.48,
+            0.4
+          ],
+          "layer_sensitivity_matrix": [
+            [
+              0.88,
+              0.09,
+              0.03
+            ],
+            [
+              0.11,
+              0.77,
+              0.12
+            ],
+            [
+              0.05,
+              0.21,
+              0.74
+            ]
+          ],
+          "dye_absorption_matrix": [
+            [
+              1.12,
+              0.18,
+              0.06
+            ],
+            [
+              0.11,
+              1.0,
+              0.17
+            ],
+            [
+              0.05,
+              0.22,
+              0.92
+            ]
+          ],
+          "film_base_density_rgb": [
+            0.18,
+            0.56,
+            0.86
+          ],
+          "cross_process_layer_balance": [
+            1.23,
+            0.87,
+            0.73
+          ],
+          "cross_process_dye_coupling": 0.95,
+          "cross_process_dye_stability": 0.92,
+          "cross_process_silver_development": 0.96,
+          "cross_process_activation": 0.97,
+          "cross_process_halide_fixing": 0.97,
+          "auxiliary_layer_amount": 1.0,
+          "auxiliary_layer_density_rgb": [
+            0.08,
+            0.07,
+            0.06
+          ]
+        },
+        "develop": {
+          "program_key": "color_negative",
+          "chemistry": "native",
+          "developer_type": "push",
+          "push_stops": 0.5,
+          "time_min": 10.0
+        },
+        "scanner": {
+          "remove_base_mask": true,
+          "print_mapping_mode": "printlike",
+          "scan_normalize": true,
+          "scan_normalize_strength": 1.0,
+          "scan_normalize_mode": "luma",
+          "scan_black_percentile": 0.25,
+          "scan_white_percentile": 99.7,
+          "scan_saturation": 1.55,
+          "tone_curve": [
+            [
+              0,
+              0
+            ],
+            [
+              0.18,
+              0.1
+            ],
+            [
+              0.5,
+              0.46
+            ],
+            [
+              0.8,
+              0.88
+            ],
+            [
+              1,
+              1
+            ]
+          ],
+          "color_curve_rgb": [
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0.2,
+                0.14
+              ],
+              [
+                0.5,
+                0.58
+              ],
+              [
+                0.8,
+                0.95
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0.2,
+                0.09
+              ],
+              [
+                0.5,
+                0.39
+              ],
+              [
+                0.8,
+                0.76
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0.2,
+                0.35
+              ],
+              [
+                0.5,
+                0.51
+              ],
+              [
+                0.8,
+                0.65
+              ],
+              [
+                1,
+                1
+              ]
+            ]
+          ],
+          "invert_transmission": true
+        }
+      }
+    },
+    {
+      "id": "silver_noir",
+      "label_zh": "银盐黑场",
+      "label_en": "Silver noir",
+      "material_id": "monochrome_push",
+      "source": "film_foundry/presets/creative_silver_noir.json",
+      "summary_zh": "银盐黑白 · 高锐度药浴 · 硬调",
+      "summary_en": "Silver B&W · acutance bath · hard tone",
+      "recipe": {
+        "film": {
+          "name": "Monochrome Push",
+          "image_polarity": "negative",
+          "color_process": "monochrome",
+          "hd_gamma": [
+            0.78,
+            0.78,
+            0.78
+          ],
+          "density_max": [
+            2.1,
+            2.1,
+            2.1
+          ],
+          "log_exposure_toe": [
+            -2.05,
+            -2.05,
+            -2.05
+          ],
+          "log_exposure_shoulder": [
+            0.36,
+            0.36,
+            0.36
+          ],
+          "film_base_density_rgb": [
+            0.12,
+            0.12,
+            0.12
+          ],
+          "retained_halide_density_rgb": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "develop": {
+          "program_key": "bw_negative",
+          "chemistry": "native",
+          "developer_type": "high_acutance",
+          "time_min": 9.0
+        },
+        "scanner": {
+          "remove_base_mask": true,
+          "print_mapping_mode": "printlike",
+          "scan_normalize": true,
+          "scan_normalize_strength": 1.0,
+          "scan_normalize_mode": "luma",
+          "scan_black_percentile": 0.25,
+          "scan_white_percentile": 99.7,
+          "scan_saturation": 1.45,
+          "tone_curve": [
+            [
+              0,
+              0
+            ],
+            [
+              0.18,
+              0.1
+            ],
+            [
+              0.5,
+              0.46
+            ],
+            [
+              0.8,
+              0.88
+            ],
+            [
+              1,
+              1
+            ]
+          ],
+          "invert_transmission": true
+        }
+      }
+    }
+  ]
+}

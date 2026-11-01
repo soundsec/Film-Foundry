@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from film_foundry.core.color import luminance
 from film_foundry.core.execution_topology import reference_execution_enabled
-from film_foundry.model.config import FilmStockConfig, ScannerConfig
+from film_foundry.model.config import (
+    FilmStockConfig,
+    SCANNER_COLOR_RESPONSE_MODELS,
+    ScannerConfig,
+    normalize_scanner_color_curve_rgb,
+    normalize_scanner_tone_curve,
+)
 
 
 _IDENTITY_RGB_MATRIX = np.eye(3, dtype=np.float32)
@@ -17,6 +25,152 @@ _UNIT_RGB_GAMMA.setflags(write=False)
 
 def _is_identity_rgb_matrix(matrix: np.ndarray) -> bool:
     return bool(np.array_equal(matrix, _IDENTITY_RGB_MATRIX))
+
+
+def scanner_color_curve_is_active(curves: object) -> bool:
+    """True when piecewise RGB curves change the historical identity mapping."""
+    if curves is None:
+        return False
+    normalized = normalize_scanner_color_curve_rgb(curves)
+    for channel in normalized:
+        xs = np.asarray([point[0] for point in channel], dtype=np.float64)
+        ys = np.asarray([point[1] for point in channel], dtype=np.float64)
+        if not np.allclose(ys, xs, rtol=0.0, atol=1e-7):
+            return True
+    return False
+
+
+def scanner_color_response_record(scanner: ScannerConfig) -> dict[str, str]:
+    """Name capture-side device 1D and output-referred mapping without a 3-D LUT."""
+    model = str(getattr(scanner, "color_response_model", "simple_channel_adjust_v1")).strip().lower()
+    if model not in SCANNER_COLOR_RESPONSE_MODELS:
+        model = "simple_channel_adjust_v1"
+    return {
+        "model": model,
+        "tone": "piecewise_output_luma_v1" if scanner_tone_curve_is_active(scanner.tone_curve) else "none",
+        "curve": (
+            "piecewise_rgb_v1"
+            if scanner_color_curve_is_active(getattr(scanner, "color_curve_rgb", None))
+            else "none"
+        ),
+        "device": (
+            "piecewise_rgb_v1"
+            if scanner_color_curve_is_active(getattr(scanner, "device_response_rgb", None))
+            else "none"
+        ),
+    }
+
+
+def _apply_piecewise_rgb_curves(
+    image: np.ndarray,
+    curves: object,
+    *,
+    consume_input: bool = False,
+    clip_min: float = 0.0,
+    clip_max: float = 1.0,
+) -> np.ndarray:
+    image = np.asarray(image, dtype=np.float32)
+    if not scanner_color_curve_is_active(curves):
+        if consume_input and image.dtype == np.float32 and image.flags.writeable:
+            return image
+        return image.astype(np.float32, copy=False)
+    normalized = normalize_scanner_color_curve_rgb(curves)
+    can_consume = bool(
+        consume_input
+        and image.dtype == np.float32
+        and image.flags.writeable
+    )
+    output = image if can_consume else image.copy()
+    for channel, points in enumerate(normalized):
+        xp = np.asarray([point[0] for point in points], dtype=np.float64)
+        fp = np.asarray([point[1] for point in points], dtype=np.float64)
+        output[..., channel] = np.interp(
+            output[..., channel].astype(np.float64, copy=False),
+            xp,
+            fp,
+        ).astype(np.float32, copy=False)
+    np.clip(output, clip_min, clip_max, out=output)
+    return output
+
+
+def apply_scanner_color_curve_rgb(
+    image: np.ndarray,
+    scanner: ScannerConfig | None = None,
+    *,
+    consume_input: bool = False,
+) -> np.ndarray:
+    """Apply optional output-referred RGB curves. Identity/None is a no-op."""
+    scanner = scanner or ScannerConfig()
+    return _apply_piecewise_rgb_curves(
+        image,
+        getattr(scanner, "color_curve_rgb", None),
+        consume_input=consume_input,
+        clip_min=0.0,
+        clip_max=1.0,
+    )
+
+
+def scanner_tone_curve_is_active(curve: object) -> bool:
+    points = normalize_scanner_tone_curve(curve)
+    return points is not None and any(abs(y - x) > 1e-7 for x, y in points)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedScannerToneCurve:
+    """Immutable output curve, validated once for a scan's row blocks."""
+
+    x: tuple[float, ...]
+    y: tuple[float, ...]
+
+    @classmethod
+    def prepare(cls, curve: object) -> PreparedScannerToneCurve:
+        points = normalize_scanner_tone_curve(curve)
+        if points is None or not any(abs(y - x) > 1e-7 for x, y in points):
+            return cls((), ())
+        return cls(tuple(x for x, _ in points), tuple(y for _, y in points))
+
+    def apply(self, image: np.ndarray, *, consume_input: bool = False) -> np.ndarray:
+        image = np.asarray(image, dtype=np.float32)
+        if not self.x:
+            return image
+        output = image if consume_input and image.flags.writeable else image.copy()
+        brightness = luminance(output)
+        target = np.interp(brightness, self.x, self.y).astype(np.float32)
+        black = brightness <= 1e-8
+        ratio = np.divide(target, brightness, out=np.zeros_like(target), where=~black)
+        output *= ratio[..., None]
+        output[black] = target[black, None]
+        np.clip(output, 0., 1., out=output)
+        return output
+
+
+def apply_scanner_tone_curve(image: np.ndarray, scanner: ScannerConfig | None = None, *, consume_input: bool = False) -> np.ndarray:
+    """Map output-encoded brightness, retaining RGB ratios until gamut clipping.
+
+    This is a display brightness proxy, not scene-linear luminance. At black,
+    a lifted origin produces neutral gray. Medium/capture arrays stay untouched.
+    """
+    scanner = scanner or ScannerConfig()
+    return PreparedScannerToneCurve.prepare(scanner.tone_curve).apply(
+        image, consume_input=consume_input,
+    )
+
+
+def apply_scanner_device_response_rgb(
+    image: np.ndarray,
+    scanner: ScannerConfig | None = None,
+    *,
+    consume_input: bool = False,
+) -> np.ndarray:
+    """Apply optional 1D device curves to recorded scanner_raw. Identity/None is a no-op."""
+    scanner = scanner or ScannerConfig()
+    return _apply_piecewise_rgb_curves(
+        image,
+        getattr(scanner, "device_response_rgb", None),
+        consume_input=consume_input,
+        clip_min=1e-6,
+        clip_max=1.0,
+    )
 
 
 def layer_density_to_optical_density_rgb(
@@ -228,7 +382,7 @@ def capture_optical_density(
     # scanner_raw is a normalized sensor signal. Saturation belongs here so
     # the image and its clear-base reference clip under the same exposure.
     np.clip(raw, 1e-6, 1.0, out=raw)
-    return raw
+    return apply_scanner_device_response_rgb(raw, scanner, consume_input=True)
 
 
 def render_negative_image(
@@ -263,6 +417,8 @@ def render_transparency_image(
 
 def color_temperature_rgb(temperature_k: float) -> np.ndarray:
     """Approximate normalized RGB illuminant for a Kelvin color temperature."""
+    # Tanner Helland's Kelvin-to-RGB fit (BSD-2-Clause); see THIRD_PARTY_NOTICES.md.
+    # https://tannerhelland.com/2012/09/18/convert-temperature-rgb-algorithm-code.html
     temp = float(np.clip(float(temperature_k), 1000.0, 40000.0)) / 100.0
     if temp <= 66.0:
         red = 255.0
@@ -301,15 +457,14 @@ def negative_backlight_illuminant_rgb(scanner: ScannerConfig | None = None) -> n
     )
 
 
-def transmission_illuminant_rgb(scanner: ScannerConfig | None = None) -> np.ndarray:
-    """Return the one physical illuminant shared by all transmissive captures.
+def _transmission_light_parameters(scanner: ScannerConfig) -> tuple[float, float]:
+    """Resolve shared light controls and the unchanged legacy preset banks.
 
     New configurations use ``transmission_light_*``. Older scanner presets did
     not have those fields, so ``None`` deliberately falls back to the former
     negative-backlight or positive-light-table bank according to the explicit
     inversion control. The fallback changes no legacy numerical result.
     """
-    scanner = scanner or ScannerConfig()
     ev = scanner.transmission_light_ev
     temperature_k = scanner.transmission_light_temperature_k
     legacy_positive = (
@@ -332,7 +487,28 @@ def transmission_illuminant_rgb(scanner: ScannerConfig | None = None) -> np.ndar
             if use_negative_legacy_bank
             else scanner.light_table_temperature_k
         )
-    kelvin_rgb = color_temperature_rgb(float(temperature_k))
+    return float(ev), float(temperature_k)
+
+
+def scanner_light_exposure_record(scanner: ScannerConfig) -> dict:
+    """Record the desktop capture-stage EV; this is not print/scan gain."""
+    ev, _ = _transmission_light_parameters(scanner)
+    return {
+        "model": "illuminated_capture_ev_v1",
+        "parameter": "scanner.transmission_light_ev",
+        "stage": "transmission_capture",
+        "lamp_ev": ev,
+        "effective_ev": ev,
+        "calibration_ev": ev,
+    }
+
+
+def transmission_illuminant_rgb(scanner: ScannerConfig | None = None) -> np.ndarray:
+    """Return the one illuminant shared by all transmissive captures."""
+    scanner = scanner or ScannerConfig()
+    ev, temperature_k = _transmission_light_parameters(scanner)
+    kelvin_rgb = (np.ones(3, dtype=np.float32) if scanner.spectral_observation_profile is not None
+                  else color_temperature_rgb(float(temperature_k)))
     residual_rgb = np.asarray(scanner.scanner_light_color, dtype=np.float32)
     brightness = 2.0 ** float(ev)
     return np.clip(kelvin_rgb * residual_rgb * brightness, 1e-6, None).astype(
@@ -755,7 +931,7 @@ def render_positive_scan(
         np.clip(mapped, 0.0, 1.0, out=mapped)
         mapped *= float(paper_white) - float(paper_black)
         mapped += float(paper_black)
-        return mapped
+        return apply_scanner_color_curve_rgb(mapped, scanner, consume_input=True)
 
     log_positive = (positive_raw_density - reference) * gamma + color_shift
     positive = np.power(10.0, log_positive) * (2.0 ** float(print_exposure_ev))
@@ -785,7 +961,7 @@ def render_positive_scan(
     np.clip(mapped, 0.0, 1.0, out=mapped)
     mapped *= float(paper_white) - float(paper_black)
     mapped += float(paper_black)
-    return mapped
+    return apply_scanner_color_curve_rgb(mapped, scanner, consume_input=True)
 
 
 def scanner_raw_to_positive_rgb(
@@ -934,7 +1110,7 @@ def render_positive_transparency_scan(
         consume_input=can_consume,
     )
     saturation = 1.0 + (float(scanner.scan_saturation) - 1.0) * color_strength
-    return _luma_preserving_saturation(
+    mapped = _luma_preserving_saturation(
         image,
         saturation,
         # At this point the non-consuming branch also owns a private buffer
@@ -942,6 +1118,7 @@ def render_positive_transparency_scan(
         # saturation without another RGB allocation.
         consume_input=True,
     )
+    return apply_scanner_color_curve_rgb(mapped, scanner, consume_input=True)
 
 
 def normalize_scan_rgb(
@@ -1060,7 +1237,50 @@ def scan_normalization_range(
     return black, white
 
 
+_NORMALIZATION_WORK_PIXELS = 262_144
+
+
 def apply_scan_normalization_range(
+    image: np.ndarray,
+    black: np.ndarray,
+    white: np.ndarray,
+    *,
+    strength: float = 1.0,
+    mode: str = "luma",
+    consume_input: bool = False,
+) -> np.ndarray:
+    """Apply the same global measurements using bounded row scratch.
+
+    The full expression remains the developer reference and the small-image
+    path. No row estimates its own black/white points. A caller-owned output
+    still occupies one RGB frame when input consumption is not permitted.
+    """
+    image = np.asarray(image, dtype=np.float32)
+    if image.ndim != 3 or image.shape[1] == 0 or reference_execution_enabled():
+        return _apply_scan_normalization_range_full(
+            image, black, white, strength=strength, mode=mode,
+            consume_input=consume_input,
+        )
+    rows = max(1, _NORMALIZATION_WORK_PIXELS // image.shape[1])
+    if image.shape[0] <= rows or float(np.clip(strength, 0.0, 1.0)) <= 0.0:
+        return _apply_scan_normalization_range_full(
+            image, black, white, strength=strength, mode=mode,
+            consume_input=consume_input,
+        )
+    can_consume = consume_input and image.flags.writeable
+    output = image if can_consume else np.empty_like(image)
+    for start in range(0, image.shape[0], rows):
+        stop = min(start + rows, image.shape[0])
+        tile = _apply_scan_normalization_range_full(
+            image[start:stop], black, white, strength=strength, mode=mode,
+            consume_input=can_consume,
+        )
+        if not can_consume:
+            output[start:stop] = tile
+    return output
+
+
+def _apply_scan_normalization_range_full(
     image: np.ndarray,
     black: np.ndarray,
     white: np.ndarray,

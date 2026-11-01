@@ -12,12 +12,9 @@ import cv2
 import numpy as np
 
 from film_foundry.core.film_process.integration import (
-    _color_material,
     _compatibility_for_program,
-    _is_monochrome_material,
-    _material_latent_state,
-    _silver_material,
 )
+from film_foundry.core.material_latent_grid import MaterialLatentSource
 from film_foundry.core.film_process.operators import (
     FilmProcessAction,
     provisional_developed_halide,
@@ -26,8 +23,6 @@ from film_foundry.core.film_process.recipe import program_from_develop_recipe
 from film_foundry.core.spatial_fields import (
     GlobalRateMultiplierField,
     SpatialFieldPlan,
-    global_field_grid,
-    resample_layer_exposure_addition,
 )
 from film_foundry.model.config import DevelopRecipeConfig, FilmStockConfig
 
@@ -45,29 +40,15 @@ REDUCED_DEVELOPMENT_ADJACENCY_PLAN = SpatialFieldPlan(
 
 
 def _provisional_first_development_source(
-    image_linear: np.ndarray,
+    state,
+    material,
     film: FilmStockConfig,
     recipe: DevelopRecipeConfig,
     program_kind: str,
-    *,
-    latent_layer_exposure_addition=None,
 ) -> tuple[np.ndarray, str]:
-    material_is_mono = _is_monochrome_material(film)
-    if program_kind.startswith("bw_"):
-        layer_count = 1 if material_is_mono else 3
-        material = _silver_material(film, layer_count)
-    elif program_kind.startswith("color_"):
-        layer_count = 3
-        material = _color_material(film)
-    else:
+    if not program_kind.startswith(("bw_", "color_")):
         raise ValueError(f"unsupported adjacency material program: {program_kind}")
-
-    state = _material_latent_state(
-        image_linear,
-        film,
-        material,
-        latent_layer_exposure_addition=latent_layer_exposure_addition,
-    )
+    layer_count = material.layer_count
     material_process = "reversal" if program_kind.endswith("reversal") else "negative"
     program = program_from_develop_recipe(
         recipe,
@@ -86,7 +67,7 @@ def _provisional_first_development_source(
     )
     if first_step is None:
         raise ValueError("adjacency requires a process program with development")
-    compatibility = _compatibility_for_program(film, program.key, layer_count)
+    compatibility = _compatibility_for_program(film, program.key, layer_count, program=program)
     provisional = provisional_developed_halide(state, first_step, compatibility)
     capacity = np.asarray(material.halide_capacity, dtype=np.float32).reshape(
         (1,) * (provisional.ndim - 1) + (layer_count,)
@@ -101,13 +82,15 @@ def _provisional_first_development_source(
 
 
 def build_development_adjacency_field(
-    image_linear: np.ndarray,
+    image_linear: np.ndarray | None,
     film: FilmStockConfig,
     recipe: DevelopRecipeConfig,
     program_kind: str,
     *,
     latent_layer_exposure_addition=None,
     work_long_edge: int = 1800,
+    exposed_latent=None,
+    material_source: MaterialLatentSource | None = None,
 ) -> tuple[GlobalRateMultiplierField | None, dict[str, object]]:
     """Build one first-development-only rate field without consuming pools."""
     strength = float(recipe.development_adjacency_strength)
@@ -128,36 +111,16 @@ def build_development_adjacency_field(
     if strength <= 0.0:
         return None, base_audit
 
-    image = np.asarray(image_linear, dtype=np.float32)
-    if image.ndim != 3 or image.shape[-1] != 3:
-        raise ValueError("development adjacency requires an HxWx3 linear image")
-    image_minimum = float(np.min(image))
-    image_maximum = float(np.max(image))
-    if (
-        not np.isfinite(image_minimum)
-        or not np.isfinite(image_maximum)
-        or image_minimum < 0.0
-    ):
-        raise ValueError("development adjacency image must be finite and non-negative")
-    grid = global_field_grid(image.shape, max(1, int(work_long_edge)))
-    if grid.reduced:
-        work_image = cv2.resize(
-            image,
-            (grid.work_shape[1], grid.work_shape[0]),
-            interpolation=cv2.INTER_AREA,
-        ).astype(np.float32)
-    else:
-        work_image = image
-    work_addition = resample_layer_exposure_addition(
-        latent_layer_exposure_addition,
-        grid,
-    )
+    material_source = material_source or MaterialLatentSource(film,
+        image_linear=image_linear, exposed_latent=exposed_latent,
+        latent_layer_exposure_addition=latent_layer_exposure_addition)
+    state, grid = material_source.working_state(work_long_edge)
     source, first_label = _provisional_first_development_source(
-        work_image,
+        state,
+        material_source.material,
         film,
         recipe,
         program_kind,
-        latent_layer_exposure_addition=work_addition,
     )
 
     sigma = max(0.45, radius * float(min(grid.work_shape)))
@@ -182,6 +145,7 @@ def build_development_adjacency_field(
             "source_mean": float(np.mean(source, dtype=np.float64)),
             "source_residual_rms": rms,
             "blur_sigma_work_pixels": float(sigma),
+            "source_model": MaterialLatentSource.MODEL,
         }
     )
     if rms <= 1e-7:

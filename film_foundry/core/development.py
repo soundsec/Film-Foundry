@@ -228,6 +228,11 @@ def build_effective_development(recipe: DevelopRecipeConfig) -> EffectiveDevelop
     concentration = _clamp_recipe_value(recipe.concentration, *CONCENTRATION_RANGE, default=1.0)
     agitation = _clamp_recipe_value(recipe.agitation, *AGITATION_RANGE, default=1.0)
     time_min = _clamp_recipe_value(recipe.time_min, *TIME_MIN_RANGE, default=8.0)
+    agitation_time = getattr(recipe, "agitation_time_s", None)
+    if agitation_time is not None:
+        from film_foundry.contracts.process_steps import validate_process_conditions
+        validate_process_conditions({"time_min": time_min, "agitation_time_s": agitation_time})
+        agitation *= float(agitation_time) / (time_min * 60.0)
     temp_c = _clamp_recipe_value(recipe.temperature_c, *TEMPERATURE_C_RANGE, default=20.0)
     push = _clamp_recipe_value(recipe.push_stops, *PUSH_STOPS_RANGE, default=0.0)
     exhaustion = _clamp_recipe_value(recipe.developer_exhaustion, 0.0, 1.0, default=0.0)

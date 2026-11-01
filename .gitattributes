@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.png -text
+*.ico -text
+*.npz -text
+*.bin -text
+*.jar -text
+*.dng -text

@@ -31,7 +31,7 @@ USER_PRESET_DIR = PROJECT_ROOT / "user_presets"
 
 
 TOOLS = (
-    ("main", "launcher.tool.main.name", "launcher.tool.main.desc", "film_foundry.tools.run_darkroom_gui"),
+    ("main", "launcher.tool.main.name", "launcher.tool.main.desc", "film_foundry.tools.run_desktop_gui"),
     ("film", "launcher.tool.film.name", "launcher.tool.film.desc", "film_foundry.tools.run_film_material_editor"),
     ("develop", "launcher.tool.develop.name", "launcher.tool.develop.desc", "film_foundry.tools.run_develop_process_editor"),
     ("scanner", "launcher.tool.scanner.name", "launcher.tool.scanner.desc", "film_foundry.tools.run_scanner_render_editor"),
@@ -59,50 +59,68 @@ class FoundryLauncher:
         ensure_user_dirs()
         self.root = ui.Application()
         self.root.title(tr("launcher.title"))
-        self.root.geometry("780x760")
-        self.root.minsize(680, 560)
+        self.root.geometry("860x740")
+        self.root.minsize(720, 560)
         self.language = ui.TextValue(value=language_label(current_language()))
         self.status = ui.TextValue(value=tr("launcher.status.ready"))
         self._build()
 
     def _build(self) -> None:
-        shell = ui.Frame(self.root, padding=16)
-        shell.pack(fill="both", expand=True)
-        shell.columnconfigure(0, weight=1)
+        from PySide6 import QtCore, QtWidgets
 
-        title = ui.Label(shell, text=tr("launcher.brand"), font=("", 14, "bold"))
-        title.grid(row=0, column=0, sticky="w", pady=(0, 4))
-        subtitle = ui.Label(shell, text=tr("launcher.subtitle"))
-        subtitle.grid(row=1, column=0, sticky="w", pady=(0, 10))
+        outer = ui.Frame(self.root, padding=0)
+        outer.pack(fill="both", expand=True)
 
-        language_row = ui.Frame(shell)
-        language_row.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        header = ui.Frame(outer, padding=(20, 16, 20, 8))
+        header.pack(fill="x")
+        header.columnconfigure(0, weight=1)
+        ui.Label(header, text=tr("launcher.brand"), font=("", 16, "bold")).grid(row=0, column=0, sticky="w")
+        ui.Label(header, text=tr("launcher.subtitle"), wraplength=760).grid(row=1, column=0, sticky="ew", pady=(6, 12))
+        language_row = ui.Frame(header)
+        language_row.grid(row=2, column=0, sticky="w")
         ui.Label(language_row, text=tr("label.language")).pack(side="left", padx=(0, 8))
         self.language.set(language_label(current_language()))
         language_combo = ui.Choice(language_row, textvariable=self.language, values=language_options(), width=14, state="readonly")
         language_combo.pack(side="left")
         language_combo.bind("<<ComboboxSelected>>", self._change_language)
+        from film_foundry.ui.theme import current_theme
+        self.theme_display = ui.TextValue(value=tr("theme." + current_theme()))
+        self.theme_keys = {tr("theme." + key): key for key in ("dark", "ivory")}
+        self.theme_combo = ui.Choice(language_row, textvariable=self.theme_display, values=tuple(self.theme_keys), state="readonly", width=10)
+        self.theme_combo.pack(side="left", padx=(12, 0))
+        self.theme_combo.bind("<<ComboboxSelected>>", self._change_theme)
 
-        row = 3
+        scroll = QtWidgets.QScrollArea(outer._content_widget())
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer._ensure_pack_layout().addWidget(scroll, 1)
+        body = ui.Frame(outer, padding=(20, 8, 20, 12))
+        scroll.setWidget(body.qt)
+        body.qt.show()
+        body.columnconfigure(0, weight=1)
+
+        row = 0
         for tool_id, name_key, description_key, module_name in TOOLS:
-            card = ui.Frame(shell, padding=(0, 8))
-            card.grid(row=row, column=0, sticky="ew")
-            card.columnconfigure(0, weight=1)
-            ui.Label(card, text=tr(name_key), font=("", 10, "bold")).grid(row=0, column=0, sticky="w")
-            ui.Label(card, text=tr(description_key), wraplength=500).grid(row=1, column=0, sticky="w", pady=(2, 0))
-            ui.Button(card, text=tr("launcher.open"), command=lambda tool=tool_id, module=module_name: self._open_tool(tool, module)).grid(
-                row=0,
-                column=1,
-                rowspan=2,
-                sticky="e",
-                padx=(12, 0),
-            )
+            card = ui.Frame(body, padding=(14, 12))
+            card.qt.setObjectName("launcherCard")
+            card.qt.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
+            card.grid(row=row, column=0, sticky="ew", pady=(0, 8))
             row += 1
+            card.columnconfigure(0, weight=1)
+            ui.Label(card, text=tr(name_key), font=("", 11, "bold")).grid(row=0, column=0, sticky="w")
+            note = ui.Label(card, text=tr(description_key), wraplength=640)
+            note.qt.setObjectName("launcherNote")
+            note.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+            ui.Button(
+                card,
+                text=tr("launcher.open"),
+                command=lambda tool=tool_id, module=module_name: self._open_tool(tool, module),
+            ).grid(row=0, column=1, sticky="e", padx=(16, 0))
 
-        ui.Separator(shell).grid(row=row, column=0, sticky="ew", pady=(12, 8))
+        toolkit_frame = ui.Group(body, text=tr("launcher.toolkits"), padding=(12, 10))
+        toolkit_frame.grid(row=row, column=0, sticky="ew", pady=(8, 8))
         row += 1
-        toolkit_frame = ui.Group(shell, text=tr("launcher.toolkits"), padding=10)
-        toolkit_frame.grid(row=row, column=0, sticky="ew", pady=(0, 10))
         toolkit_frame.columnconfigure(1, weight=1)
         for index, toolkit in enumerate(registered_media_toolkits()):
             status = str(toolkit.status)
@@ -112,30 +130,33 @@ class FoundryLauncher:
             desc_key = f"media.{toolkit.key}.desc"
             localized_name = tr(name_key) if tr(name_key) != name_key else toolkit.label
             localized_desc = tr(desc_key) if tr(desc_key) != desc_key else toolkit.description
-            ui.Label(toolkit_frame, text=localized_name, font=("", 10, "bold")).grid(row=index, column=0, sticky="w", pady=3)
-            ui.Label(
-                toolkit_frame,
-                text=localized_desc,
-                wraplength=440,
-            ).grid(row=index, column=1, sticky="w", padx=(10, 10), pady=3)
-            ui.Label(toolkit_frame, text=label).grid(row=index, column=2, sticky="e", pady=3)
-        row += 1
+            ui.Label(toolkit_frame, text=localized_name, font=("", 10, "bold")).grid(row=index, column=0, sticky="nw", padx=(0, 12), pady=4)
+            note = ui.Label(toolkit_frame, text=localized_desc, wraplength=520)
+            note.qt.setObjectName("launcherNote")
+            note.grid(row=index, column=1, sticky="ew", pady=4)
+            status_label = ui.Label(toolkit_frame, text=label, anchor="e")
+            status_label.qt.setMinimumWidth(64)
+            status_label.grid(row=index, column=2, sticky="e", padx=(12, 0), pady=4)
 
-        ui.Separator(shell).grid(row=row, column=0, sticky="ew", pady=(4, 8))
-        row += 1
-        folder_frame = ui.Group(shell, text=tr("launcher.folders"), padding=10)
-        folder_frame.grid(row=row, column=0, sticky="ew", pady=(0, 10))
+        folder_frame = ui.Group(body, text=tr("launcher.folders"), padding=(12, 10))
+        folder_frame.grid(row=row, column=0, sticky="ew", pady=(4, 0))
         for index, (label_key, path) in enumerate(FOLDERS):
             ui.Button(folder_frame, text=tr(label_key), command=lambda target=path: self._open_folder(target)).grid(
                 row=0,
                 column=index,
                 sticky="ew",
-                padx=(0 if index == 0 else 6, 0),
+                padx=(0 if index == 0 else 8, 0),
             )
             folder_frame.columnconfigure(index, weight=1)
 
-        row += 1
-        ui.Label(shell, textvariable=self.status, wraplength=660).grid(row=row, column=0, sticky="ew")
+        footer = ui.Frame(outer, padding=(20, 4, 20, 14))
+        footer.pack(fill="x")
+        ui.Label(footer, textvariable=self.status, wraplength=700).pack(side="left",fill="x",expand=True)
+        from film_foundry.ui.about import show_about
+        self.about_button=ui.Button(footer,text="关于" if current_language()=="zh_CN" else "About",command=lambda:show_about(self.root.qt))
+        self.about_button.qt.setObjectName("aboutLink")
+        self.about_button.pack(side="right")
+        self.about_button.qt.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,QtWidgets.QSizePolicy.Policy.Fixed)
 
     def _change_language(self, _event=None) -> None:
         set_language(language_from_label(self.language.get()))
@@ -144,6 +165,19 @@ class FoundryLauncher:
             child.destroy()
         self.status.set(tr("launcher.status.ready"))
         self._build()
+        self._save_display_preferences(language=current_language())
+
+    def _change_theme(self, _event=None) -> None:
+        from film_foundry.ui.theme import apply_theme, current_theme
+        apply_theme(self.theme_keys[self.theme_display.get()])
+        self._save_display_preferences(theme=current_theme())
+
+    def _save_display_preferences(self, **values) -> None:
+        from film_foundry.ui.preferences import save_preferences
+        try:
+            save_preferences(**values)
+        except OSError as exc:
+            self.status.set(f"{tr('status.ui_preferences_failed')}: {exc}")
 
     def _open_tool(self, tool_id: str, module_name: str) -> None:
         if getattr(sys, "frozen", False):
@@ -175,9 +209,9 @@ class FoundryLauncher:
 
 def run_tool(tool_id: str) -> None:
     if tool_id == "main":
-        from film_foundry.tools.run_darkroom_gui import DarkroomPanel
+        from film_foundry.tools.run_desktop_gui import DesktopPanel
 
-        DarkroomPanel().run()
+        DesktopPanel().run()
     elif tool_id == "film":
         from film_foundry.tools.run_film_material_editor import FilmMaterialEditor
 
@@ -232,12 +266,39 @@ def release_self_check() -> None:
     if missing:
         raise RuntimeError(f"Missing bundled release resources: {missing}")
 
+    # Optional catalog data is encoded outside presets, so ordinary preset
+    # checks alone cannot detect an incomplete portable/wheel deployment.
+    from film_foundry.app.finder_resources import payload
+    from film_foundry.model.config import DarkroomConfig
+    resources = payload()
+    entries = resources["collection"]["entries"]
+    if len(entries) != 8:
+        raise RuntimeError("Incomplete optional catalog resources")
+    for entry in entries:
+        DarkroomConfig.from_dict(resources["desktop"]["film"][entry["material_id"]])
+        DarkroomConfig.from_dict(resources["desktop"]["scanner"][entry["scanner_id"]])
+
     # These imports are launched as separate tools in the frozen build and must
     # remain reachable even though the launcher does not instantiate them here.
-    from film_foundry.tools.run_darkroom_gui import DarkroomPanel  # noqa: F401
+    from film_foundry.tools.run_desktop_gui import DesktopPanel  # noqa: F401
     from film_foundry.tools.run_develop_process_editor import DevelopProcessEditor  # noqa: F401
     from film_foundry.tools.run_film_material_editor import FilmMaterialEditor  # noqa: F401
     from film_foundry.tools.run_scanner_render_editor import ScannerRenderEditor  # noqa: F401
+
+    # Exercise native array/image dependencies as well as Python imports.
+    import numpy as np
+    from film_foundry.core.engine import process_array
+    from film_foundry.model.config import merge_config_presets
+    target = np.broadcast_to(np.linspace(0.01, 0.9, 32, dtype=np.float32)[None, :, None], (24, 32, 3)).copy()
+    for offset in (0, 3):
+        config = merge_config_presets(
+            DarkroomConfig.from_json(required[offset]),
+            DarkroomConfig.from_json(required[offset + 2]),
+            DarkroomConfig.from_json(required[offset + 1]),
+        )
+        rendered = process_array(target, config, rng=np.random.default_rng(40))
+        if rendered.shape != target.shape or not np.isfinite(rendered).all():
+            raise RuntimeError("Packaged image workflow failed")
 
 
 def main() -> None:

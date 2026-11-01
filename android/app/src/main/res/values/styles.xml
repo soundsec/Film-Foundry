@@ -1,0 +1,20 @@
+<resources>
+    <style name="Theme.FilmFoundry.Dark" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#D7B278</item>
+        <item name="android:windowBackground">#141414</item>
+        <item name="android:colorBackground">#141414</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+    <style name="Theme.FilmFoundry.Ivory" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#815C2E</item>
+        <item name="android:windowBackground">#F2EEE5</item>
+        <item name="android:colorBackground">#F2EEE5</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

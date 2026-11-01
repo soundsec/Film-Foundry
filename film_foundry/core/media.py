@@ -38,6 +38,9 @@ def config_development_process(config: DarkroomConfig) -> str:
     preset behavior, except that a legacy develop preset explicitly declaring
     reversal/slide may still route a negative material through reversal.
     """
+    if getattr(config.chemistry, "process_steps", None) is not None:
+        from film_foundry.core.film_process.recipe import program_from_develop_recipe
+        return "reversal" if program_from_develop_recipe(config.chemistry).output_polarity == "positive" else "negative"
     program_key = normalized_process(getattr(config.chemistry, "program_key", "auto"))
     if program_key in {"bw_reversal", "color_reversal"}:
         return "reversal"
@@ -64,6 +67,9 @@ def is_positive_process(config: DarkroomConfig) -> bool:
 
 def is_monochrome_process(config: DarkroomConfig) -> bool:
     """Return whether the selected program produces a monochrome silver image."""
+    if getattr(config.chemistry, "process_steps", None) is not None:
+        from film_foundry.contracts.process_steps import validate_process_steps
+        return is_monochrome_material(config) or not any(step["action"] == "develop_color" for step in validate_process_steps(config.chemistry.process_steps))
     mode = normalized_process(getattr(config, "mode", ""))
     program = normalized_process(getattr(config.chemistry, "program_key", "auto"))
     color_process = normalized_process(getattr(config.film, "color_process", ""))

@@ -240,6 +240,32 @@ def warn_outside_comfort_zone(estimate: PipelineMemoryEstimate) -> None:
     )
 
 
+def estimate_scan_memory(
+    width: int, height: int, *, resident_bytes: int, decode_peak_bytes: int,
+    preview_long_edge: int | None = None, retain_stages: bool = False,
+) -> PipelineMemoryEstimate:
+    """Plan the existing PC scanner, including full archive decode before preview.
+
+    This is a conservative planning heuristic, not measured RSS. It does not
+    reuse the phone's reduced model or change numerical scheduling.
+    """
+    work_width, work_height = dimensions_for_long_edge(width, height, preview_long_edge)
+    if resident_bytes < 0 or decode_peak_bytes < 0:
+        raise ValueError("Archive memory sizes must be nonnegative.")
+    unit = work_width * work_height * _RGB_FLOAT32_BYTES_PER_PIXEL
+    # Source + validation/conversion, or source + scanner temporaries/stages
+    # and the returned density preview. Spectral components count in resident.
+    peak = max(decode_peak_bytes, resident_bytes + unit * (20 if retain_stages else 16))
+    return PipelineMemoryEstimate(
+        source_width=width, source_height=height,
+        work_width=work_width, work_height=work_height,
+        retained_state_bytes=resident_bytes + unit * (8 if retain_stages else 2),
+        planning_peak_bytes=peak,
+        retention_policy="scan_with_stages" if retain_stages else "scan_output_only",
+        model_version="pc_scan_header_preflight_v1",
+    )
+
+
 def enforce_memory_budget(
     estimate: PipelineMemoryEstimate,
     budget_mb: float | None,

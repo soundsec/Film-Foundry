@@ -7,6 +7,10 @@ from dataclasses import dataclass
 import numpy as np
 
 from film_foundry.core.execution_topology import reference_execution_enabled
+from film_foundry.core.material_geometry import MaterialGeometry
+from film_foundry.contracts.spectral_exposure import SpectralExposureProfile
+from film_foundry.contracts.spectral_optics import SpectralMaterialProfile
+from film_foundry.contracts.material_snapshot import MaterialSnapshot
 
 
 def _vector(values, length: int, name: str) -> np.ndarray:
@@ -414,6 +418,10 @@ class FilmProcessState:
     original_developability: np.ndarray | None = None
     auxiliary_remaining: float = 1.0
     masking_coupler_remaining: float = 1.0
+    material_geometry: MaterialGeometry | None = None
+    spectral_exposure_profile: SpectralExposureProfile | None = None
+    spectral_material_profile: SpectralMaterialProfile | None = None
+    material_snapshot: MaterialSnapshot | None = None
 
     def copy(self) -> "FilmProcessState":
         return FilmProcessState(
@@ -434,10 +442,28 @@ class FilmProcessState:
             ),
             auxiliary_remaining=float(self.auxiliary_remaining),
             masking_coupler_remaining=float(self.masking_coupler_remaining),
+            material_geometry=self.material_geometry,
+            spectral_exposure_profile=self.spectral_exposure_profile,
+            spectral_material_profile=self.spectral_material_profile,
+            material_snapshot=self.material_snapshot,
         )
 
     def validate(self) -> None:
+        if self.material_snapshot is not None and not isinstance(self.material_snapshot, MaterialSnapshot):
+            raise ValueError("material_snapshot must be a MaterialSnapshot")
+        if self.spectral_material_profile is not None and not isinstance(self.spectral_material_profile, SpectralMaterialProfile):
+            raise ValueError("spectral_material_profile must be a SpectralMaterialProfile")
         shape = np.asarray(self.halide).shape
+        if self.spectral_exposure_profile is not None:
+            if not isinstance(self.spectral_exposure_profile, SpectralExposureProfile):
+                raise ValueError("spectral_exposure_profile must be a SpectralExposureProfile")
+            if not shape or shape[-1] != self.spectral_exposure_profile.layer_count:
+                raise ValueError("latent pool layers do not match spectral_exposure_profile")
+        if self.material_geometry is not None:
+            if not isinstance(self.material_geometry, MaterialGeometry):
+                raise ValueError("material_geometry must be a MaterialGeometry")
+            if tuple(shape[:2]) != self.material_geometry.full_shape:
+                raise ValueError("latent pool dimensions do not match material_geometry")
         if not shape or any(int(length) <= 0 for length in shape):
             raise ValueError("film process pools must have non-empty dimensions")
         for name in ("halide", "developability", "metallic_silver"):

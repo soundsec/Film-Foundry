@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
+  <title>Film Foundry — film gate and light</title>
+  <path id="background" fill="#1D1916" d="M24 0H84Q108 0 108 24V84Q108 108 84 108H24Q0 108 0 84V24Q0 0 24 0Z"/>
+  <g id="foreground">
+    <path fill="#D7AD70" fill-rule="evenodd" d="M30 26H78Q84 26 84 32V76Q84 82 78 82H30Q24 82 24 76V32Q24 26 30 26Z M30 39H78V69H30Z M32 30H40V35H32Z M50 30H58V35H50Z M68 30H76V35H68Z M32 73H40V78H32Z M50 73H58V78H50Z M68 73H76V78H68Z"/>
+    <path fill="#F4EADF" d="M38 64L61 43H70L47 64Z"/>
+  </g>
+</svg>

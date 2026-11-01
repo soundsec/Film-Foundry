@@ -183,6 +183,16 @@ def get_scan_pipeline(medium: DevelopedMedium) -> MediaPipeline:
     pipeline = _PIPELINES.get(key)
     if pipeline is not None:
         return pipeline
+    # Phone ordered programs retain their program key as process identity.
+    # Dispatch only declared transmissive film positives, without rewriting the medium.
+    if (
+        key in {"color_reversal", "bw_reversal", "custom"}
+        and getattr(medium, "medium_family", None) == "film"
+        and getattr(medium, "view_mode", None) == "transmissive"
+        and getattr(medium, "image_polarity", None) == "positive"
+        and "positive_transparency_scan" in getattr(medium, "compatible_interpreters", ())
+    ):
+        return _PIPELINES["reversal"]
     if key.endswith("_negative") or str(getattr(medium, "image_polarity", "")).lower() == "negative":
         return _PIPELINES["negative"]
     return _PIPELINES["unsupported"]

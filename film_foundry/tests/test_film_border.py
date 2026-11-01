@@ -77,7 +77,7 @@ def test_film_border_sprocket_layout_does_not_change_formed_pixels():
     assert layout.pipeline_status == "interface_only"
 
 
-def test_edge_imprint_adds_super_bright_linear_exposure_without_mutating_input():
+def test_edge_imprint_adds_bounded_bright_linear_exposure_without_mutating_input():
     image = np.full((48, 96, 3), 0.12, dtype=np.float32)
     original = image.copy()
     flashed, mask = apply_edge_imprint_to_linear(
@@ -91,7 +91,7 @@ def test_edge_imprint_adds_super_bright_linear_exposure_without_mutating_input()
     )
     assert np.array_equal(image, original)
     assert mask is not None
-    assert float(np.max(flashed)) > 10.0
+    assert 1.0 < float(np.max(flashed)) < 10.0
     assert float(np.mean(flashed[-10:])) > float(np.mean(flashed[:10]))
     empty, empty_mask = apply_edge_imprint_to_linear(
         image,
@@ -176,3 +176,39 @@ def test_film_border_validation_rejects_unknown_keys():
         validate_film_border_config(FilmBorderConfig(format_key="super8"))
     with pytest.raises(ValueError, match="imprint_style"):
         validate_film_border_config(FilmBorderConfig(imprint_style="rgb_watermark"))
+
+
+def test_factory_label_is_outside_sprockets_and_120_has_no_holes_even_with_override():
+    for side in ("top", "bottom"):
+        config = FilmBorderConfig(enabled=True, imprint_style="laser_dot", imprint_side=side, imprint_text="TEST")
+        layout = resolve_film_border_layout(config, (240, 360, 3))
+        marks_y = layout.imprint.origin_xy[1]
+        selected = [h.normalized_rect for h in layout.sprocket_holes if (h.normalized_rect[1] < .5) == (side == "top")]
+        assert all(marks_y < h[1] if side == "top" else marks_y > h[3] for h in selected)
+    assert not resolve_film_border_layout(FilmBorderConfig(enabled=True, format_key="120", sprocket_count=8), (300, 300, 3)).sprocket_holes
+
+
+def test_stencil_code_uses_bounded_row_major_bits_and_survives_recipe_sharing():
+    from film_foundry.contracts.edge_marks import EdgeMarkPattern
+    from film_foundry.contracts.config_share import encode_config_share, decode_config_share
+    pattern = EdgeMarkPattern.decode("FFEM1:3x2:a8")
+    assert pattern.encode() == "FFEM1:3x2:A8"
+    assert [[pattern.ink(x, y) for x in range(3)] for y in range(2)] == [[True, False, True], [False, True, False]]
+    config = FilmBorderConfig(factory_pattern_top=pattern.encode(), factory_pattern_bottom="FFEM1:3x2:54", factory_pattern_linked=False, factory_flip_top=True)
+    restored = DarkroomConfig.from_dict(decode_config_share(encode_config_share({"film_border": asdict(config)})))
+    assert restored.film_border == config
+    for invalid in ("FFEM1:3x2:A9", "FFEM1:129x1:00", "FFEM1:3x2:A", "not-a-code"):
+        with pytest.raises(ValueError):
+            EdgeMarkPattern.decode(invalid)
+
+
+def test_stencil_slots_are_outside_holes_and_independent_from_camera_imprint():
+    config = FilmBorderConfig(enabled=True, factory_pattern_top="FFEM1:3x2:A8", factory_pattern_bottom="FFEM1:3x2:54", factory_pattern_linked=False, factory_flip_top=True)
+    layout = resolve_film_border_layout(config, (240, 360, 3))
+    top, bottom = layout.factory_edges
+    assert (top.pattern_code, bottom.pattern_code) == ("FFEM1:3x2:A8", "FFEM1:3x2:54")
+    assert top.flip and not bottom.flip and layout.imprint is None
+    assert all(top.normalized_rect[3] <= hole.normalized_rect[1] for hole in layout.sprocket_holes if hole.normalized_rect[1] < .5)
+    assert all(bottom.normalized_rect[1] >= hole.normalized_rect[3] for hole in layout.sprocket_holes if hole.normalized_rect[1] > .5)
+    config.factory_pattern_linked = True
+    assert resolve_film_border_layout(config, (240, 360, 3)).factory_edges[1].pattern_code == top.pattern_code

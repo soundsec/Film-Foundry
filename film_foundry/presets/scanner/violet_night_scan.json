@@ -1,0 +1,102 @@
+{
+  "scanner": {
+    "remove_base_mask": true,
+    "print_mapping_mode": "printlike",
+    "scan_normalize": true,
+    "scan_normalize_strength": 1.0,
+    "scan_normalize_mode": "luma",
+    "scan_black_percentile": 0.25,
+    "scan_white_percentile": 99.7,
+    "scan_saturation": 1.5,
+    "tone_curve": [
+      [
+        0,
+        0
+      ],
+      [
+        0.18,
+        0.1
+      ],
+      [
+        0.5,
+        0.46
+      ],
+      [
+        0.8,
+        0.88
+      ],
+      [
+        1,
+        1
+      ]
+    ],
+    "color_curve_rgb": [
+      [
+        [
+          0,
+          0
+        ],
+        [
+          0.2,
+          0.24
+        ],
+        [
+          0.5,
+          0.6
+        ],
+        [
+          0.8,
+          0.9
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          0.2,
+          0.1
+        ],
+        [
+          0.5,
+          0.38
+        ],
+        [
+          0.8,
+          0.72
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          0.2,
+          0.29
+        ],
+        [
+          0.5,
+          0.64
+        ],
+        [
+          0.8,
+          0.9
+        ],
+        [
+          1,
+          1
+        ]
+      ]
+    ]
+  }
+}

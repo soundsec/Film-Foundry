@@ -17,7 +17,7 @@ from typing import Iterator
 OPTIMIZED_TOPOLOGY = "optimized"
 REFERENCE_TOPOLOGY = "reference"
 EXECUTION_TOPOLOGIES = (OPTIMIZED_TOPOLOGY, REFERENCE_TOPOLOGY)
-REFERENCE_TOPOLOGY_VERSION = 7
+REFERENCE_TOPOLOGY_VERSION = 9
 
 _EXECUTION_TOPOLOGY: ContextVar[str] = ContextVar(
     "film_foundry_execution_topology",

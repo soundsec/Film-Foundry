@@ -90,11 +90,27 @@
     "granularity_sigma": [
       0.018,
       0.017,
-      0.020
+      0.02
     ],
     "grain_density_correlation_radius": 0.0011,
     "halation_gaussian_amplitude": 0.64,
     "halation_exponential_amplitude": 0.36,
-    "halation_exponential_radius": 0.014
+    "halation_exponential_radius": 0.014,
+    "cross_process_layer_balance": [
+      0.98,
+      1.03,
+      1.0
+    ],
+    "cross_process_dye_coupling": 0.97,
+    "cross_process_dye_stability": 0.98,
+    "cross_process_silver_development": 0.96,
+    "cross_process_activation": 0.97,
+    "cross_process_halide_fixing": 0.97,
+    "auxiliary_layer_amount": 1.0,
+    "auxiliary_layer_density_rgb": [
+      0.08,
+      0.07,
+      0.06
+    ]
   }
 }

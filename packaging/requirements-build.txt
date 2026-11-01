@@ -1,0 +1,9 @@
+# Windows desktop 0.4.0 build versions; runtime requirements stay in ../requirements.txt.
+numpy==2.4.4
+opencv-python==4.13.0.92
+Pillow==12.2.0
+python-lcms2==0.1.1
+PySide6-Essentials==6.11.1
+shiboken6==6.11.1
+pyinstaller==6.20.0
+pyinstaller-hooks-contrib==2026.5

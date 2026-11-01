@@ -7,7 +7,7 @@
 - LookAdjustConfig：GUI/脚本中的一次性微调
 - OutputConfig：文件输出
 - ProcessingConfig：处理质量与内部工作尺寸
-- FilmBorderConfig：齿孔/片边/边字布局契约；当前不进入形成或扫描流程
+- FilmBorderConfig：齿孔/片边布局及厂印配置；相机打印进入曝光，桌面片边仍仅解析布局
 
 from_dict() 会迁移旧 preset 中混放在 film/output/top-level 的字段。
 """
@@ -18,12 +18,74 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 import copy
+import math
 
 from film_foundry.core.atomic_io import strict_json_load
+from film_foundry.contracts.spectral_exposure import SpectralExposureProfile
+from film_foundry.contracts.spectral_optics import SpectralMaterialProfile, SpectralObservationProfile
 
 
 Matrix3 = tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
 Vector3 = tuple[float, float, float]
+SCANNER_COLOR_RESPONSE_MODELS = ("simple_channel_adjust_v1",)
+
+
+def normalize_scanner_tone_curve(value: object, *, field_name: str = "scanner.tone_curve") -> tuple[tuple[float, float], ...] | None:
+    """Output brightness proxy curve, independent of RGB channel curves."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) < 2:
+        raise ValueError(f"{field_name} must contain at least two control points.")
+    points = []
+    for point in value:
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError(f"{field_name} points must be [x, y] pairs.")
+        x, y = map(float, point)
+        if not math.isfinite(x) or not math.isfinite(y) or not 0 <= x <= 1 or points and x <= points[-1][0]:
+            raise ValueError(f"{field_name} needs finite values and strictly increasing x in [0, 1].")
+        points.append((x, y))
+    return tuple(points)
+
+
+def normalize_scanner_color_curve_rgb(
+    value: object,
+    *,
+    field_name: str = "scanner.color_curve_rgb",
+) -> tuple[
+    tuple[tuple[float, float], ...],
+    tuple[tuple[float, float], ...],
+    tuple[tuple[float, float], ...],
+] | None:
+    """Normalize optional per-channel piecewise RGB curves."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise ValueError(f"{field_name} must contain three channel curves.")
+    channels: list[tuple[tuple[float, float], ...]] = []
+    for index, channel in enumerate(value):
+        if not isinstance(channel, (list, tuple)) or len(channel) < 2:
+            raise ValueError(
+                f"{field_name}[{index}] must contain at least two control points."
+            )
+        points: list[tuple[float, float]] = []
+        previous_x: float | None = None
+        for point in channel:
+            if not isinstance(point, (list, tuple)) or len(point) != 2:
+                raise ValueError(
+                    f"{field_name}[{index}] points must be [x, y] pairs."
+                )
+            x_value = float(point[0])
+            y_value = float(point[1])
+            if not math.isfinite(x_value) or not math.isfinite(y_value):
+                raise ValueError(f"{field_name}[{index}] points must be finite.")
+            if not (0.0 <= x_value <= 1.0) or previous_x is not None and x_value <= previous_x:
+                raise ValueError(
+                    f"{field_name}[{index}] x values must be strictly increasing in [0, 1]."
+                )
+            previous_x = x_value
+            points.append((x_value, y_value))
+        channels.append(tuple(points))
+    return (channels[0], channels[1], channels[2])
 
 
 @dataclass(slots=True)
@@ -35,6 +97,21 @@ class FilmStockConfig:
     medium_process: str = "negative"
     image_polarity: str = "negative"
     color_process: str = "color"
+
+    # None preserves historical radii relative to the digital short edge.
+    # A positive reference length opts into material-space projection at
+    # formation; old radius values then describe fractions of this mm extent.
+    spatial_reference_short_edge_mm: float | None = None
+
+    # Optional exposure-only spectra. Dye optics and scan remain independent.
+    spectral_exposure_profile: SpectralExposureProfile | None = None
+    spectral_material_profile: SpectralMaterialProfile | None = None
+
+    def __post_init__(self) -> None:
+        if self.spectral_material_profile is not None:
+            self.spectral_material_profile = SpectralMaterialProfile.from_value(self.spectral_material_profile)
+        if self.spectral_exposure_profile is not None:
+            self.spectral_exposure_profile = SpectralExposureProfile.from_value(self.spectral_exposure_profile)
 
     halation_strength: float = 0.12
     halation_threshold: float = 0.72
@@ -87,9 +164,9 @@ class FilmStockConfig:
     shoulder_point: float = 0.72
     saturation: float = 0.96
 
-    # Legacy image-space grain fields.
-    # The current electronic-negative pipeline uses density_grain.py with
-    # granularity_sigma and grain_density_correlation_radius.
+    # grain_strength/midtone fields serve legacy image-space grain helpers.
+    # grain_scales and grain_scale_weights also describe the active multiscale
+    # density_grain model, with granularity_sigma/correlation_radius.
     grain_strength: float = 0.035
     grain_scales: tuple[float, ...] = (0.0012, 0.0035, 0.010)
     grain_scale_weights: tuple[float, ...] = (0.58, 0.30, 0.12)
@@ -248,11 +325,17 @@ class DevelopRecipeConfig:
     medium_process: str = "negative"
     process_mode: str = "normal_negative"
     program_key: str = "auto"
+    process_steps: tuple[dict[str, object], ...] | None = None
     frame_size: str = "35mm"
+    # Optional custom exposed-frame long edge. Requires the material's
+    # spatial reference above; None resolves frame_size only in physical mode.
+    frame_long_edge_mm: float | None = None
     time_min: float = 8.0
     temperature_c: float = 20.0
     concentration: float = 1.0
     agitation: float = 1.0
+    # Optional total active agitation seconds per bath; None preserves historical intensity-only kinetics.
+    agitation_time_s: float | None = None
     push_stops: float = 0.0
     developer_exhaustion: float = 0.0
     fixer_exhaustion: float = 0.0
@@ -284,6 +367,10 @@ class DevelopRecipeConfig:
     # When set, pattern sampling uses this seed instead of the frame RNG so a
     # batch can share one leak identity.  It is not a sidecar group contract.
     light_leak_identity_seed: int | None = None
+    # Shared roll/batch identity for leak, fixed gate obstructions and bath
+    # defects. None preserves legacy array-level random streams; application
+    # batches freeze this once. Grain/sensor noise remain frame-specific.
+    incident_identity_seed: int | None = None
     chemical_stain: float = 0.0
     uneven_development: float = 0.0
     # Explicit gelatin/emulsion damage severity caused by abrupt bath
@@ -302,9 +389,9 @@ class DevelopRecipeConfig:
     exposure_occlusion_hair: float = 0.0
     exposure_occlusion_insect: float = 0.0
     exposure_occlusion_debris: float = 0.0
-    # When set, hair and insect geometry use this seed instead of the frame
-    # RNG so they stay stuck to the sheet across a batch. Dust and debris
-    # remain per-frame. None uses a fixed built-in identity.
+    # Overrides the shared gate identity. With an identified batch all four
+    # obstructions use it; legacy None batches keep per-frame dust/debris and
+    # fixed hair/insects. None inherits the batch or historical built-in seed.
     exposure_occlusion_identity_seed: int | None = None
     # Default-off reduced adjacency kinetics. A single provisional first-
     # development estimate generates one bounded, near-zero-mean local rate
@@ -344,6 +431,11 @@ class ScannerConfig:
     """扫描/打印解释。"""
 
     interpretation_mode: str = "auto"
+    spectral_observation_profile: SpectralObservationProfile | None = None
+
+    def __post_init__(self) -> None:
+        if self.spectral_observation_profile is not None:
+            self.spectral_observation_profile = SpectralObservationProfile.from_value(self.spectral_observation_profile)
     # New scanner controls are orthogonal to the developed-medium identity.
     # ``auto`` remains a legacy/session compatibility mode; the main GUI writes
     # ``manual`` and treats the medium contract as a recommendation only.
@@ -394,6 +486,23 @@ class ScannerConfig:
     highlight_bias_softness: float = 0.18
     # 扫描/输出阶段的色彩浓度。它不改变底片染料密度，只改变正像解释。
     scan_saturation: float = 1.05
+    # Current observation color is parametric shift/bias/saturation/highlight
+    # gain, not a 3-D scanner LUT. Optional piecewise RGB curves may stack in
+    # two places: device_response_rgb on recorded scanner_raw after the
+    # response matrix, and color_curve_rgb after print-like mapping. None or
+    # identity keeps the historical path exactly.
+    color_response_model: str = "simple_channel_adjust_v1"
+    tone_curve: tuple[tuple[float, float], ...] | None = None
+    color_curve_rgb: tuple[
+        tuple[tuple[float, float], ...],
+        tuple[tuple[float, float], ...],
+        tuple[tuple[float, float], ...],
+    ] | None = None
+    device_response_rgb: tuple[
+        tuple[tuple[float, float], ...],
+        tuple[tuple[float, float], ...],
+        tuple[tuple[float, float], ...],
+    ] | None = None
 
     scan_normalize: bool = True
     # A normal negative scan should establish a useful display black/white
@@ -530,6 +639,17 @@ class FilmBorderConfig:
     sprocket_rows: str = "both"
     rebate_height_ratio: float = 0.23
     sprocket_count: int | None = None
+    factory_marks: bool = True
+    stock_label: str = ""
+    # Empty stencils retain the existing stock text; patterns replace the stock
+    # name area, while the frame number remains automatic. Flip is 180 degrees.
+    factory_pattern_top: str = ""
+    factory_pattern_bottom: str = ""
+    factory_pattern_linked: bool = True
+    factory_flip_top: bool = False
+    factory_flip_bottom: bool = False
+    factory_mark_type: str = "hard"
+    factory_mark_spread: float = 1.0
     imprint_style: str = "none"
     imprint_side: str = "bottom"
     imprint_text: str = ""
@@ -723,6 +843,18 @@ class DarkroomConfig:
             chemistry_data["process_layer_balance"] = tuple(
                 float(value) for value in chemistry_data["process_layer_balance"]
             )
+        if "process_steps" in chemistry_data:
+            from film_foundry.contracts.process_steps import validate_process_steps
+            chemistry_data["process_steps"] = validate_process_steps(chemistry_data["process_steps"])
+        # Phone's historical shorthand selects a program; it is not another chemistry schema.
+        phone_chemistry = chemistry_data.pop("chemistry", None)
+        if phone_chemistry is not None:
+            if phone_chemistry not in {"native", "cross"}:
+                raise ValueError("develop.chemistry must be native or cross")
+            if phone_chemistry == "cross" and not chemistry_data.get("process_steps") and chemistry_data.get("program_key", "auto") == "auto":
+                monochrome = film_data.get("color_process") in {"bw", "black_white", "monochrome"}
+                target_positive = film_data.get("image_polarity") != "positive"
+                chemistry_data["program_key"] = ("bw_reversal" if target_positive else "bw_negative") if monochrome else ("color_reversal" if target_positive else "color_negative")
         if "light_leak_identity_seed" in chemistry_data:
             identity_seed = chemistry_data["light_leak_identity_seed"]
             if identity_seed is None or str(identity_seed).strip() == "":
@@ -735,6 +867,14 @@ class DarkroomConfig:
                 chemistry_data["exposure_occlusion_identity_seed"] = None
             else:
                 chemistry_data["exposure_occlusion_identity_seed"] = int(occlusion_seed)
+        if "incident_identity_seed" in chemistry_data:
+            seed = chemistry_data["incident_identity_seed"]
+            if seed is None or str(seed).strip() == "":
+                chemistry_data["incident_identity_seed"] = None
+            elif isinstance(seed, bool) or str(int(seed)) != str(seed).strip() or not 0 <= int(seed) <= 0xFFFFFFFF:
+                raise ValueError("develop.incident_identity_seed must be an unsigned 32-bit integer or null")
+            else:
+                chemistry_data["incident_identity_seed"] = int(seed)
         if "sprocket_count" in film_border_data:
             sprocket_count = film_border_data["sprocket_count"]
             if sprocket_count is None or str(sprocket_count).strip() == "":
@@ -843,6 +983,21 @@ class DarkroomConfig:
                 tuple(float(value) for value in row)
                 for row in scanner_data["negative_channel_matrix"]
             )
+        if "tone_curve" in scanner_data:
+            scanner_data["tone_curve"] = normalize_scanner_tone_curve(scanner_data["tone_curve"])
+        if "color_curve_rgb" in scanner_data:
+            scanner_data["color_curve_rgb"] = normalize_scanner_color_curve_rgb(
+                scanner_data["color_curve_rgb"]
+            )
+        if "device_response_rgb" in scanner_data:
+            scanner_data["device_response_rgb"] = normalize_scanner_color_curve_rgb(
+                scanner_data["device_response_rgb"],
+                field_name="scanner.device_response_rgb",
+            )
+        if "color_response_model" in scanner_data:
+            scanner_data["color_response_model"] = str(
+                scanner_data["color_response_model"]
+            ).strip().lower() or "simple_channel_adjust_v1"
 
         if "preview_size" in output_data:
             output_data.setdefault("render_long_edge", output_data.pop("preview_size"))

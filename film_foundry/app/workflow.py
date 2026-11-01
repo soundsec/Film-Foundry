@@ -2,30 +2,27 @@
 
 Path planning, preset catalogs, batch records, and medium-file observation live
 here so CLI, the IDE script, and the Qt panel share one application layer.
-The panel still maps widgets and owns thread dispatch; CLI/IDE keep their own
-output naming and scan third-value contracts.
+Display strings and preview mosaics stay in the UI layer; CLI/IDE keep their
+own output naming and scan third-value contracts.
 """
 
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 
 import numpy as np
-from PIL import Image
 
-from film_foundry.core.accidents import LIGHT_LEAK_CONFIG_TEMPLATE_KEYS
-from film_foundry.core.film_border import (
-    FILM_BORDER_IMPRINT_SIDES,
-    FILM_BORDER_IMPRINT_STYLES,
-)
+from film_foundry.app.control import WorkflowControl
 from film_foundry.core.engine import (
     apply_optical_observation_snapshot,
     configure_scan_interpretation,
     develop_negative,
+    develop_negative_from_latent,
+    expose_image_to_latent,
     process_array,
     process_file,
     scan_medium_output,
@@ -53,6 +50,17 @@ from film_foundry.core.io_utils import (
     scan_output_stem,
 )
 from film_foundry.core.negative_io import load_developed_medium_for_scan
+from film_foundry.core.latent_io import (
+    LATENT_SUFFIX,
+    latent_identity_from_film,
+    load_exposed_latent,
+    save_exposed_latent,
+)
+from film_foundry.core.frame_identity import (
+    attach_frame_identity,
+    frame_identity_from_mapping,
+    normalize_frame_identity,
+)
 from film_foundry.core.preview import (
     negative_visual_preview,
     optical_density_visual_preview,
@@ -66,16 +74,20 @@ from film_foundry.core.sidecar import (
     transmission_raw_source_kind,
 )
 from film_foundry.core.states import DevelopedNegative
-from film_foundry.model.config import DarkroomConfig, merge_config_presets
+from film_foundry.contracts.config_share import decode_config_share, encode_config_share
+from film_foundry.contracts.data_kernel import CONFIG_SHARE_FIELDS
+from film_foundry.core.atomic_io import atomic_write_json
+from film_foundry.model.config import SCAN_LOOK_FIELDS, DarkroomConfig, merge_config_presets
 from film_foundry.model.session import (
     load_session,
-    preset_reference,
+    preset_reference as _session_preset_reference,
     preset_value_from_reference,
     save_session,
     session_payload,
 )
-from film_foundry.ui.i18n import current_language, language_label, set_language, tr
 from film_foundry.app.paths import app_root, resource_root
+from film_foundry.app.preset_catalog import CORE_DEVELOP_PRESETS, CORE_FILM_PRESETS, CORE_SCANNER_PRESETS
+from film_foundry.app.seasonal_collection import collection_ids, visible_builtin_names
 
 PROJECT_ROOT = app_root()
 RESOURCE_ROOT = resource_root()
@@ -89,16 +101,7 @@ USER_FILM_PRESET_DIR = USER_PRESET_DIR / "film"
 USER_DEVELOP_PRESET_DIR = USER_PRESET_DIR / "develop"
 USER_SCANNER_PRESET_DIR = USER_PRESET_DIR / "scanner"
 INTERNAL_PRESET_PREFIXES = ("diagnostic_", "accident_", "experimental_")
-MAIN_GUI_BUILTIN_DEVELOP_PRESETS = {
-    "standard_color_negative",
-    "standard_bw_negative",
-    "standard_color_reversal",
-    "standard_bw_reversal",
-    # Deliberately exposed as an advanced, explicitly labelled experiment:
-    # color-negative stock run through reversal processing, followed by a
-    # separate mask/dye bleach. This is not a standard silver-bleach variant.
-    "experimental_color_negative_clear_reversal",
-}
+MAIN_GUI_BUILTIN_DEVELOP_PRESETS = CORE_DEVELOP_PRESETS
 DEFAULT_INPUT_DIR = PROJECT_ROOT / "input_images"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
 DEFAULT_NEGATIVE_DIR = DEFAULT_OUTPUT_DIR / "negatives"
@@ -109,12 +112,22 @@ POSITIVE_SUFFIX = ".darkroom_positive.npz"
 SEED_STRATEGY_KEYS = ("random", "fixed", "path")
 
 
-@dataclass(frozen=True)
-class PreviewRequest:
-    token: int
-    mode: str
-    config: DarkroomConfig
-    source_path: Path
+def preset_reference(value, kind: str, user_dir: Path, builtin_dir: Path) -> dict:
+    reference=_session_preset_reference(value,kind,user_dir,builtin_dir)
+    if reference["source"]=="missing" and str(value) in collection_ids(kind):
+        from film_foundry.app.seasonal_collection import preset_path
+        reference.update(source="builtin",source_label="官方预设",path=str(preset_path(kind,str(value)).resolve()))
+    return reference
+
+
+def _workflow_stage(
+    control: WorkflowControl | None,
+    command: str,
+    stage: str,
+) -> None:
+    if control is None:
+        return
+    control.report(command, stage)
 
 
 def ensure_user_dirs() -> None:
@@ -124,6 +137,70 @@ def ensure_user_dirs() -> None:
     USER_FILM_PRESET_DIR.mkdir(parents=True, exist_ok=True)
     USER_DEVELOP_PRESET_DIR.mkdir(parents=True, exist_ok=True)
     USER_SCANNER_PRESET_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def safe_preset_stem(name: str) -> str:
+    """Filesystem-safe user preset name. Empty if nothing usable remains."""
+    stem: list[str] = []
+    for char in name.strip().lower():
+        if char.isalnum() or char in {"_", "-"}:
+            stem.append(char)
+        elif char.isspace():
+            stem.append("_")
+    return "".join(stem).strip("_-")
+
+
+def film_preset_payload(config: DarkroomConfig) -> dict:
+    return {
+        "mode": str(config.mode),
+        "medium": str(config.medium),
+        "film": asdict(config.film),
+    }
+
+
+def scanner_preset_payload(config: DarkroomConfig) -> dict:
+    look = {field_name: getattr(config.look, field_name) for field_name in SCAN_LOOK_FIELDS}
+    return {
+        "scanner": asdict(config.scanner),
+        "look": look,
+        "enable_subtractive": bool(config.enable_subtractive),
+    }
+
+
+def save_user_film_preset(
+    name: str,
+    config: DarkroomConfig,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """Write the film section of a runtime config as a user material preset."""
+    ensure_user_dirs()
+    stem = safe_preset_stem(name)
+    if not stem:
+        raise ValueError("film preset filename cannot be empty.")
+    path = USER_FILM_PRESET_DIR / f"{stem}.json"
+    if path.exists() and not overwrite:
+        raise FileExistsError(str(path))
+    atomic_write_json(path, film_preset_payload(config))
+    return path
+
+
+def save_user_scanner_preset(
+    name: str,
+    config: DarkroomConfig,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """Write the scanner/observation section as a user scan preset."""
+    ensure_user_dirs()
+    stem = safe_preset_stem(name)
+    if not stem:
+        raise ValueError("scanner preset filename cannot be empty.")
+    path = USER_SCANNER_PRESET_DIR / f"{stem}.json"
+    if path.exists() and not overwrite:
+        raise FileExistsError(str(path))
+    atomic_write_json(path, scanner_preset_payload(config))
+    return path
 
 
 def output_path_for(
@@ -270,15 +347,29 @@ def save_batch_run_record(
     return None
 
 
+def planned_developed_path(
+    input_path: Path,
+    output_root: Path,
+    *,
+    image_polarity: str,
+) -> Path:
+    """Destination for one developed archive before the medium exists."""
+    if output_root.suffix.lower() == ".npz":
+        return output_root
+    suffix = POSITIVE_SUFFIX if str(image_polarity).lower() == "positive" else NEGATIVE_SUFFIX
+    return output_root / f"{input_path.stem}{suffix}"
+
+
 def developed_path_for(
     input_path: Path,
     output_root: Path,
     medium: DevelopedNegative,
 ) -> Path:
-    if output_root.suffix.lower() == ".npz":
-        return output_root
-    suffix = POSITIVE_SUFFIX if str(medium.image_polarity).lower() == "positive" else NEGATIVE_SUFFIX
-    return output_root / f"{input_path.stem}{suffix}"
+    return planned_developed_path(
+        input_path,
+        output_root,
+        image_polarity=str(medium.image_polarity),
+    )
 
 
 def scanner_raw_path_for_negative(negative_path: Path) -> Path:
@@ -334,38 +425,6 @@ def gray_to_rgb(values: np.ndarray) -> np.ndarray:
     return np.repeat(values[..., None], 3, axis=-1)
 
 
-def labeled_preview_tile(image: np.ndarray, label: str, size: int = 360) -> np.ndarray:
-    image = np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0)
-    if image.ndim == 2:
-        image = gray_to_rgb(image)
-    tile = resize_to_long_edge(image, size)
-    canvas = np.full((size + 28, size, 3), 0.055, dtype=np.float32)
-    height, width = tile.shape[:2]
-    y = 28 + max(0, (size - height) // 2)
-    x = max(0, (size - width) // 2)
-    canvas[y : y + height, x : x + width] = tile
-
-    from PIL import ImageDraw
-
-    pil = Image.fromarray(np.round(canvas * 255.0).astype(np.uint8), mode="RGB")
-    draw = ImageDraw.Draw(pil)
-    draw.text((8, 7), label, fill=(235, 235, 228))
-    return np.asarray(pil, dtype=np.float32) / 255.0
-
-
-def preview_grid(items: list[tuple[str, np.ndarray]], tile_size: int = 360, columns: int = 2) -> np.ndarray:
-    tiles = [labeled_preview_tile(image, label, tile_size) for label, image in items]
-    if not tiles:
-        return np.zeros((tile_size, tile_size, 3), dtype=np.float32)
-    rows = []
-    for start in range(0, len(tiles), columns):
-        row_tiles = tiles[start : start + columns]
-        while len(row_tiles) < columns:
-            row_tiles.append(np.zeros_like(tiles[0]))
-        rows.append(np.hstack(row_tiles))
-    return np.vstack(rows).astype(np.float32)
-
-
 def resolved_seed_for(path: Path, config: DarkroomConfig) -> int | None:
     strategy = str(config.seed_strategy).lower()
     if strategy == "fixed":
@@ -373,87 +432,6 @@ def resolved_seed_for(path: Path, config: DarkroomConfig) -> int | None:
     if strategy == "path":
         return seed_from_path(path, 0 if config.random_seed is None else int(config.random_seed))
     return None
-
-
-def seed_strategy_labels() -> dict[str, str]:
-    return {
-        key: tr(f"seed.strategy.{key}")
-        for key in SEED_STRATEGY_KEYS
-    }
-
-
-def seed_strategy_label(key: str) -> str:
-    normalized = str(key).strip().lower()
-    return seed_strategy_labels().get(normalized, seed_strategy_labels()["random"])
-
-
-def seed_strategy_key_from_label(label: str) -> str:
-    requested = str(label)
-    for key, localized in seed_strategy_labels().items():
-        if requested == localized:
-            return key
-    normalized = requested.strip().lower()
-    return normalized if normalized in SEED_STRATEGY_KEYS else "random"
-
-
-def light_leak_template_labels() -> dict[str, str]:
-    return {
-        key: tr(f"light_leak.template.{key}")
-        for key in LIGHT_LEAK_CONFIG_TEMPLATE_KEYS
-    }
-
-
-def light_leak_template_label(key: str) -> str:
-    normalized = str(key).strip().lower()
-    labels = light_leak_template_labels()
-    return labels.get(normalized, labels["auto"])
-
-
-def light_leak_template_key_from_label(label: str) -> str:
-    requested = str(label)
-    for key, localized in light_leak_template_labels().items():
-        if requested == localized:
-            return key
-    normalized = requested.strip().lower()
-    return normalized if normalized in LIGHT_LEAK_CONFIG_TEMPLATE_KEYS else "auto"
-
-
-def imprint_style_labels() -> dict[str, str]:
-    return {key: tr(f"film_border.imprint.{key}") for key in FILM_BORDER_IMPRINT_STYLES}
-
-
-def imprint_style_label(key: str) -> str:
-    labels = imprint_style_labels()
-    normalized = str(key).strip().lower()
-    return labels.get(normalized, labels["none"])
-
-
-def imprint_style_key_from_label(label: str) -> str:
-    requested = str(label)
-    for key, localized in imprint_style_labels().items():
-        if requested == localized:
-            return key
-    normalized = requested.strip().lower()
-    return normalized if normalized in FILM_BORDER_IMPRINT_STYLES else "none"
-
-
-def imprint_side_labels() -> dict[str, str]:
-    return {key: tr(f"film_border.side.{key}") for key in FILM_BORDER_IMPRINT_SIDES}
-
-
-def imprint_side_label(key: str) -> str:
-    labels = imprint_side_labels()
-    normalized = str(key).strip().lower()
-    return labels.get(normalized, labels["bottom"])
-
-
-def imprint_side_key_from_label(label: str) -> str:
-    requested = str(label)
-    for key, localized in imprint_side_labels().items():
-        if requested == localized:
-            return key
-    normalized = requested.strip().lower()
-    return normalized if normalized in FILM_BORDER_IMPRINT_SIDES else "bottom"
 
 
 def rng_and_resolved_seed_for_develop(
@@ -494,13 +472,17 @@ def develop_image_file(
     config: DarkroomConfig,
     *,
     scaled_override: bool = False,
+    frame_identity: dict | None = None,
+    control: WorkflowControl | None = None,
 ) -> tuple[DevelopedNegative, Path, dict[str, str]]:
     """Develop one input image and write the polarity-aware medium bundle."""
+    identity = normalize_frame_identity(frame_identity)
     runtime_config, execution_axes = prepare_develop_runtime_config(
         config,
         scaled_override=scaled_override,
     )
     long_edge = processing_long_edge(config, scaled_override=scaled_override)
+    _workflow_stage(control, "develop", "loading")
     if execution_axes.scaling_enabled:
         image, input_color = load_image_with_color(
             input_path,
@@ -514,10 +496,13 @@ def develop_image_file(
         )
     image = resize_to_long_edge(image, long_edge)
     develop_rng, resolved_seed = rng_and_resolved_seed_for_develop(input_path, runtime_config)
+    _workflow_stage(control, "develop", "developing")
     medium = develop_negative(image, runtime_config, rng=develop_rng)
     medium.metadata["input_color"] = input_color
+    attach_frame_identity(medium.metadata, identity)
     del image
     developed_path = developed_path_for(input_path, developed_root, medium)
+    _workflow_stage(control, "develop", "saving")
     paths = save_developed_medium_at_path(
         input_path,
         developed_path,
@@ -526,6 +511,125 @@ def develop_image_file(
         resolved_seed=resolved_seed,
     )
     return medium, developed_path, paths
+
+
+def latent_path_for(input_path: Path, output_root: Path) -> Path:
+    if output_root.suffix.lower() == ".npz":
+        return output_root
+    return output_root / f"{input_path.stem}{LATENT_SUFFIX}"
+
+
+def iter_latent_files(path: Path) -> list[Path]:
+    if path.is_file() and path.name.lower().endswith(LATENT_SUFFIX):
+        return [path]
+    if path.is_dir():
+        return sorted(path.glob(f"*{LATENT_SUFFIX}"))
+    return []
+
+
+def expose_image_file(
+    input_path: Path,
+    latent_root: Path,
+    config: DarkroomConfig,
+    *,
+    scaled_override: bool = False,
+    frame_identity: dict | None = None,
+    control: WorkflowControl | None = None,
+) -> Path:
+    """Expose one input image to an undeveloped latent archive."""
+    identity_overlay = normalize_frame_identity(frame_identity)
+    runtime_config, execution_axes = prepare_develop_runtime_config(
+        config,
+        scaled_override=scaled_override,
+    )
+    long_edge = processing_long_edge(config, scaled_override=scaled_override)
+    _workflow_stage(control, "expose", "loading")
+    if execution_axes.scaling_enabled:
+        image, _input_color = load_image_with_color(
+            input_path,
+            decode_long_edge=long_edge,
+            input_icc_policy=runtime_config.input_icc_policy,
+        )
+    else:
+        image, _input_color = load_image_with_color(
+            input_path,
+            input_icc_policy=runtime_config.input_icc_policy,
+        )
+    image = resize_to_long_edge(image, long_edge)
+    expose_rng, _resolved_seed = rng_and_resolved_seed_for_develop(
+        input_path, runtime_config
+    )
+    _workflow_stage(control, "expose", "exposing")
+    state = expose_image_to_latent(image, runtime_config, rng=expose_rng)
+    del image
+    latent_path = latent_path_for(input_path, latent_root)
+    if latent_path.resolve() == Path(input_path).resolve():
+        raise ValueError("Latent output path must not overwrite the source input file.")
+    identity = latent_identity_from_film(runtime_config.film)
+    if runtime_config.chemistry.incident_identity_seed is not None:
+        identity["capture_incident_identity"]={"model":"roll_batch_incident_identity_v1","seed":int(runtime_config.chemistry.incident_identity_seed)}
+    attach_frame_identity(identity, identity_overlay)
+    _workflow_stage(control, "expose", "saving")
+    save_exposed_latent(latent_path, state, identity=identity)
+    return latent_path
+
+
+def develop_latent_file(
+    input_path: Path,
+    developed_root: Path,
+    config: DarkroomConfig,
+    *,
+    scaled_override: bool = False,
+    frame_identity: dict | None = None,
+    control: WorkflowControl | None = None,
+) -> tuple[DevelopedNegative, Path, dict[str, str]]:
+    """Develop an owned in-memory working state; preserve the source archive.
+
+    Output bundles are committed by the existing transactional exporter. Old
+    archives explicitly marked consumed remain rejected by the latent reader.
+    """
+    override = normalize_frame_identity(frame_identity)
+    runtime_config, _execution_axes = prepare_develop_runtime_config(
+        config,
+        scaled_override=scaled_override,
+    )
+    _workflow_stage(control, "develop_latent", "loading")
+    state, metadata = load_exposed_latent(input_path)
+    inherited = frame_identity_from_mapping(metadata)
+    develop_rng, resolved_seed = rng_and_resolved_seed_for_develop(
+        input_path, runtime_config
+    )
+    _workflow_stage(control, "develop_latent", "developing")
+    medium = develop_negative_from_latent(state, runtime_config, rng=develop_rng)
+    if isinstance(metadata.get("capture_incident_identity"),dict):
+        medium.metadata["film_process_model"]["capture_incident_identity"]=copy.deepcopy(metadata["capture_incident_identity"])
+    attach_frame_identity(
+        medium.metadata,
+        override if override is not None else inherited,
+    )
+    developed_path = developed_path_for(input_path, developed_root, medium)
+    _workflow_stage(control, "develop_latent", "saving")
+    paths = save_developed_medium_at_path(
+        input_path,
+        developed_path,
+        medium,
+        runtime_config,
+        resolved_seed=resolved_seed,
+    )
+    return medium, developed_path, paths
+
+
+def process_image_file(
+    input_path: Path,
+    output_path: Path,
+    config: DarkroomConfig,
+    *,
+    scaled_override: bool = False,
+    control: WorkflowControl | None = None,
+) -> Path:
+    """Run the full develop-and-scan file pipeline through the application layer."""
+    _workflow_stage(control, "full", "developing")
+    return process_file(input_path, output_path, config, preview=scaled_override)
 
 
 def is_internal_preset_name(name: str) -> bool:
@@ -541,7 +645,7 @@ def public_builtin_preset_names(directory: Path) -> set[str]:
     }
 
 
-def develop_preset_names() -> list[str]:
+def develop_preset_names(*, include_variants: bool = False) -> list[str]:
     # Keep the daily GUI concise. Specialized B&W recipes remain available in
     # the process editor and CLI, while user presets are always shown. The one
     # experimental clear-base reversal recipe is intentionally exposed because
@@ -549,7 +653,8 @@ def develop_preset_names() -> list[str]:
     names = {
         path.stem
         for path in DEVELOP_PRESET_DIR.glob("*.json")
-        if path.stem in MAIN_GUI_BUILTIN_DEVELOP_PRESETS
+        if path.stem in CORE_DEVELOP_PRESETS
+        or (include_variants and not is_internal_preset_name(path.stem))
     }
     names.update(path.stem for path in USER_DEVELOP_PRESET_DIR.glob("*.json"))
     return sorted(names)
@@ -565,8 +670,10 @@ def develop_preset_path(name: str) -> Path:
     return DEVELOP_PRESET_DIR / f"{name}.json"
 
 
-def film_preset_names() -> list[str]:
-    names = public_builtin_preset_names(FILM_PRESET_DIR)
+def film_preset_names(*, include_variants: bool = True) -> list[str]:
+    names = visible_builtin_names(public_builtin_preset_names(FILM_PRESET_DIR), "film")
+    if not include_variants:
+        names.intersection_update(CORE_FILM_PRESETS | collection_ids("film"))
     names.update(path.stem for path in USER_FILM_PRESET_DIR.glob("*.json"))
     return sorted(names)
 
@@ -578,26 +685,11 @@ def film_preset_path(name: str) -> Path:
     user_path = USER_FILM_PRESET_DIR / f"{name}.json"
     if user_path.exists():
         return user_path
+    from film_foundry.app.seasonal_collection import preset_path
+    optional=preset_path("film",name)
+    if optional is not None:
+        return optional
     return FILM_PRESET_DIR / f"{name}.json"
-
-
-def material_polarity_label(polarity: str) -> str:
-    return tr(f"material.{polarity}")
-
-
-def material_color_label(color: str) -> str:
-    return tr(f"material.{color}")
-
-
-def localized_preset_name(kind: str, key: str, fallback: str) -> str:
-    """Translate built-in preset names without replacing user-defined names."""
-    path = Path(key)
-    user_dirs = {"film": USER_FILM_PRESET_DIR, "develop": USER_DEVELOP_PRESET_DIR, "scanner": USER_SCANNER_PRESET_DIR}
-    builtin_dirs = {"film": FILM_PRESET_DIR, "develop": DEVELOP_PRESET_DIR, "scanner": SCANNER_PRESET_DIR}
-    is_builtin = not path.exists() and not (user_dirs[kind] / f"{key}.json").exists() and (builtin_dirs[kind] / f"{key}.json").exists()
-    translation_key = f"preset.{kind}.{Path(key).stem}"
-    translated = tr(translation_key)
-    return translated if is_builtin and translated != translation_key else fallback
 
 
 def material_polarity_category(config: DarkroomConfig) -> str:
@@ -623,18 +715,16 @@ def film_preset_record(key: str) -> dict[str, str] | None:
     polarity = material_polarity_category(config)
     color = material_color_category(config)
     name = str(config.film.name).strip() or Path(key).stem
-    display_name = localized_preset_name("film", key, name)
     return {
         "key": key,
         "name": name,
         "polarity": polarity,
         "color": color,
-        "label": f"{material_color_label(color)} · {material_polarity_label(polarity)} · {display_name}",
     }
 
 
-def film_preset_catalog(polarity: str | None = None) -> list[dict[str, str]]:
-    records = [record for key in film_preset_names() if (record := film_preset_record(key)) is not None]
+def film_preset_catalog(polarity: str | None = None, *, include_variants: bool = True) -> list[dict[str, str]]:
+    records = [record for key in film_preset_names(include_variants=include_variants) if (record := film_preset_record(key)) is not None]
     if polarity is not None:
         records = [record for record in records if record["polarity"] == polarity]
     return sorted(records, key=lambda record: (record["color"], record["name"].casefold(), record["key"].casefold()))
@@ -648,12 +738,12 @@ def develop_preset_record(key: str) -> dict[str, str] | None:
         config = DarkroomConfig.from_json(path)
     except (OSError, ValueError, TypeError, KeyError):
         return None
-    fallback = str(config.chemistry.developer_name).strip() or Path(key).stem
-    return {"key": key, "label": localized_preset_name("develop", key, fallback)}
+    name = str(config.chemistry.developer_name).strip() or Path(key).stem
+    return {"key": key, "name": name}
 
 
-def develop_preset_catalog() -> list[dict[str, str]]:
-    return [record for key in develop_preset_names() if (record := develop_preset_record(key)) is not None]
+def develop_preset_catalog(*, include_variants: bool = False) -> list[dict[str, str]]:
+    return [record for key in develop_preset_names(include_variants=include_variants) if (record := develop_preset_record(key)) is not None]
 
 
 def scanner_preset_polarity(config: DarkroomConfig) -> str:
@@ -669,42 +759,27 @@ def scanner_preset_record(key: str) -> dict[str, str] | None:
         config = DarkroomConfig.from_json(path)
     except (OSError, ValueError, TypeError, KeyError):
         return None
-    fallback = Path(key).stem.replace("_", " ").title()
+    name = Path(key).stem.replace("_", " ").title()
     return {
         "key": key,
+        "name": name,
         "polarity": scanner_preset_polarity(config),
-        "label": localized_preset_name("scanner", key, fallback),
     }
 
 
-def scanner_preset_catalog(polarity: str | None = None) -> list[dict[str, str]]:
-    records = [record for key in scanner_preset_names() if (record := scanner_preset_record(key)) is not None]
+def scanner_preset_catalog(polarity: str | None = None, *, include_variants: bool = True) -> list[dict[str, str]]:
+    records = [record for key in scanner_preset_names(include_variants=include_variants) if (record := scanner_preset_record(key)) is not None]
     if polarity is not None:
         records = [record for record in records if record["polarity"] == polarity]
     return records
 
 
-def scanner_preset_names() -> list[str]:
-    names = public_builtin_preset_names(SCANNER_PRESET_DIR)
+def scanner_preset_names(*, include_variants: bool = True) -> list[str]:
+    names = visible_builtin_names(public_builtin_preset_names(SCANNER_PRESET_DIR), "scanner")
+    if not include_variants:
+        names.intersection_update(CORE_SCANNER_PRESETS | collection_ids("scanner"))
     names.update(path.stem for path in USER_SCANNER_PRESET_DIR.glob("*.json"))
     return sorted(names)
-
-
-def scanner_capture_summary(metadata: dict) -> str:
-    """Return a compact, localized scanner-raw headroom diagnostic."""
-    saturation = float(metadata.get("scanner_saturation_fraction", 0.0)) * 100.0
-    floor = float(metadata.get("scanner_floor_fraction", 0.0)) * 100.0
-    parts = [
-        f"{tr('scan.diagnostic.saturation')} {saturation:.1f}%",
-        f"{tr('scan.diagnostic.floor')} {floor:.1f}%",
-    ]
-    base_channels = metadata.get("base_saturated_channels")
-    if isinstance(base_channels, (list, tuple)) and any(bool(value) for value in base_channels):
-        clipped = "".join(
-            channel for channel, value in zip("RGB", base_channels) if bool(value)
-        )
-        parts.append(f"{tr('scan.diagnostic.base_clip')} {clipped}")
-    return " · ".join(parts)
 
 
 def scanner_preset_path(name: str) -> Path:
@@ -714,7 +789,45 @@ def scanner_preset_path(name: str) -> Path:
     user_path = USER_SCANNER_PRESET_DIR / f"{name}.json"
     if user_path.exists():
         return user_path
+    from film_foundry.app.seasonal_collection import preset_path
+    optional=preset_path("scanner",name)
+    if optional is not None:
+        return optional
     return SCANNER_PRESET_DIR / f"{name}.json"
+
+
+_SHARE_PAYLOAD_SOURCES = {
+    "film": "film",
+    "develop": "chemistry",
+    "scanner": "scanner",
+    "look": "look",
+    "film_border": "film_border",
+    "mode": "mode",
+    "medium": "medium",
+    "enable_mtf": "enable_mtf",
+    "enable_halation": "enable_halation",
+    "enable_grain": "enable_grain",
+    "enable_subtractive": "enable_subtractive",
+}
+
+
+def recipe_share_payload(config: DarkroomConfig) -> dict[str, object]:
+    """Recipe fields carried by a share code. Runtime/output axes stay local."""
+    data = asdict(config)
+    payload: dict[str, object] = {}
+    for field in CONFIG_SHARE_FIELDS:
+        source = _SHARE_PAYLOAD_SOURCES[field]
+        payload[field] = data[source]
+    return payload
+
+
+def encode_recipe_share(config: DarkroomConfig) -> str:
+    return encode_config_share(recipe_share_payload(config))
+
+
+def config_from_share_code(text: str) -> DarkroomConfig:
+    """Rebuild a recipe from parameter values in the share code."""
+    return DarkroomConfig.from_dict(decode_config_share(text))
 
 
 def recommended_standard_develop_preset(config: DarkroomConfig) -> str:
@@ -723,17 +836,6 @@ def recommended_standard_develop_preset(config: DarkroomConfig) -> str:
     if positive:
         return "standard_bw_reversal" if monochrome else "standard_color_reversal"
     return "standard_bw_negative" if monochrome else "standard_color_negative"
-
-
-def preset_source_text(value: str, user_dir: Path, builtin_dir: Path) -> str:
-    path = Path(value)
-    if path.exists():
-        return "直接文件 / Direct"
-    if (user_dir / f"{value}.json").exists():
-        return "用户预设 / User"
-    if (builtin_dir / f"{value}.json").exists():
-        return "官方预设 / Built-in"
-    return "未找到 / Missing"
 
 
 def save_developed_medium(
@@ -773,6 +875,7 @@ def _observe_transmission_raw(
     path: Path,
     config: DarkroomConfig,
     interpretation: str,
+    preview_long_edge: int | None = None,
 ):
     raw_sidecar = load_scanner_raw_sidecar(path)
     apply_optical_observation_snapshot(
@@ -795,6 +898,9 @@ def _observe_transmission_raw(
             border_percent=config.output.scanner_raw_border_percent,
             border_min_px=config.output.scanner_raw_border_min_px,
         )
+    if preview_long_edge is not None:
+        inner = resize_to_long_edge(inner, preview_long_edge)
+        scanner_raw = resize_to_long_edge(scanner_raw, preview_long_edge)
     scanned = scan_scanner_raw_direct(
         inner,
         config,
@@ -806,7 +912,14 @@ def _observe_transmission_raw(
     return scanned, source_kind, path, scanner_raw
 
 
-def observe_medium_file(path: Path, config: DarkroomConfig, *, retain_stages: bool = False):
+def observe_medium_file(
+    path: Path,
+    config: DarkroomConfig,
+    *,
+    retain_stages: bool = False,
+    control: WorkflowControl | None = None,
+    preview_long_edge: int | None = None,
+):
     """Scan a developed npz or transmission raw.
 
     Returns ``(scanned, source_kind, source_path, preview)``. CLI uses
@@ -815,20 +928,42 @@ def observe_medium_file(path: Path, config: DarkroomConfig, *, retain_stages: bo
     ``retain_stages=True`` requests Inspector stages for NPZ observations;
     the default keeps only the final output. Transmission raw retains its
     existing full-stage result contract in either mode.
+    An explicit preview_long_edge observes an approximate private reduced
+    copy. It never rewrites the archive or changes ordinary/full-size calls.
     """
+    _workflow_stage(control, "scan", "loading")
     config = copy.deepcopy(config)
     interpretation = str(config.scanner.interpretation_mode or "auto")
     if is_scanner_raw_tiff(path):
-        return _observe_transmission_raw(path, config, interpretation)
+        if config.scanner.spectral_observation_profile is not None:
+            raise ValueError("Spectral observation requires a material NPZ, not an already captured RGB TIFF.")
+        _workflow_stage(control, "scan", "scanning")
+        return _observe_transmission_raw(path, config, interpretation, preview_long_edge)
     scanner_raw_path = transmission_raw_path_for_medium(path)
-    if scanner_raw_path.exists():
-        return _observe_transmission_raw(scanner_raw_path, config, interpretation)
+    if scanner_raw_path.exists() and config.scanner.spectral_observation_profile is None:
+        _workflow_stage(control, "scan", "scanning")
+        return _observe_transmission_raw(scanner_raw_path, config, interpretation, preview_long_edge)
     if path.suffix.lower() != ".npz":
         raise ValueError(
             f"不支持的底片文件：{path}。请选择 .npz 或 .scanner_raw.tiff，不要选择 sidecar .json。"
         )
+    if config.processing.memory_budget_mb is not None:
+        from film_foundry.core.negative_io import probe_scan_archive_memory
+        from film_foundry.core.resource_planning import estimate_scan_memory, enforce_memory_budget
+        layout = probe_scan_archive_memory(path)
+        if layout is not None:
+            width, height, resident, decode_peak = layout
+            estimate = estimate_scan_memory(
+                width, height, resident_bytes=resident, decode_peak_bytes=decode_peak,
+                preview_long_edge=preview_long_edge, retain_stages=retain_stages,
+            )
+            enforce_memory_budget(estimate, config.processing.memory_budget_mb, config.processing.memory_budget_policy)
     negative = load_developed_medium(path)
+    if preview_long_edge is not None:
+        from film_foundry.app.preview_inputs import preview_medium
+        negative = preview_medium(negative, preview_long_edge)
     scan = scan_medium_direct if retain_stages else scan_medium_output
+    _workflow_stage(control, "scan", "scanning")
     scanned = scan(negative, config, interpretation)
     runtime_config = scanned.metadata.get("runtime_config")
     preview_film = runtime_config.film if isinstance(runtime_config, DarkroomConfig) else config.film
@@ -839,10 +974,8 @@ def observe_medium_file(path: Path, config: DarkroomConfig, *, retain_stages: bo
     return scanned, "density_npz", path, preview
 
 
-def scan_from_file(path: Path, config: DarkroomConfig, *, retain_stages: bool = False):
-    scanned, source_kind, _source_path, preview = observe_medium_file(
-        path, config, retain_stages=retain_stages,
-    )
+def scan_from_file(path: Path, config: DarkroomConfig, *, retain_stages: bool = False, preview_long_edge: int | None = None):
+    options = {} if preview_long_edge is None else {"preview_long_edge": preview_long_edge}
+    scanned, source_kind, _source_path, preview = observe_medium_file(path, config, retain_stages=retain_stages, **options)
     return scanned, source_kind, preview
-
 

@@ -12,6 +12,10 @@ from pathlib import Path
 
 import numpy as np
 
+from film_foundry.contracts.spectral_exposure import SpectralExposureProfile
+from film_foundry.contracts.spectral_optics import SpectralMaterialProfile, SpectralObservationProfile
+from film_foundry.core.spectral_exposure import compile_spectral_exposure
+
 from film_foundry.core.accidents import (
     EXPOSURE_OCCLUSION_AMOUNT_FIELDS,
     LIGHT_LEAK_CONFIG_TEMPLATE_KEYS,
@@ -26,7 +30,11 @@ from film_foundry.core.film_process.recipe import resolve_program_key
 from film_foundry.core.light_piping import LIGHT_PIPING_EDGE_MODES
 from film_foundry.core.media import config_medium_process, is_monochrome_material
 from film_foundry.core.states import DevelopedNegative
-from film_foundry.model.config import DarkroomConfig
+from film_foundry.model.config import (
+    DarkroomConfig,
+    SCANNER_COLOR_RESPONSE_MODELS,
+    normalize_scanner_color_curve_rgb,
+)
 
 
 def _validate_rgb_image_array(image: np.ndarray, label: str = "input image") -> np.ndarray:
@@ -98,6 +106,10 @@ def _validate_developed_medium_arrays(medium: DevelopedNegative) -> None:
 
 def _validate_numeric_config_group(group: str, values: dict[str, object]) -> None:
     for key, value in values.items():
+        if group == "develop" and key == "process_steps":
+            from film_foundry.contracts.process_steps import validate_process_steps
+            validate_process_steps(value)
+            continue
         if isinstance(value, bool) or isinstance(value, str) or value is None:
             continue
         if not isinstance(value, (int, float, tuple, list, np.ndarray, np.number)):
@@ -116,6 +128,16 @@ def _validate_develop_runtime(
     allow_discarded_history: bool = False,
 ) -> None:
     """Reject malformed material/process settings before forming latent state."""
+    from film_foundry.core.incident_identity import validate_incident_seed
+    validate_incident_seed(config.chemistry.incident_identity_seed)
+    if config.film.spectral_exposure_profile is not None:
+        profile = SpectralExposureProfile.from_value(config.film.spectral_exposure_profile)
+        expected_layers = 1 if is_monochrome_material(config) else 3
+        if profile.layer_count != expected_layers:
+            raise ValueError("spectral_exposure_profile layer count does not match the material")
+        compile_spectral_exposure(profile)
+    if config.film.spectral_material_profile is not None:
+        SpectralMaterialProfile.from_value(config.film.spectral_material_profile)
     for group, values in (
         ("film", asdict(config.film)),
         ("develop", asdict(config.chemistry)),
@@ -629,6 +651,8 @@ def _validate_developed_medium_state(medium: DevelopedNegative) -> None:
 
 def _validate_scan_runtime(config: DarkroomConfig) -> None:
     """Reject malformed scan settings before they can create silent NaN output."""
+    if config.scanner.spectral_observation_profile is not None:
+        SpectralObservationProfile.from_value(config.scanner.spectral_observation_profile)
     scalar_groups = {
         "scanner": asdict(config.scanner),
         "scan look": {
@@ -680,6 +704,10 @@ def _validate_scan_runtime(config: DarkroomConfig) -> None:
             config.scanner.scan_normalize_mode,
             {"luma", "rgb"},
         ),
+        "scanner.color_response_model": (
+            config.scanner.color_response_model,
+            set(SCANNER_COLOR_RESPONSE_MODELS),
+        ),
     }
     for name, (value, accepted) in enum_values.items():
         normalized = str(value).strip().lower()
@@ -703,6 +731,11 @@ def _validate_scan_runtime(config: DarkroomConfig) -> None:
         raise ValueError("scanner.light_table_temperature_k must be positive.")
     if float(config.scanner.print_gamma) <= 0.0:
         raise ValueError("scanner.print_gamma must be positive.")
+    normalize_scanner_color_curve_rgb(config.scanner.color_curve_rgb)
+    normalize_scanner_color_curve_rgb(
+        config.scanner.device_response_rgb,
+        field_name="scanner.device_response_rgb",
+    )
 
 
 def _resolved_process_program_key(config: DarkroomConfig) -> str:
@@ -733,4 +766,3 @@ def _uses_reduced_bw_reversal(config: DarkroomConfig) -> bool:
 def _uses_reduced_color_reversal(config: DarkroomConfig) -> bool:
     key = _resolved_process_program_key(config)
     return key == "color_reversal"
-

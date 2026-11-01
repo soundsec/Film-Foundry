@@ -7,6 +7,7 @@ same widgets for the distinct positive-transparency parameter package.
 from __future__ import annotations
 
 from dataclasses import asdict
+import copy
 from pathlib import Path
 import sys
 
@@ -28,6 +29,7 @@ from film_foundry.model.config import SCAN_LOOK_FIELDS, DarkroomConfig
 from film_foundry.ui.components import add_choice_control, add_numeric_control
 from film_foundry.ui.qt import PhotoImage, message_box, text_dialog, ui
 from film_foundry.ui.widgets import VerticalScrolledFrame
+from film_foundry.ui.config_fields import ProfileField, RGBCurveField, GraphCurveField, add_apply_button
 from film_foundry.tools.editor_ui import local_text, localize_widget_tree, localized_preset_name, unique_choice_map
 from film_foundry.tools.paths import app_root, resource_root
 
@@ -119,6 +121,8 @@ def is_supported_positive_scanner(config: DarkroomConfig) -> bool:
 
 def scanner_preset_names(interpretation: str = "negative") -> list[str]:
     names = {path.stem for path in SCANNER_PRESET_DIR.glob("*.json")}
+    from film_foundry.app.seasonal_collection import visible_builtin_names
+    names = visible_builtin_names(names, "scanner")
     names.update(path.stem for path in USER_SCANNER_PRESET_DIR.glob("*.json"))
     supported: list[str] = []
     for name in sorted(names):
@@ -135,6 +139,10 @@ def scanner_preset_path(name: str) -> Path:
     user_path = USER_SCANNER_PRESET_DIR / f"{name}.json"
     if user_path.exists():
         return user_path
+    from film_foundry.app.seasonal_collection import preset_path
+    optional=preset_path("scanner",name)
+    if optional is not None:
+        return optional
     return SCANNER_PRESET_DIR / f"{name}.json"
 
 
@@ -152,13 +160,15 @@ def save_json(path: Path, payload: dict) -> None:
 
 
 class ScannerRenderEditor:
-    def __init__(self, interpretation: str = "negative") -> None:
+    def __init__(self, interpretation: str = "negative", *, parent=None, config=None, on_apply=None) -> None:
         USER_SCANNER_PRESET_DIR.mkdir(parents=True, exist_ok=True)
 
         self._set_interpretation_state(interpretation)
 
-        self.root = ui.Application()
-        self.root.title(local_text("Film Foundry - 透射扫描 / 解释编辑器", "Film Foundry - Transmission Scanner / Interpreter Editor"))
+        self._base_config = None
+        self._on_apply = on_apply
+        self.root = ui.Application() if parent is None else ui.Window(parent)
+        self.root.title(local_text("Film Foundry · 扫描编辑组件", "Film Foundry · Scanner editor component"))
         self.root.geometry("1040x760")
         self.root.minsize(840, 620)
 
@@ -216,7 +226,11 @@ class ScannerRenderEditor:
 
         self._build()
         self._refresh_preset_choices()
-        self._load_selected_preset()
+        if config is None:
+            self._load_selected_preset()
+        else:
+            self._set_controls_from_config(config)
+            self._refresh_curve()
 
     def _set_interpretation_state(self, interpretation: str) -> None:
         self.is_positive = str(interpretation).lower() == "positive"
@@ -251,7 +265,7 @@ class ScannerRenderEditor:
         shell.columnconfigure(1, weight=1)
         shell.rowconfigure(1, weight=1)
 
-        header = ui.Group(shell, text="透射扫描 / 解释预设", padding=10)
+        header = ui.Group(shell, text=local_text("Film Foundry 组件 · 扫描与解释配置", "Film Foundry component · Scan and interpretation settings"), padding=10)
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ui.Label(header, text="解释控制").grid(row=0, column=0, sticky="w", pady=3)
         interpretation_controls = ui.Frame(
@@ -260,7 +274,7 @@ class ScannerRenderEditor:
         interpretation_controls.grid(row=0, column=1, sticky="w", padx=(8, 8), pady=3)
         ui.Toggle(
             interpretation_controls,
-            text=local_text("去片基 / 色罩", "Remove base / mask"),
+            text=local_text("片基透射校正", "Film-base transmission correction"),
             variable=self.remove_base_mask,
             command=self._refresh_curve,
         ).pack(side="left")
@@ -279,21 +293,21 @@ class ScannerRenderEditor:
         ui.Label(
             header,
             text=local_text(
-                "同一灯台与传感器完成透射采集；介质类型只提供建议，不锁定用户选择。",
-                "One light table and sensor perform capture; medium identity only provides a recommendation.",
+                "片基透射校正按参考片基校正亮度与颜色，适用于负片和正片。",
+                "Film-base transmission correction adjusts brightness and color against a base reference, for negatives and positives.",
             ),
-            wraplength=500,
-        ).grid(row=0, column=2, columnspan=2, sticky="w", pady=3)
+            wraplength=760,
+        ).grid(row=1, column=0, columnspan=4, sticky="ew", pady=(2, 4))
 
-        ui.Label(header, text="基准解释预设").grid(row=1, column=0, sticky="w", pady=3)
+        ui.Label(header, text="基准解释预设").grid(row=2, column=0, sticky="w", pady=3)
         self.preset_combo = ui.Choice(header, textvariable=self.preset_display, state="readonly")
-        self.preset_combo.grid(row=1, column=1, sticky="ew", padx=(8, 8), pady=3)
+        self.preset_combo.grid(row=2, column=1, sticky="ew", padx=(8, 8), pady=3)
         self.preset_combo.bind("<<ComboboxSelected>>", self._on_preset_selected)
-        ui.Button(header, text="加载", command=self._load_selected_preset).grid(row=1, column=2, padx=(0, 8))
-        ui.Button(header, text=local_text("保存为用户扫描预设", "Save User Scan Preset"), command=self._save_user_preset).grid(row=1, column=3)
-        ui.Label(header, text=local_text("说明", "Note")).grid(row=2, column=0, sticky="w", pady=3)
+        ui.Button(header, text="加载", command=self._load_selected_preset).grid(row=2, column=2, padx=(0, 8))
+        ui.Button(header, text=local_text("保存为用户扫描预设", "Save User Scan Preset"), command=self._save_user_preset).grid(row=2, column=3)
+        ui.Label(header, text=local_text("说明", "Note")).grid(row=3, column=0, sticky="w", pady=3)
         medium_row = ui.Frame(header)
-        medium_row.grid(row=2, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=3)
+        medium_row.grid(row=3, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=3)
         ui.Label(
             medium_row,
             text=local_text(
@@ -310,6 +324,7 @@ class ScannerRenderEditor:
             wraplength=520,
         ).pack(side="left")
         header.columnconfigure(1, weight=1)
+        add_apply_button(header, self, row=4)
 
         controls_shell = ui.Frame(shell)
         controls_shell.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
@@ -320,6 +335,14 @@ class ScannerRenderEditor:
         controls = self.controls_scroller.content
 
         row = 0
+        row = self._section(controls, local_text("观察谱与可编辑 RGB 曲线", "Observation spectrum and editable RGB curves"), row)
+        self.observer_profile_field = ProfileField(controls, "spectral_observation_profile", row=row)
+        row += 1
+        self.curve_fields = {}
+        for key in ("tone_curve", "color_curve_rgb", "device_response_rgb"):
+            field_type = GraphCurveField if key == "tone_curve" else RGBCurveField
+            self.curve_fields[key] = field_type(controls, key, row=row)
+            row += 1 if key == "tone_curve" else 5
         row = self._section(controls, "共享透射采样", row)
         row = self._vector(controls, "scanner_light_color", "扫描光源 RGB", 0.50, 1.50, row)
         row = self._matrix(controls, "scanner_response_matrix", "扫描器 RGB 响应矩阵", -0.25, 1.50, row)
@@ -497,6 +520,10 @@ class ScannerRenderEditor:
         self._refresh_curve()
 
     def _set_controls_from_config(self, config: DarkroomConfig) -> None:
+        self._base_config = copy.deepcopy(config)
+        self.observer_profile_field.load(config.scanner.spectral_observation_profile)
+        for key, field in self.curve_fields.items():
+            field.load(getattr(config.scanner, key))
         scanner = config.scanner
         self.target_medium_process.set(str(scanner.target_medium_process))
         self.input_polarity.set(str(scanner.input_polarity))
@@ -548,7 +575,11 @@ class ScannerRenderEditor:
 
     def _config_from_controls(self) -> DarkroomConfig:
         base_path = scanner_preset_path(self.preset_name.get())
-        config = DarkroomConfig.from_json(base_path) if base_path.exists() else DarkroomConfig()
+        config = (copy.deepcopy(self._base_config) if self._base_config is not None
+                  else DarkroomConfig.from_json(base_path) if base_path.exists() else DarkroomConfig())
+        config.scanner.spectral_observation_profile = self.observer_profile_field.profile
+        for key, field in self.curve_fields.items():
+            setattr(config.scanner, key, field.read())
         scanner = config.scanner
         scanner.interpretation_mode = "manual"
         scanner.remove_base_mask = bool(self.remove_base_mask.get())

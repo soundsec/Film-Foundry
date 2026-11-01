@@ -41,7 +41,15 @@ def localized_preset_name(
         is_builtin = selected_path.resolve().parent == builtin_dir.resolve()
     except OSError:
         is_builtin = selected_path.parent == builtin_dir
+    from film_foundry.app.seasonal_collection import collection_ids
+    if key in collection_ids(kind) and selected_path.parent.name == kind and selected_path.parent.parent.name == "finder":
+        is_builtin = True
     translation_key = f"preset.{kind}.{Path(key).stem}"
+    if is_builtin:
+        from film_foundry.app.seasonal_collection import localized_name
+        seasonal = localized_name(kind, key, current_language())
+        if seasonal:
+            return seasonal
     translated = tr(translation_key)
     if is_builtin and translated != translation_key:
         return translated

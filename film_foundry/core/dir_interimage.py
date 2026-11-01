@@ -13,10 +13,9 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from film_foundry.core.film_process.integration import (
-    _color_material,
     _compatibility_for_program,
-    _material_latent_state,
 )
+from film_foundry.core.material_latent_grid import MaterialLatentSource
 from film_foundry.core.film_process.operators import (
     provisional_formed_dye_for_program,
 )
@@ -27,8 +26,6 @@ from film_foundry.core.spatial_fields import (
     GlobalLayerRateMultiplierField,
     GlobalRateMultiplierField,
     SpatialFieldPlan,
-    global_field_grid,
-    resample_layer_exposure_addition,
 )
 from film_foundry.model.config import DevelopRecipeConfig, FilmStockConfig
 
@@ -85,13 +82,15 @@ def _resolved_process_effectiveness(
 
 
 def build_dir_material_response_field(
-    image_linear: np.ndarray,
+    image_linear: np.ndarray | None,
     film: FilmStockConfig,
     recipe: DevelopRecipeConfig,
     program_kind: str,
     *,
     latent_layer_exposure_addition=None,
     work_long_edge: int = 1800,
+    exposed_latent=None,
+    material_source: MaterialLatentSource | None = None,
 ) -> tuple[GlobalLayerRateMultiplierField | None, dict[str, object]]:
     """Build a colour-step-only layer inhibitor field without live pool use."""
 
@@ -134,46 +133,22 @@ def build_dir_material_response_field(
     if int(work_long_edge) <= 0:
         raise ValueError("DIR work_long_edge must be positive")
 
-    image = np.asarray(image_linear, dtype=np.float32)
-    if image.ndim != 3 or image.shape[-1] != 3:
-        raise ValueError("DIR interimage requires an HxWx3 linear image")
-    image_minimum = float(np.min(image))
-    image_maximum = float(np.max(image))
-    if (
-        not np.isfinite(image_minimum)
-        or not np.isfinite(image_maximum)
-        or image_minimum < 0.0
-    ):
-        raise ValueError("DIR interimage image must be finite and non-negative")
-
-    grid = global_field_grid(image.shape, int(work_long_edge))
-    if grid.reduced:
-        work_image = cv2.resize(
-            image,
-            (grid.work_shape[1], grid.work_shape[0]),
-            interpolation=cv2.INTER_AREA,
-        ).astype(np.float32)
-    else:
-        work_image = image
-    work_addition = resample_layer_exposure_addition(
-        latent_layer_exposure_addition,
-        grid,
-    )
-    material = _color_material(film)
-    state = _material_latent_state(
-        work_image,
-        film,
-        material,
-        latent_layer_exposure_addition=work_addition,
-    )
+    material_source = material_source or MaterialLatentSource(film,
+        image_linear=image_linear, exposed_latent=exposed_latent,
+        latent_layer_exposure_addition=latent_layer_exposure_addition)
+    state, grid = material_source.take_working_state(work_long_edge)
+    material = material_source.material
+    if material.coupler_capacity is None or not any(material.coupler_capacity):
+        base_audit["skip_reason"] = "no_material_coupler"
+        return None, base_audit
     material_process = "reversal" if program_kind.endswith("reversal") else "negative"
     program = program_from_develop_recipe(
         recipe,
         mode=program_kind,
         material_process=material_process,
-        layer_count=3,
+        layer_count=material.layer_count,
     )
-    compatibility = _compatibility_for_program(film, program.key, 3)
+    compatibility = _compatibility_for_program(film, program.key, material.layer_count, program=program)
     provisional_dye, color_step = provisional_formed_dye_for_program(
         state,
         program,
@@ -208,12 +183,13 @@ def build_dir_material_response_field(
                 float(np.max(provisional_dye[..., layer])) for layer in range(3)
             ),
             "active_source_layers": active_source_layers,
+            "source_model": MaterialLatentSource.MODEL,
         }
     )
     # The provisional material state is private and is no longer needed after
     # its colour-coupling source has been reduced to the bounded work grid.
     # Drop the large formation buffers before allocating three inhibitor maps.
-    del state, program, compatibility, material, capacity, work_addition, work_image
+    del state, program, compatibility, material, capacity, material_source
     if source_maximum <= 1e-8:
         base_audit["skip_reason"] = "zero_provisional_colour_coupling"
         return None, base_audit

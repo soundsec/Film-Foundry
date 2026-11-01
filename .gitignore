@@ -7,10 +7,15 @@ __pycache__/
 .ipynb_checkpoints/
 .venv/
 .env/
+.env
+.env.*
+!.env.example
 .agents/
 .codex/
 dist/
 build/
+/portable_build/
+/.test_artifacts/
 *.egg-info/
 /FilmFoundry.spec
 *.manifest
@@ -23,6 +28,22 @@ build/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Android Gradle
+android/.gradle/
+android/**/build/
+android/local.properties
+android/.cxx/
+android/**/.cxx/
+android/.kotlin/
+android/test-iteration.txt
+*.apk
+*.aab
+*.jks
+*.keystore
+*.p12
+*.pfx
+/.release-signing/
 
 # Local backups and user-supplied material
 \#BackUp/
@@ -52,8 +73,5 @@ outputs/*
 
 # Local collected reference / handoff scratch files
 /AGENTS.md
-/AGENTS.md
-/AGENTS.md
-HALF_FRAME_DARKROOM_COLLECTED_REFERENCE.py
 *_COLLECTED_REFERENCE.py
 ui设计_内部.txt

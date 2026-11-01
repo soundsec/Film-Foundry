@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+import ast
 import json
 
 import numpy as np
@@ -19,6 +20,61 @@ def test_cli_shares_medium_path_helpers_with_workflow():
     assert cli._raw_path_for_medium is workflow.transmission_raw_path_for_medium
     assert cli._rng_and_resolved_seed_for_develop is workflow.rng_and_resolved_seed_for_develop
     assert cli._output_path_for is not workflow.output_path_for
+
+
+def test_workflow_module_does_not_import_ui():
+    source = Path(workflow.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.append(node.module)
+    assert not any(
+        name == "film_foundry.ui" or name.startswith("film_foundry.ui.")
+        for name in imported
+    )
+
+
+def test_cli_full_uses_workflow_process_image_file():
+    import inspect
+    import film_foundry.app.api as api
+
+    assert cli._process_image_file is workflow.process_image_file
+    assert cli._run_request is api.run_request
+    assert "_run_request" in inspect.getsource(cli._run_develop)
+    assert "_run_request" in inspect.getsource(cli._run_expose)
+    assert "_run_request" in inspect.getsource(cli._run_develop_latent)
+    assert "_run_request" in inspect.getsource(cli._scan_from_file)
+    assert "develop_image_file" not in inspect.getsource(cli._run_develop)
+    assert "develop_latent_file" not in inspect.getsource(cli._run_develop_latent)
+    assert "expose_image_file" not in inspect.getsource(cli._run_expose)
+
+
+def test_app_api_module_does_not_import_ui():
+    import film_foundry.app.api as api
+
+    source = Path(api.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.append(node.module)
+    assert not any(
+        name == "film_foundry.ui" or name.startswith("film_foundry.ui.")
+        for name in imported
+    )
+
+
+def test_workflow_preset_records_are_untranslated():
+    record = workflow.film_preset_record("vivid_balanced_negative")
+    assert record is not None
+    assert "label" not in record
+    assert record["name"]
+    assert record["polarity"] == "negative"
 
 
 @pytest.mark.parametrize("polarity", ["negative", "positive"])
@@ -115,6 +171,46 @@ def test_cli_scan_outputs_preserve_medium_polarity_and_do_not_collide(tmp_path):
     assert _output_path_for(negative, tmp_path, "png").name == "frame_negative_foundry.png"
     assert _output_path_for(positive, tmp_path, "png").name == "frame_positive_foundry.png"
     assert _output_path_for(negative, tmp_path, "png") != _output_path_for(positive, tmp_path, "png")
+
+
+def test_cli_exposes_scanner_color_curve_json(tmp_path):
+    curve = tmp_path / "curve.json"
+    curve.write_text(
+        "[[[0, 0.1], [1, 1]], [[0, 0.1], [1, 1]], [[0, 0.1], [1, 1]]]",
+        encoding="utf-8",
+    )
+    args = build_parser().parse_args([
+        "scan",
+        "medium.npz",
+        "output",
+        "--scanner-color-curve",
+        str(curve),
+    ])
+
+    config = _apply_common_config(args)
+
+    assert config.scanner.color_curve_rgb[0][0] == (0.0, 0.1)
+    assert config.scanner.color_curve_rgb[2][-1] == (1.0, 1.0)
+
+
+def test_cli_exposes_scanner_device_response_json(tmp_path):
+    curve = tmp_path / "device.json"
+    curve.write_text(
+        "[[[0, 0.0], [1, 0.8]], [[0, 0.0], [1, 0.8]], [[0, 0.0], [1, 0.8]]]",
+        encoding="utf-8",
+    )
+    args = build_parser().parse_args([
+        "scan",
+        "medium.npz",
+        "output",
+        "--scanner-device-response",
+        str(curve),
+    ])
+
+    config = _apply_common_config(args)
+
+    assert config.scanner.device_response_rgb[0][-1] == (1.0, 0.8)
+    assert config.scanner.device_response_rgb[2][0] == (0.0, 0.0)
 
 
 def test_cli_exposes_explicit_scan_interpretation_override():
@@ -266,7 +362,7 @@ def test_cli_scan_batch_attempts_later_files_after_one_failure(tmp_path, monkeyp
     attempted: list[Path] = []
     saved: list[Path] = []
 
-    def fake_scan(path, _config):
+    def fake_scan(path, _config, *, control=None):
         attempted.append(path)
         if path == bad:
             raise ValueError("corrupt medium")
@@ -304,3 +400,263 @@ def test_cli_help_uses_display_name_not_legacy_product_pair():
     parser = build_parser()
     assert parser.description == f"{APP_DISPLAY_NAME} command-line workflow."
     assert "Electronic Negative Factory" not in parser.description
+
+
+def test_cli_parser_includes_expose_and_develop_latent():
+    parser = build_parser()
+    expose = parser.parse_args(["expose", "in.png", "out.darkroom_latent.npz"])
+    assert expose.command == "expose"
+    latent = parser.parse_args(
+        ["develop_latent", "in.darkroom_latent.npz", "out.darkroom_negative.npz"]
+    )
+    assert latent.command == "develop_latent"
+    share = parser.parse_args(
+        [
+            "share-config",
+            "decode",
+            "FFC2:abc",
+        ]
+    )
+    assert share.command == "share-config"
+    assert share.share_action == "decode"
+    encode = parser.parse_args(
+        [
+            "share-config",
+            "encode",
+            "--exposure-ev",
+            "-0.25",
+        ]
+    )
+    assert encode.share_action == "encode"
+    assert encode.exposure_ev == pytest.approx(-0.25)
+
+
+def test_cli_parser_accepts_frame_identity_flags():
+    parser = build_parser()
+    expose = parser.parse_args(
+        [
+            "expose",
+            "in.png",
+            "out.darkroom_latent.npz",
+            "--roll-id",
+            "R1",
+            "--frame-id",
+            "A12",
+            "--frame-index",
+            "12",
+        ]
+    )
+    assert expose.roll_id == "R1"
+    assert expose.frame_id == "A12"
+    assert expose.frame_index == 12
+    develop = parser.parse_args(
+        ["develop", "in.png", "out.darkroom_negative.npz", "--roll-id", "R1"]
+    )
+    assert develop.roll_id == "R1"
+    assert develop.frame_id is None
+    assert develop.frame_index is None
+    scan = parser.parse_args(["scan", "in.npz", "out.png"])
+    assert not hasattr(scan, "roll_id")
+    full = parser.parse_args(["full", "in.png", "out.png"])
+    assert not hasattr(full, "roll_id")
+
+
+def test_cli_frame_identity_batch_helper():
+    batch_args = SimpleNamespace(roll_id="R", frame_id=None, frame_index=2)
+    first = cli._frame_identity_for_cli_item(batch_args, item_index=0, item_count=3)
+    second = cli._frame_identity_for_cli_item(batch_args, item_index=1, item_count=3)
+    assert first == {"roll_id": "R", "frame_index": 2, "frame_id": "R:2"}
+    assert second == {"roll_id": "R", "frame_index": 3, "frame_id": "R:3"}
+    single = cli._frame_identity_for_cli_item(
+        SimpleNamespace(roll_id="R", frame_id="A12", frame_index=None),
+        item_index=0,
+        item_count=1,
+    )
+    assert single == {"roll_id": "R", "frame_id": "A12"}
+    omitted = cli._frame_identity_for_cli_item(
+        SimpleNamespace(roll_id=None, frame_id=None, frame_index=None),
+        item_index=0,
+        item_count=1,
+    )
+    assert omitted is None
+    with pytest.raises(ValueError, match="--roll-id"):
+        cli._validate_cli_frame_identity(
+            SimpleNamespace(roll_id=None, frame_id="A1", frame_index=None),
+            1,
+        )
+    with pytest.raises(ValueError, match="--frame-id"):
+        cli._validate_cli_frame_identity(
+            SimpleNamespace(roll_id="R", frame_id="A1", frame_index=None),
+            2,
+        )
+
+
+def test_cli_parser_accepts_progress_flag():
+    parser = build_parser()
+    expose = parser.parse_args(
+        ["expose", "in.png", "out.darkroom_latent.npz", "--progress"]
+    )
+    assert expose.progress is True
+    full = parser.parse_args(["full", "in.png", "out.png", "--progress"])
+    assert full.progress is True
+    scan = parser.parse_args(["scan", "in.npz", "out.png", "--progress"])
+    assert scan.progress is True
+    quiet = parser.parse_args(["expose", "in.png", "out.darkroom_latent.npz"])
+    assert quiet.progress is False
+
+
+def _tiny_rgb_png(path: Path) -> Path:
+    from PIL import Image
+
+    image = np.linspace(0.12, 0.86, 6 * 8 * 3, dtype=np.float32).reshape(6, 8, 3)
+    Image.fromarray(np.round(image * 255.0).astype(np.uint8), mode="RGB").save(path)
+    return path
+
+
+def test_cli_expose_batch_stops_after_pre_cancelled_flag(tmp_path, monkeypatch, capsys):
+    from film_foundry.app.control import CancelFlag
+
+    source = tmp_path / "in"
+    source.mkdir()
+    first = _tiny_rgb_png(source / "a.png")
+    second = _tiny_rgb_png(source / "b.png")
+    output = tmp_path / "latents"
+    output.mkdir()
+    flag = CancelFlag()
+    flag.cancel()
+    requested: list[Path] = []
+    real_run = cli._run_request
+
+    def wrapped(request):
+        requested.append(request.input_path)
+        return real_run(request)
+
+    monkeypatch.setattr(cli, "_run_request", wrapped)
+    config = DarkroomConfig()
+    config.enable_grain = False
+    config.save_sidecar = False
+    config.output.save_scanner_raw = False
+    args = SimpleNamespace(
+        input=source,
+        latent_output=output,
+        preview=False,
+        progress=False,
+        cancel_flag=flag,
+    )
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        cli._run_expose(args, config)
+
+    assert requested == [first]
+    assert second.exists()
+    assert list(output.glob("*.darkroom_latent.npz")) == []
+    err = capsys.readouterr().err
+    assert "1 remaining item(s) not started" in err
+
+
+def test_cli_expose_progress_prints_stages(tmp_path, capsys):
+    source = _tiny_rgb_png(tmp_path / "frame.png")
+    output = tmp_path / "frame.darkroom_latent.npz"
+    config = DarkroomConfig()
+    config.enable_grain = False
+    config.save_sidecar = False
+    config.output.save_scanner_raw = False
+    args = SimpleNamespace(
+        input=source,
+        latent_output=output,
+        preview=False,
+        progress=True,
+    )
+
+    assert cli._run_expose(args, config) == 1
+    assert output.exists()
+    err = capsys.readouterr().err
+    assert "[expose:starting]" in err
+    assert "[expose:completed]" in err
+
+
+def test_cli_sigint_helper_cancels_on_first_press():
+    import signal
+
+    from film_foundry.app.control import CancelFlag
+
+    flag = CancelFlag()
+    previous = signal.getsignal(signal.SIGINT)
+    restore = cli._install_sigint_cancel(flag)
+    try:
+        handler = signal.getsignal(signal.SIGINT)
+        handler(signal.SIGINT, None)
+        assert flag.requested()
+        with pytest.raises(KeyboardInterrupt):
+            handler(signal.SIGINT, None)
+    finally:
+        restore()
+        assert signal.getsignal(signal.SIGINT) == previous
+
+
+def test_cli_parser_accepts_resume_flag():
+    parser = build_parser()
+    expose = parser.parse_args(
+        ["expose", "in.png", "out.darkroom_latent.npz", "--resume"]
+    )
+    assert expose.resume is True
+    full = parser.parse_args(["full", "in.png", "out.png", "--resume"])
+    assert full.resume is True
+    scan = parser.parse_args(["scan", "in.npz", "out.png", "--resume"])
+    assert scan.resume is True
+    quiet = parser.parse_args(["expose", "in.png", "out.darkroom_latent.npz"])
+    assert quiet.resume is False
+
+
+def test_cli_expose_resume_skips_complete_and_retries_garbage(tmp_path, monkeypatch, capsys):
+    from film_foundry.core.latent_io import load_exposed_latent
+
+    source = tmp_path / "in"
+    source.mkdir()
+    first = _tiny_rgb_png(source / "a.png")
+    second = _tiny_rgb_png(source / "b.png")
+    output = tmp_path / "latents"
+    output.mkdir()
+    config = DarkroomConfig()
+    config.enable_grain = False
+    config.save_sidecar = False
+    config.output.save_scanner_raw = False
+    assert cli._run_expose(
+        SimpleNamespace(
+            input=first,
+            latent_output=output,
+            preview=False,
+            progress=False,
+            resume=False,
+        ),
+        config,
+    ) == 1
+    complete = output / "a.darkroom_latent.npz"
+    assert complete.exists()
+    garbage = output / "b.darkroom_latent.npz"
+    garbage.write_bytes(b"truncated")
+
+    requested: list[Path] = []
+    real_run = cli._run_request
+
+    def wrapped(request):
+        requested.append(request.input_path)
+        return real_run(request)
+
+    monkeypatch.setattr(cli, "_run_request", wrapped)
+    count = cli._run_expose(
+        SimpleNamespace(
+            input=source,
+            latent_output=output,
+            preview=False,
+            progress=False,
+            resume=True,
+        ),
+        config,
+    )
+    assert count == 2
+    assert requested == [second]
+    captured = capsys.readouterr()
+    assert "skip complete" in captured.out
+    load_exposed_latent(complete)
+    load_exposed_latent(output / "b.darkroom_latent.npz")

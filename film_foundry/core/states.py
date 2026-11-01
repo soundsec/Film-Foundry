@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from film_foundry.core.spectral_optics import SpectralMedium
 
 import numpy as np
+
+from film_foundry.core.frame_identity import (
+    FRAME_IDENTITY_KEY,
+    frame_identity_from_mapping,
+)
 
 
 @dataclass(slots=True)
@@ -13,8 +19,8 @@ class DevelopedNegative:
     """冲洗完成的胶片介质，保存层母版与派生光学母版。
 
     ``density_cmy`` / ``density_grain`` 服务于层效果、制版、分层导出和
-    旧格式兼容；存在 ``optical_density_rgb`` 时，后者是扫描器唯一的权威
-    输入，但它仍是由最终介质派生的只读量，不取代材料状态。
+    旧格式兼容；默认观察使用 ``optical_density_rgb``。显式光谱观察读取
+    ``spectral_medium`` 的最终组分，两者都是只读输入，不反推或改写材料。
     """
 
     linear_input: np.ndarray
@@ -35,8 +41,12 @@ class DevelopedNegative:
     color_system: str = "color_negative_dye"
     compatible_interpreters: tuple[str, ...] = ("negative_scan",)
     metadata: dict[str, Any] = field(default_factory=dict)
+    spectral_medium: SpectralMedium | None = None
 
     def __post_init__(self) -> None:
+        if self.spectral_medium is not None:
+            if self.spectral_medium.component_amounts.shape[:2] != self.frame_shape[:2]:
+                raise ValueError("spectral medium geometry must match optical master")
         if self.optical_density_rgb is None:
             return
         optical = np.asarray(self.optical_density_rgb, dtype=np.float32)
@@ -168,6 +178,20 @@ def developed_medium_metadata(medium: DevelopedMedium) -> dict[str, Any]:
         },
     }
     clear_base = getattr(medium, "clear_base_optical_density_rgb", None)
+    spectral_medium = getattr(medium, "spectral_medium", None)
+    if spectral_medium is not None:
+        payload["spectral_medium"] = spectral_medium.metadata()
+        payload["array_semantics"]["spectral_component_amounts"] = {
+            "role": "normalized_final_material_components", "read_only": True,
+            "coefficient_unit": "normalized_final_pool_v1",
+            "authoritative_for_spectral_observation": True,
+        }
+        if spectral_medium.post_process_density_rgb is not None:
+            payload["array_semantics"]["spectral_post_process_density_rgb"] = {
+                "role": "signed_final_medium_optical_overlay", "read_only": True,
+                "model": "piecewise_rgb_density_overlay_v1",
+                "authoritative_for_spectral_observation": True,
+            }
     if clear_base is not None:
         payload["clear_base_optical_density_rgb"] = [float(value) for value in clear_base]
     metadata = getattr(medium, "metadata", {})
@@ -180,4 +204,7 @@ def developed_medium_metadata(medium: DevelopedMedium) -> dict[str, Any]:
         input_color = metadata.get("input_color")
         if isinstance(input_color, dict):
             payload["input_color"] = input_color
+        identity = frame_identity_from_mapping(metadata)
+        if identity is not None:
+            payload[FRAME_IDENTITY_KEY] = dict(identity)
     return payload

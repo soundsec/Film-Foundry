@@ -8,6 +8,7 @@ Material-specific editors and scan/view editors remain separate.
 from __future__ import annotations
 
 from dataclasses import asdict
+import copy
 from pathlib import Path
 import sys
 
@@ -35,6 +36,7 @@ from film_foundry.ui.components import add_choice_control, add_numeric_control
 from film_foundry.ui.i18n import tr
 from film_foundry.ui.qt import PhotoImage, file_dialog, message_box, text_dialog, ui
 from film_foundry.ui.widgets import VerticalScrolledFrame
+from film_foundry.ui.config_fields import OptionalNumberField, add_apply_button
 from film_foundry.tools.editor_ui import local_text, localize_widget_tree, localized_preset_name, unique_choice_map
 from film_foundry.tools.paths import app_root, resource_root
 
@@ -353,11 +355,13 @@ def save_json(path: Path, payload: dict) -> None:
 
 
 class DevelopProcessEditor:
-    def __init__(self) -> None:
+    def __init__(self, *, parent=None, config=None, on_apply=None) -> None:
         USER_DEVELOP_PRESET_DIR.mkdir(parents=True, exist_ok=True)
 
-        self.root = ui.Application()
-        self.root.title(local_text("Film Foundry - 银盐胶片工艺程序编辑器", APP_TITLE))
+        self._base_config = None
+        self._on_apply = on_apply
+        self.root = ui.Application() if parent is None else ui.Window(parent)
+        self.root.title(local_text("Film Foundry · 工艺编辑组件", "Film Foundry · Process editor component"))
         self.root.geometry("1100x860")
         self.root.minsize(900, 700)
 
@@ -394,6 +398,7 @@ class DevelopProcessEditor:
         self.light_leak_mask_path = ui.TextValue(value="")
         self.light_leak_identity_seed = ui.TextValue(value="")
         self.exposure_occlusion_identity_seed = ui.TextValue(value="")
+        self.incident_identity_seed = ui.TextValue(value="")
         self.status = ui.TextValue(value=local_text("加载冲洗流程预设，调整后保存到 user_presets/develop。", "Load a process preset, adjust it, then save to user_presets/develop."))
         self.preview_photo = None
 
@@ -442,7 +447,11 @@ class DevelopProcessEditor:
 
         self._build()
         self._refresh_preset_choices()
-        self._load_selected_preset()
+        if config is None:
+            self._load_selected_preset()
+        else:
+            self._set_controls_from_config(config)
+            self._refresh_preview()
 
     def _build(self) -> None:
         shell = ui.Frame(self.root, padding=12)
@@ -451,7 +460,7 @@ class DevelopProcessEditor:
         shell.columnconfigure(1, weight=1)
         shell.rowconfigure(1, weight=1)
 
-        header = ui.Group(shell, text="银盐胶片工艺程序预设", padding=10)
+        header = ui.Group(shell, text=local_text("Film Foundry 组件 · 药浴与工艺配置", "Film Foundry component · Bath and process settings"), padding=10)
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ui.Label(header, text="基准流程").grid(row=0, column=0, sticky="w", pady=3)
         self.preset_combo = ui.Choice(header, textvariable=self.preset_display, state="readonly")
@@ -485,6 +494,7 @@ class DevelopProcessEditor:
             wraplength=920,
         ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
         header.columnconfigure(1, weight=1)
+        add_apply_button(header, self, row=4)
 
         controls_panel = ui.Group(shell, text="暗房流程与算子参数", padding=6)
         controls_panel.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
@@ -499,6 +509,10 @@ class DevelopProcessEditor:
         row = self._combo(controls, "定影 / 清除类型", self.fixer_type, ("standard", "rapid", "hardening", "monobath", "experimental_mask_bleach"), row)
         row = self._combo(controls, "药水执行模式", self.process_mode, ("normal_negative", "reversal", "monobath"), row)
         row = self._combo(controls, "画幅", self.frame_size, ("half_frame", "35mm", "6x6", "6x7", "4x5"), row)
+        self.frame_long_edge_field = OptionalNumberField(controls, local_text("实际画幅长边 mm（空=按画幅）", "Frame long edge mm (blank: frame size)"), row=row)
+        row += 1
+        self.dir_effectiveness_field = OptionalNumberField(controls, local_text("DIR 工艺有效性 0–1（空=按程序）", "DIR process effectiveness 0–1 (blank: program default)"), row=row)
+        row += 1
         row = self._slider(controls, "冲洗时间 min", "time_min", 1.0, 20.0, row)
         row = self._slider(controls, "药水/环境温度 C", "temperature_c", 12.0, 32.0, row)
         row = self._slider(controls, "药水浓度 x", "concentration", 0.25, 2.0, row)
@@ -550,11 +564,11 @@ class DevelopProcessEditor:
         row = self._slider(controls, "漏光中心 Y", "light_leak_center_y", 0.0, 1.0, row)
         row = self._slider(controls, "漏光旋转角度", "light_leak_rotation_degrees", -180.0, 180.0, row)
         row = self._text_row(controls, "漏光身份种子", self.light_leak_identity_seed, row)
-        row = self._slider(controls, "灰尘（冲洗前遮挡）", "exposure_occlusion_dust", 0.0, 1.0, row)
-        row = self._slider(controls, "毛发（冲洗前遮挡）", "exposure_occlusion_hair", 0.0, 1.0, row)
-        row = self._slider(controls, "飞虫（冲洗前遮挡）", "exposure_occlusion_insect", 0.0, 1.0, row)
-        row = self._slider(controls, "碎屑（冲洗前遮挡）", "exposure_occlusion_debris", 0.0, 1.0, row)
+        for key,zh,en in [("exposure_occlusion_dust","灰尘遮挡","Dust obstruction"),("exposure_occlusion_hair","毛发遮挡","Hair obstruction"),("exposure_occlusion_insect","飞虫遮挡","Insect obstruction"),("exposure_occlusion_debris","碎屑遮挡","Debris obstruction")]:
+            ui.Toggle(controls,text=local_text(zh,en),variable=self.vars[key]).grid(row=row,column=0,columnspan=3,sticky="w",pady=3)
+            row+=1
         row = self._text_row(controls, "毛发/飞虫身份种子", self.exposure_occlusion_identity_seed, row)
+        row = self._text_row(controls, local_text("本卷／批次瑕疵种子（留空自动）", "Roll/batch defect seed (blank: automatic)"), self.incident_identity_seed, row)
         row = self._slider(controls, "海带 / 药染浑浊", "chemical_stain", 0.0, 1.0, row)
         row = self._slider(controls, "显影不均 / 药痕", "uneven_development", 0.0, 1.0, row)
         row = self._slider(controls, "乳剂网裂 / 温度冲击损伤", "reticulation_strength", 0.0, 1.0, row)
@@ -705,6 +719,9 @@ class DevelopProcessEditor:
         self._refresh_preview()
 
     def _set_controls_from_config(self, config: DarkroomConfig) -> None:
+        self._base_config = copy.deepcopy(config)
+        self.frame_long_edge_field.load(config.chemistry.frame_long_edge_mm)
+        self.dir_effectiveness_field.load(config.chemistry.dir_process_effectiveness)
         recipe = config.chemistry
         self.mode.set(str(config.mode))
         self.program_key.set(str(getattr(recipe, "program_key", "auto")))
@@ -741,6 +758,7 @@ class DevelopProcessEditor:
         self.exposure_occlusion_identity_seed.set(
             "" if occlusion_seed is None else str(int(occlusion_seed))
         )
+        self.incident_identity_seed.set("" if recipe.incident_identity_seed is None else str(recipe.incident_identity_seed))
         for key in DEVELOP_RECIPE_SCALAR_FIELDS:
             self.vars[key].set(float(getattr(recipe, key)))
         for index, value in enumerate(recipe.process_layer_balance):
@@ -762,7 +780,10 @@ class DevelopProcessEditor:
 
     def _config_from_controls(self) -> DarkroomConfig:
         base_path = develop_preset_path(self.preset_name.get())
-        config = DarkroomConfig.from_json(base_path) if base_path.exists() else DarkroomConfig()
+        config = (copy.deepcopy(self._base_config) if self._base_config is not None
+                  else DarkroomConfig.from_json(base_path) if base_path.exists() else DarkroomConfig())
+        config.chemistry.frame_long_edge_mm = self.frame_long_edge_field.read()
+        config.chemistry.dir_process_effectiveness = self.dir_effectiveness_field.read()
         recipe = config.chemistry
         recipe.program_key = str(self.program_key.get())
         config.mode = mode_for_program(recipe.program_key, self.mode.get())
@@ -807,6 +828,8 @@ class DevelopProcessEditor:
         recipe.exposure_occlusion_identity_seed = (
             None if occlusion_identity_text == "" else int(occlusion_identity_text)
         )
+        incident_text=self.incident_identity_seed.get().strip()
+        recipe.incident_identity_seed=None if not incident_text else int(incident_text)
         for key in DEVELOP_RECIPE_SCALAR_FIELDS:
             setattr(recipe, key, float(self.vars[key].get()))
         recipe.process_layer_balance = tuple(

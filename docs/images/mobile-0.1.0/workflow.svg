@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">Film Foundry Mobile — 从装卷到成片 / From roll to photograph</title>
+  <desc id="desc">流程示意图。装卷、拍摄、冲洗、扫描和整理。原片与潜影、冲洗底片、扫描照片分别保留，同卷可以再次冲洗，同片可以再次扫描。This is a workflow illustration, not an app screenshot.</desc>
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#d9b775"/></marker></defs>
+  <rect width="1200" height="420" rx="24" fill="#1d1e22"/>
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <text x="36" y="48" font-size="15" letter-spacing="3" fill="#d9b775">FILM FOUNDRY / ANDROID 0.1.0</text>
+    <text x="36" y="89" font-size="28" fill="#f2eee5">从装卷到成片</text>
+    <text x="265" y="88" font-size="20" fill="#b9b6b0">From roll to photograph</text>
+    <g fill="#292a2e" stroke="#4d4a43"><rect x="36" y="120" width="204" height="157" rx="14"/><rect x="267" y="120" width="204" height="157" rx="14"/><rect x="498" y="120" width="204" height="157" rx="14"/><rect x="729" y="120" width="204" height="157" rx="14"/><rect x="960" y="120" width="204" height="157" rx="14"/></g>
+    <g stroke="#d9b775" stroke-width="2" marker-end="url(#arrow)"><path d="M244 197H262"/><path d="M475 197H493"/><path d="M706 197H724"/><path d="M937 197H955"/></g>
+    <g fill="#d9b775" font-size="15"><text x="54" y="151">01 / LOAD</text><text x="285" y="151">02 / SHOOT</text><text x="516" y="151">03 / DEVELOP</text><text x="747" y="151">04 / SCAN</text><text x="978" y="151">05 / KEEP</text></g>
+    <g fill="#f2eee5" font-size="25"><text x="54" y="191">选择胶卷</text><text x="285" y="191">留下曝光</text><text x="516" y="191">形成底片</text><text x="747" y="191">解释色彩</text><text x="978" y="191">整理与导出</text></g>
+    <g fill="#b9b6b0" font-size="17"><text x="54" y="230">材料 · 画幅 · 张数</text><text x="285" y="230">过片 · 多曝 · 打印</text><text x="516" y="230">药浴 · 工艺 · 事故</text><text x="747" y="230">光源 · 风格 · 曲线</text><text x="978" y="230">评分 · 收藏 · 分享</text></g>
+    <path d="M36 304H1164" stroke="#454440"/>
+    <text x="36" y="340" font-size="20" fill="#e2c48c">同一卷，再次冲洗。 同一片，再次扫描。</text>
+    <text x="36" y="375" font-size="16" fill="#b9b6b0">Develop a roll again. Rescan a developed frame. Keep capture sources, developed film and scans separately.</text>
+    <text x="1110" y="339" text-anchor="end" font-size="14" fill="#b9b6b0">流程示意 / Workflow</text>
+  </g>
+</svg>

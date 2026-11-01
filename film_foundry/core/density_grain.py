@@ -450,6 +450,7 @@ def apply_density_grain(
     component_scope: str = "combined_legacy",
     consume_input_as_effective_delta: bool = False,
     model: str = FULL_DENSITY_GRAIN_MODEL,
+    spatial_scale_factor: float = 1.0,
 ) -> np.ndarray:
     """在密度域加入颗粒扰动，sigma_D 与 sqrt(D) 绑定。
 
@@ -468,6 +469,9 @@ def apply_density_grain(
             "consumed grain input must be writable C-contiguous float32"
         )
     density_cmy = np.asarray(source, dtype=np.float32)
+    spatial_scale_factor = float(spatial_scale_factor)
+    if not np.isfinite(spatial_scale_factor) or spatial_scale_factor <= 0.0:
+        raise ValueError("spatial_scale_factor must be finite and positive")
     rng = rng or np.random.default_rng()
     height, width = density_cmy.shape[:2]
     model = str(model).strip().lower()
@@ -558,6 +562,12 @@ def apply_density_grain(
         grain_radius_factor,
         grain_clump_factor,
     )
+    reference_grain_scales = grain_scales
+    if spatial_scale_factor != 1.0:
+        # Project after material/process scale preparation and its historical
+        # bounds. Projecting correlation_radius before preparation would apply
+        # the gain twice in the single-scale fallback.
+        grain_scales = grain_scales * np.float32(spatial_scale_factor)
     effective_scale = None
     if reduced_model:
         effective_scale = _effective_grain_scale(grain_scales, grain_weights)
@@ -632,16 +642,24 @@ def apply_density_grain(
     if shadow_weight is not None and float(np.max(shadow_weight)) > 1e-6:
         shadow_noise: np.ndarray | None = None
         if reduced_model:
+            shadow_scale = float(np.clip(float(effective_scale) * 2.8, 1e-5, 0.10))
+            if spatial_scale_factor != 1.0:
+                shadow_scale = float(np.clip(
+                    float(effective_scale) * 2.8 / spatial_scale_factor, 1e-5, 0.10
+                )) * spatial_scale_factor
             shadow_noise = _reduced_multilayer_field(
                 rng,
                 work_shape,
-                float(np.clip(float(effective_scale) * 2.8, 1e-5, 0.10)),
+                shadow_scale,
                 shared_mix=0.46,
                 out=reusable_field,
             )
             reusable_field = None
         else:
-            coarse_scales = np.clip(grain_scales * 2.8, 1e-5, 0.10)
+            coarse_scales = np.clip(reference_grain_scales * 2.8, 1e-5, 0.10)
+            if spatial_scale_factor != 1.0:
+                # The coarse-cloud bound is in reference material units too.
+                coarse_scales = coarse_scales * np.float32(spatial_scale_factor)
             coarse_weights = grain_weights / max(float(np.sqrt(np.sum(grain_weights * grain_weights))), 1e-6)
             for scale, weight in zip(coarse_scales, coarse_weights, strict=False):
                 field = _blurred_multilayer_field(
@@ -681,7 +699,9 @@ def apply_density_grain(
     del reusable_field
 
     if scope == "combined_legacy" and development.residue_factor > 1e-6:
-        residue_sigma = radius_to_sigma(0.010 * development.grain_radius_factor, (*work_shape, 3))
+        residue_sigma = radius_to_sigma(
+            0.010 * development.grain_radius_factor * spatial_scale_factor, (*work_shape, 3)
+        )
         residue = standard_normal_float32(rng, work_shape)
         cv2.GaussianBlur(
             residue,

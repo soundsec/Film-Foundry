@@ -11,11 +11,56 @@ import zipfile
 import numpy as np
 
 from film_foundry.core.atomic_io import strict_json_load, strict_json_loads
+from film_foundry.core.frame_identity import FRAME_IDENTITY_KEY, normalize_frame_identity
 from film_foundry.core.states import DevelopedNegative
+from film_foundry.core.spectral_optics import load_spectral_medium
 from film_foundry.model.config import DarkroomConfig
 
 
 LEGACY_PICKLE_ENV = "FILM_FOUNDRY_ALLOW_LEGACY_PICKLE"
+
+
+def probe_scan_archive_memory(path: str | Path) -> tuple[int, int, int, int] | None:
+    """Read NPY headers only; return width, height, resident and decode bytes.
+
+    Mirrors the optical-only loader's field selection, including spectral
+    components. The full loader remains responsible for values and metadata.
+    Opaque legacy object archives return None and keep their opt-in loader.
+    """
+    with zipfile.ZipFile(path) as archive:
+        names = set(archive.namelist())
+        master = "optical_density_rgb" if "optical_density_rgb.npy" in names else "density_grain"
+        selected = [master] if master == "optical_density_rgb" else ["density_cmy", "density_grain"]
+        selected += [key for key in ("spectral_component_amounts", "spectral_post_process_density_rgb") if key + ".npy" in names]
+        geometry = None
+        resident = largest_decode = 0
+        for key in selected:
+            if key + ".npy" not in names:
+                return None  # Canonical loader reports missing/legacy members.
+            with archive.open(key + ".npy") as stream:
+                version = np.lib.format.read_magic(stream)
+                if version == (1, 0):
+                    shape, _fortran, dtype = np.lib.format.read_array_header_1_0(stream)
+                elif version == (2, 0):
+                    shape, _fortran, dtype = np.lib.format.read_array_header_2_0(stream)
+                else:
+                    return None  # Leave other NPY versions to NumPy's loader.
+                if dtype.hasobject:
+                    return None
+                if len(shape) != 3 or min(shape) <= 0 or (key != "spectral_component_amounts" and shape[2] != 3):
+                    raise ValueError(f"{path}: invalid scan field geometry for {key}: {shape}")
+                if geometry is None:
+                    geometry = shape[:2]
+                elif geometry != shape[:2]:
+                    raise ValueError(f"{path}: scan fields have inconsistent geometry")
+                count = int(shape[0]) * int(shape[1]) * int(shape[2])
+                encoded = count * dtype.itemsize
+                if archive.getinfo(key + ".npy").file_size - stream.tell() != encoded:
+                    raise ValueError(f"{path}: truncated or inconsistent NPY size for {key}")
+                resident += count * 4
+                largest_decode = max(largest_decode, encoded + count * 4)
+        height, width = geometry
+        return width, height, resident, resident + largest_decode
 
 
 def _as_density_array(value: Any, key: str, path: Path) -> np.ndarray:
@@ -204,6 +249,13 @@ def _load_medium_metadata(
         metadata["developed_medium"] = medium_payload
         if isinstance(medium_payload.get("film_process_model"), dict):
             metadata["film_process_model"] = medium_payload["film_process_model"]
+        if FRAME_IDENTITY_KEY in medium_payload:
+            metadata[FRAME_IDENTITY_KEY] = normalize_frame_identity(
+                medium_payload.get(FRAME_IDENTITY_KEY),
+                path=path,
+            )
+            if metadata[FRAME_IDENTITY_KEY] is None:
+                metadata.pop(FRAME_IDENTITY_KEY)
     return metadata, medium_payload, _metadata_kwargs(medium_payload, path)
 
 
@@ -301,6 +353,8 @@ def load_developed_negative_npz(
                 )
             clear_base_optical_density_rgb = tuple(float(value) for value in clear)
     metadata, medium_payload, identity_kwargs = _load_medium_metadata(path)
+    with np.load(path, allow_pickle=False) as data:
+        spectral_medium = load_spectral_medium(data, medium_payload, density_grain.shape)
     metadata["stage_storage"] = {
         "profile": "portable_layers_without_history_v1",
         "history": "unavailable",
@@ -312,6 +366,7 @@ def load_developed_negative_npz(
         after_mtf=_unavailable_rgb_field(),
         after_halation=_unavailable_rgb_field(),
         density_cmy=density_cmy,
+        spectral_medium=spectral_medium,
         density_grain=density_grain,
         optical_density_rgb=optical_density_rgb,
         clear_base_optical_density_rgb=clear_base_optical_density_rgb,
@@ -380,6 +435,8 @@ def load_developed_medium_for_scan(
         )
 
     metadata, _medium_payload, identity_kwargs = _load_medium_metadata(path)
+    with np.load(path, allow_pickle=False) as data:
+        spectral_medium = load_spectral_medium(data, _medium_payload, optical_density_rgb.shape)
     metadata["stage_storage"] = {
         "profile": "scan_optical_only_v1",
         "history": "unavailable",
@@ -397,4 +454,5 @@ def load_developed_medium_for_scan(
         clear_base_optical_density_rgb=clear_base_optical_density_rgb,
         **identity_kwargs,
         metadata=metadata,
+        spectral_medium=spectral_medium,
     )

@@ -1,8 +1,13 @@
-"""Internal scan runtime composed by engine; public entries are re-exported there."""
+"""扫描编排。
+
+公开入口从 engine 再导出。形成和落盘不在这里。
+需要的材料光学和片基由 engine 上的观察函数提供，本文件不导入 engine。
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
+from film_foundry.core.spectral_optics import spectral_capture_record
 
 import numpy as np
 
@@ -12,6 +17,7 @@ from film_foundry.core.electronic_negative import (
     scanner_raw_with_reference_border,
 )
 from film_foundry.core.execution_topology import reference_execution_enabled
+from film_foundry.core.scan_output import ScanOutputPlan
 from film_foundry.core.media import config_medium_process
 from film_foundry.core.media_registry import get_scan_pipeline
 from film_foundry.core.runtime_validate import (
@@ -30,9 +36,13 @@ from film_foundry.core.scanner import (
     render_positive_scan,
     render_positive_transparency_scan,
     scanner_raw_to_positive_rgb,
+    scanner_color_response_record,
+    scanner_light_exposure_record,
+    apply_scanner_tone_curve,
     transmission_illuminant_rgb,
 )
 from film_foundry.core.sidecar import transmission_raw_source_kind
+from film_foundry.core.frame_identity import FRAME_IDENTITY_KEY, frame_identity_from_mapping
 from film_foundry.core.states import DevelopedNegative, ScanOutput, ScannedPositive
 from film_foundry.core.subtractive import density_to_positive_rgb
 from film_foundry.model.config import DarkroomConfig
@@ -62,6 +72,12 @@ _ENGINE_SERVICE_NAMES = (
     '_force_bw_negative',
 )
 _engine_services = {}
+
+
+def _encode_scan_output(image, scanner, *, consume_input=False):
+    """Final display encoding and independent tone adjustment after normalization."""
+    encoded = linear_to_srgb(image, consume_input=consume_input)
+    return apply_scanner_tone_curve(encoded, scanner, consume_input=True)
 
 
 def _bind_engine_services(services):
@@ -130,6 +146,12 @@ def _force_bw_negative(*args, **kwargs):
     return _engine_services['_force_bw_negative'](*args, **kwargs)
 
 
+def _copy_frame_identity(medium: DevelopedNegative, metadata: dict) -> None:
+    identity = frame_identity_from_mapping(getattr(medium, "metadata", None))
+    if identity is not None:
+        metadata[FRAME_IDENTITY_KEY] = dict(identity)
+
+
 def scan_negative(
     negative: DevelopedNegative,
     config: DarkroomConfig | None = None,
@@ -151,6 +173,12 @@ def scan_negative(
         scanned.metadata["resolved_interpretation"] = (
             "positive" if str(scanned.input_polarity).strip().lower() == "positive" else "negative"
         )
+    scanned.metadata["scanner_color_response"] = scanner_color_response_record(
+        runtime.scanner
+    )
+    scanned.metadata["optical_capture"] = spectral_capture_record(runtime.scanner)
+    scanned.metadata["scanner_light_exposure"] = scanner_light_exposure_record(runtime.scanner)
+    _copy_frame_identity(negative, scanned.metadata)
     return scanned
 
 
@@ -237,6 +265,9 @@ def scan_medium_direct(
         scanned.metadata["resolved_interpretation"] = (
             "positive" if str(scanned.input_polarity).strip().lower() == "positive" else "negative"
         )
+        scanned.metadata["scanner_color_response"] = scanner_color_response_record(
+            runtime.scanner
+        )
         return scanned
     if selected == "manual":
         if bool(runtime.scanner.invert_transmission):
@@ -251,6 +282,12 @@ def scan_medium_direct(
     scanned.metadata["requested_interpretation"] = selected
     scanned.metadata["resolved_interpretation"] = selected
     scanned.metadata["recorded_medium_polarity"] = str(medium.image_polarity)
+    scanned.metadata["scanner_color_response"] = scanner_color_response_record(
+        runtime.scanner
+    )
+    scanned.metadata["optical_capture"] = spectral_capture_record(runtime.scanner)
+    scanned.metadata["scanner_light_exposure"] = scanner_light_exposure_record(runtime.scanner)
+    _copy_frame_identity(medium, scanned.metadata)
     return scanned
 
 
@@ -292,7 +329,7 @@ def _scan_negative_pipeline(
         # unavailable and therefore falls back to the rendered positive.
         positive_no_grain = None
         positive_no_grain_source = "scan_optical_only_render_fallback"
-    negative_total_density = _medium_optical_density_rgb(negative, config.film)
+    negative_total_density = _medium_optical_density_rgb(negative, config.film, scanner=config.scanner)
     negative_total_density = _optical_density_with_optional_reference_border(
         negative_total_density,
         config,
@@ -351,7 +388,7 @@ def _scan_positive_transparency_pipeline(
     config, prepared = _resolve_scan_interpretation_config(negative, config, _prepared_config)
     config = _runtime_config(config, prepared=prepared)
     _validate_scan_runtime(config)
-    negative_total_density = _medium_optical_density_rgb(negative, config.film)
+    negative_total_density = _medium_optical_density_rgb(negative, config.film, scanner=config.scanner)
     negative_total_density = _optical_density_with_optional_reference_border(
         negative_total_density,
         config,
@@ -406,7 +443,7 @@ def _scan_positive_transparency_pipeline(
             np.float32,
             copy=False,
         )
-        output_srgb = linear_to_srgb(positive_linear)
+        output_srgb = _encode_scan_output(positive_linear, config.scanner)
         negative_linear_snapshot = scanner_raw.astype(np.float32)
         negative_base_balanced_snapshot = interpreted_raw.astype(np.float32)
         positive_raw_snapshot = interpreted_raw.astype(np.float32)
@@ -414,8 +451,9 @@ def _scan_positive_transparency_pipeline(
         scanner_raw_snapshot = scanner_raw.astype(np.float32)
     else:
         np.clip(positive_linear, 0.0, 1.0, out=positive_linear)
-        output_srgb = linear_to_srgb(
+        output_srgb = _encode_scan_output(
             positive_linear.copy(),
+            config.scanner,
             consume_input=True,
         )
         # Preserve the established independently mutable diagnostic fields.
@@ -489,6 +527,8 @@ def scan_scanner_raw(
 ) -> ScannedPositive:
     """把电子负片 scanner raw 直接解释成正像，适合 scan-only 快速重扫。"""
     config = _runtime_config(config, prepared=_prepared_config)
+    if config.scanner.spectral_observation_profile is not None:
+        raise ValueError("Spectral observation requires final material components, not captured RGB scanner raw.")
     return _scan_scanner_raw_array(
         scanner_raw,
         config,
@@ -522,6 +562,8 @@ def scan_scanner_raw_direct(
     raw_source_kind: str | None = None,
 ) -> ScannedPositive:
     """Directly interpret raw transmission data as negative or positive."""
+    if config.scanner.spectral_observation_profile is not None:
+        raise ValueError("Spectral observation requires final material components, not captured RGB scanner raw.")
     runtime = _runtime_config(config)
     requested = configure_scan_interpretation(runtime, mode)
     physical_kind = raw_source_kind
@@ -658,7 +700,7 @@ def scan_scanner_raw_direct(
             scanner_raw=raw,
             negative_total_density=(-np.log10(raw)).astype(np.float32, copy=False),
             positive_linear=positive_linear,
-            output_srgb=linear_to_srgb(positive_linear),
+            output_srgb=_encode_scan_output(positive_linear, runtime.scanner),
             positive_no_grain=positive_linear,
             interpreter_key=str(runtime.scanner.interpreter_key),
             input_polarity=str(runtime.scanner.input_polarity),
@@ -740,6 +782,10 @@ def _scan_scanner_raw_array(
         else "preserved_by_user",
     )
     metadata.setdefault("capture_model", "transmission_illuminant_sensor_v2")
+    metadata.setdefault(
+        "scanner_color_response",
+        scanner_color_response_record(config.scanner),
+    )
     metadata.setdefault("negative_interpretation_order", (
         "base_mask_removal",
         "log_density_inversion",
@@ -900,14 +946,15 @@ def _scan_scanner_raw_array(
             np.float32,
             copy=False,
         )
-        output_srgb = linear_to_srgb(positive_linear)
+        output_srgb = _encode_scan_output(positive_linear, config.scanner)
     else:
         np.clip(positive_linear, 0.0, 1.0, out=positive_linear)
         # positive_linear is retained as an Inspector stage.  Its explicit
         # copy is the final output buffer and can be consumed by the bit-exact
         # sRGB encoder, avoiding the encoder's second private RGB expression.
-        output_srgb = linear_to_srgb(
+        output_srgb = _encode_scan_output(
             positive_linear.copy(),
+            config.scanner,
             consume_input=True,
         )
     if positive_no_grain is None:
@@ -993,6 +1040,7 @@ def _normalize_encode_output_tiled(
     pass and must likewise produce one immutable full-image calibration.
     """
     height = positive_linear.shape[0]
+    global_black = global_white = None
     if (
         config.scanner.scan_normalize
         and float(config.scanner.scan_normalize_strength) > 0.0
@@ -1003,6 +1051,20 @@ def _normalize_encode_output_tiled(
             white_percentile=config.scanner.scan_white_percentile,
             mode=config.scanner.scan_normalize_mode,
         )
+    if not reference_execution_enabled():
+        plan = ScanOutputPlan.prepare(
+            config.scanner, black=global_black, white=global_white,
+        )
+        for start in range(0, height, tile_rows):
+            stop = min(start + tile_rows, height)
+            tile = positive_linear[start:stop]
+            encoded = plan.apply_cpu(tile, consume_input=True)
+            if not np.shares_memory(encoded, tile):
+                tile[...] = encoded
+        return positive_linear
+
+    # Keep the original separate frame passes available for exact A/B and rollback.
+    if global_black is not None:
         for start in range(0, height, tile_rows):
             stop = min(start + tile_rows, height)
             apply_scan_normalization_range(
@@ -1018,8 +1080,9 @@ def _normalize_encode_output_tiled(
 
     for start in range(0, height, tile_rows):
         stop = min(start + tile_rows, height)
-        linear_to_srgb(
+        _encode_scan_output(
             positive_linear[start:stop],
+            config.scanner,
             consume_input=True,
         )
     return positive_linear
@@ -1081,6 +1144,7 @@ def _scan_negative_output_tiled(
             medium,
             config.film,
             slice(start, stop),
+            scanner=config.scanner,
         )
         scanner_raw = capture_optical_density(
             total_density,
@@ -1174,6 +1238,7 @@ def _scan_positive_output_tiled(
             medium,
             config.film,
             slice(start, stop),
+            scanner=config.scanner,
         )
         scanner_raw = capture_optical_density(
             total_density,
@@ -1223,7 +1288,7 @@ def _scan_negative_output_only(
         return _scan_negative_output_tiled(medium, config, tile_rows)
 
     known_base = _clear_base_scanner_sample(config, medium).reshape(3)
-    total_density = _medium_optical_density_rgb(medium, config.film)
+    total_density = _medium_optical_density_rgb(medium, config.film, scanner=config.scanner)
     total_density = _optical_density_with_optional_reference_border(
         total_density,
         config,
@@ -1297,7 +1362,7 @@ def _scan_negative_output_only(
             mode=config.scanner.scan_normalize_mode,
             consume_input=True,
         )
-    return linear_to_srgb(positive_linear, consume_input=True)
+    return _encode_scan_output(positive_linear, config.scanner, consume_input=True)
 
 
 def _scan_positive_output_only(
@@ -1315,7 +1380,7 @@ def _scan_positive_output_only(
     )
     if tile_rows is not None:
         return _scan_positive_output_tiled(medium, config, tile_rows)
-    total_density = _medium_optical_density_rgb(medium, config.film)
+    total_density = _medium_optical_density_rgb(medium, config.film, scanner=config.scanner)
     total_density = _optical_density_with_optional_reference_border(
         total_density,
         config,
@@ -1358,7 +1423,7 @@ def _scan_positive_output_only(
             # result allocation for exact same-version A/B.
             consume_input=not reference_execution_enabled(),
         )
-    return linear_to_srgb(positive_linear, consume_input=True)
+    return _encode_scan_output(positive_linear, config.scanner, consume_input=True)
 
 
 def _scan_medium_output_only(
@@ -1369,7 +1434,7 @@ def _scan_medium_output_only(
     """Resolve observation exactly like the full scanner but return only pixels."""
     normalized = str(interpretation_mode or "auto").strip().lower()
     if normalized in {"", "auto"}:
-        resolved, prepared = _resolve_scan_interpretation_config(medium, None, False)
+        resolved, prepared = _resolve_scan_interpretation_config(medium, config, False)
         runtime = _runtime_config(resolved, prepared=prepared)
         _align_interpreter_to_medium(runtime, medium)
         _validate_interpreter_compatibility(runtime, medium)
@@ -1408,7 +1473,7 @@ def scan_medium_output(
             if bool(runtime.scanner.invert_transmission)
             else "direct"
         )
-    return ScanOutput(
+    output = ScanOutput(
         output_srgb=output_srgb,
         interpreter_key=str(runtime.scanner.interpreter_key),
         input_polarity=str(runtime.scanner.input_polarity),
@@ -1432,7 +1497,12 @@ def scan_medium_output(
             "clear_base_border": bool(
                 runtime.scanner.include_clear_base_border
             ),
+            "scanner_color_response": scanner_color_response_record(runtime.scanner),
         },
     )
+    output.metadata["optical_capture"] = spectral_capture_record(runtime.scanner)
+    output.metadata["scanner_light_exposure"] = scanner_light_exposure_record(runtime.scanner)
+    _copy_frame_identity(medium, output.metadata)
+    return output
 
 

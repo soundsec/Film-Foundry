@@ -12,6 +12,18 @@ from film_foundry.core.media_registry import (
 from film_foundry.model.config import DarkroomConfig
 
 
+@pytest.mark.parametrize("process", ["color_reversal", "bw_reversal", "custom"])
+def test_phone_ordered_positive_routes_by_final_transmissive_contract(process):
+    from types import SimpleNamespace
+    import film_foundry.core.engine  # noqa: F401
+    medium = SimpleNamespace(medium_process=process, medium_family="film", view_mode="transmissive",
+                             image_polarity="positive", compatible_interpreters=("positive_transparency_scan",))
+    assert get_scan_pipeline(medium).key == "reversal"
+    assert medium.medium_process == process
+    medium.view_mode = "reflective"
+    assert get_scan_pipeline(medium).key == "unsupported"
+
+
 def test_registry_lists_only_current_and_experimental_media_without_engine_dependency():
     processes = registered_media_processes()
     assert "negative" in processes

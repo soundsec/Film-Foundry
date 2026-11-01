@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import numpy as np
+
+from film_foundry.contracts.spectral_exposure import SpectralExposureProfile
+from film_foundry.contracts.spectral_optics import SpectralMaterialProfile
+from film_foundry.contracts.material_snapshot import MaterialSnapshot
 
 from film_foundry.core.development import EffectiveDevelopmentState, build_effective_development
 from film_foundry.core.derived_cache import pseudoinverse_3x3
@@ -239,15 +243,37 @@ def _silver_material(film: FilmStockConfig, layer_count: int) -> ReducedFilmMate
     )
 
 
+def _material_layer_count(film: FilmStockConfig, exposed_latent=None) -> int:
+    """Stock owns new exposure topology; archived pools retain their topology."""
+    if exposed_latent is None:
+        return 1 if _is_monochrome_material(film) else 3
+    layers = int(exposed_latent.halide.shape[-1])
+    if layers not in {1, 3} or (layers == 1 and not _is_monochrome_material(film)):
+        raise ValueError("latent layer topology does not match the material")
+    return layers
+
+
+def _exposure_material(film: FilmStockConfig) -> ReducedFilmMaterial:
+    """Exposure preserves the stock's silver/coupler capacity, independent of baths."""
+    if _is_monochrome_material(film):
+        return _silver_material(film, 1)
+    return _color_material(film)
+
+
 def _compatibility_for_program(
     film: FilmStockConfig,
     program_key: str,
     layer_count: int,
+    *,
+    program=None,
 ) -> CompatibilityProfile:
     native_positive = str(film.image_polarity).strip().lower() == "positive"
     program_positive = "reversal" in str(program_key).strip().lower()
     native_mono = _is_monochrome_material(film)
     program_mono = str(program_key).strip().lower().startswith("bw_")
+    if str(program_key) == "custom" and program is not None:
+        program_positive = program.output_polarity == "positive"
+        program_mono = not any(step.action.value == "develop_color" for step in program.steps)
     mask_bleach = float(
         np.clip(getattr(film, "experimental_mask_bleach_susceptibility", 1.0), 0.0, 1.0)
     )
@@ -353,7 +379,53 @@ def _material_latent_state(
         consume_layer_exposure=True,
     )
     state.auxiliary_remaining = float(np.clip(film.auxiliary_layer_amount, 0.0, 1.0))
+    if film.spectral_exposure_profile is not None:
+        state.spectral_exposure_profile = SpectralExposureProfile.from_value(film.spectral_exposure_profile)
+    if film.spectral_material_profile is not None:
+        state.spectral_material_profile = SpectralMaterialProfile.from_value(film.spectral_material_profile)
     return state
+
+
+def freeze_material_latent_state(image_linear, film, material, *, latent_layer_exposure_addition=None):
+    """Public freeze boundary; private work-grid estimates do not need a snapshot."""
+    state = _material_latent_state(image_linear, film, material,
+        latent_layer_exposure_addition=latent_layer_exposure_addition)
+    state.material_snapshot = MaterialSnapshot(asdict(film))
+    return state
+
+
+def _resolve_latent_state(
+    image_linear: np.ndarray | None,
+    film: FilmStockConfig,
+    material: ReducedFilmMaterial,
+    *,
+    exposed_latent: FilmProcessState | None = None,
+    latent_layer_exposure_addition: np.ndarray | LayerExposureAdditionField | None = None,
+) -> FilmProcessState:
+    """Return a frozen exposed state; do not re-expose when one is supplied."""
+    if exposed_latent is not None:
+        if image_linear is not None:
+            raise ValueError("pass either an image or an exposed latent state, not both")
+        if latent_layer_exposure_addition is not None:
+            raise ValueError(
+                "latent_layer_exposure_addition is already frozen into the exposed latent"
+            )
+        exposed_latent.validate()
+        actual = int(np.asarray(exposed_latent.developability).shape[-1])
+        expected = int(material.layer_count)
+        if actual != expected:
+            raise ValueError(
+                f"exposed latent layer_count {actual} does not match material {expected}"
+            )
+        return exposed_latent
+    if image_linear is None:
+        raise ValueError("develop requires an image or an exposed latent state")
+    return _material_latent_state(
+        image_linear,
+        film,
+        material,
+        latent_layer_exposure_addition=latent_layer_exposure_addition,
+    )
 
 
 def _bw_optical_masters(
@@ -452,7 +524,7 @@ def _bw_optical_masters(
 
 
 def develop_bw_negative_reduced(
-    image_linear: np.ndarray,
+    image_linear: np.ndarray | None,
     film: FilmStockConfig,
     recipe: DevelopRecipeConfig,
     *,
@@ -460,6 +532,7 @@ def develop_bw_negative_reduced(
     latent_layer_exposure_addition: np.ndarray | LayerExposureAdditionField | None = None,
     retain_latent_fraction: bool = True,
     retain_process_state: bool = True,
+    exposed_latent: FilmProcessState | None = None,
 ) -> ReducedBwDevelopment:
     """Run a silver-only negative program without changing material identity.
 
@@ -469,12 +542,13 @@ def develop_bw_negative_reduced(
     """
     effective = build_effective_development(recipe)
     material_is_mono = _is_monochrome_material(film)
-    layer_count = 1 if material_is_mono else 3
+    layer_count = _material_layer_count(film, exposed_latent)
     material = _silver_material(film, layer_count)
-    latent_state = _material_latent_state(
+    latent_state = _resolve_latent_state(
         image_linear,
         film,
         material,
+        exposed_latent=exposed_latent,
         latent_layer_exposure_addition=latent_layer_exposure_addition,
     )
     latent_fraction = (
@@ -492,7 +566,7 @@ def develop_bw_negative_reduced(
         material_process="negative",
         layer_count=layer_count,
     )
-    compatibility = _compatibility_for_program(film, program.key, layer_count)
+    compatibility = _compatibility_for_program(film, program.key, layer_count, program=program)
     result = apply_process_program(
         material,
         latent_state,
@@ -706,7 +780,7 @@ def shape_positive_dye_chroma(
 
 
 def develop_bw_reversal_reduced(
-    image_linear: np.ndarray,
+    image_linear: np.ndarray | None,
     film: FilmStockConfig,
     recipe: DevelopRecipeConfig,
     *,
@@ -714,16 +788,18 @@ def develop_bw_reversal_reduced(
     latent_layer_exposure_addition: np.ndarray | LayerExposureAdditionField | None = None,
     retain_latent_fraction: bool = True,
     retain_process_state: bool = True,
+    exposed_latent: FilmProcessState | None = None,
 ) -> ReducedBwDevelopment:
     """Form a silver positive by developing the halide left by first development."""
     effective = build_effective_development(recipe)
     material_is_mono = _is_monochrome_material(film)
-    layer_count = 1 if material_is_mono else 3
+    layer_count = _material_layer_count(film, exposed_latent)
     material = _silver_material(film, layer_count)
-    state = _material_latent_state(
+    state = _resolve_latent_state(
         image_linear,
         film,
         material,
+        exposed_latent=exposed_latent,
         latent_layer_exposure_addition=latent_layer_exposure_addition,
     )
     latent_fraction = (
@@ -737,7 +813,7 @@ def develop_bw_reversal_reduced(
         material_process="reversal",
         layer_count=layer_count,
     )
-    compatibility = _compatibility_for_program(film, program.key, layer_count)
+    compatibility = _compatibility_for_program(film, program.key, layer_count, program=program)
     result = apply_process_program(
         material,
         state,
@@ -811,25 +887,29 @@ def develop_bw_reversal_reduced(
     )
 
 
-def _color_material(film: FilmStockConfig) -> ReducedFilmMaterial:
-    """Build the three-layer colour-program material.
+def _color_material(film: FilmStockConfig, layer_count: int | None = None) -> ReducedFilmMaterial:
+    """Build colour-bath optics for the stock's existing layer topology.
 
     Native colour stocks carry coupler capacity. A monochrome stock can still
     enter a colour program, but it keeps a zero coupler pool so C-41/E-6
     chemistry cannot invent dye that the material never had.
     """
     material_is_mono = _is_monochrome_material(film)
+    layers = _material_layer_count(film) if layer_count is None else int(layer_count)
+    if layers not in {1, 3} or (layers == 1 and not material_is_mono):
+        raise ValueError("colour-program material topology does not match the stock")
     clear_support, mask_density = _base_and_mask_density(film)
     return ReducedFilmMaterial(
         key=str(film.name),
-        layer_count=3,
-        halide_capacity=(1.0, 1.0, 1.0),
-        coupler_capacity=(0.0, 0.0, 0.0) if material_is_mono else (1.0, 1.0, 1.0),
+        layer_count=layers,
+        halide_capacity=(1.0,) * layers,
+        coupler_capacity=(0.0 if material_is_mono else 1.0,) * layers,
         dye_absorption_matrix=tuple(
-            tuple(float(value) for value in row) for row in film.dye_absorption_matrix
+            tuple(float(value) for value in row) if layers == 3 else (0.0,)
+            for row in film.dye_absorption_matrix
         ),
-        silver_density_per_layer=(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0),
-        residual_halide_density_per_layer=(0.04, 0.04, 0.04),
+        silver_density_per_layer=(1.0 / layers,) * layers,
+        residual_halide_density_per_layer=(0.12 / layers,) * layers,
         base_density_rgb=tuple(float(value) for value in film.film_base_density_rgb),
         clear_support_density_rgb=clear_support,
         masking_coupler_density_rgb=mask_density,
@@ -841,7 +921,7 @@ def _color_material(film: FilmStockConfig) -> ReducedFilmMaterial:
         retained_halide_density_rgb=tuple(
             float(value) for value in film.retained_halide_density_rgb
         ),
-        **_material_latent_curve_kwargs(film, 3),
+        **_material_latent_curve_kwargs(film, layers),
     )
 
 
@@ -869,7 +949,7 @@ def _rgb_density_to_layer_proxy(
 
 
 def develop_color_negative_reduced(
-    image_linear: np.ndarray,
+    image_linear: np.ndarray | None,
     film: FilmStockConfig,
     recipe: DevelopRecipeConfig,
     *,
@@ -877,6 +957,7 @@ def develop_color_negative_reduced(
     latent_layer_exposure_addition: np.ndarray | LayerExposureAdditionField | None = None,
     retain_latent_fraction: bool = True,
     retain_process_state: bool = True,
+    exposed_latent: FilmProcessState | None = None,
 ) -> ReducedColorDevelopment:
     """Run color coupling, bleach, and fixing before producing a density master.
 
@@ -884,11 +965,13 @@ def develop_color_negative_reduced(
     silver, but no dye can form; standard bleach then clears that silver.
     """
     effective = build_effective_development(recipe)
-    material = _color_material(film)
-    latent_state = _material_latent_state(
+    layer_count = _material_layer_count(film, exposed_latent)
+    material = _color_material(film, layer_count)
+    latent_state = _resolve_latent_state(
         image_linear,
         film,
         material,
+        exposed_latent=exposed_latent,
         latent_layer_exposure_addition=latent_layer_exposure_addition,
     )
     latent_fraction = (
@@ -900,9 +983,9 @@ def develop_color_negative_reduced(
         recipe,
         mode="color_negative",
         material_process="negative",
-        layer_count=3,
+        layer_count=layer_count,
     )
-    compatibility = _compatibility_for_program(film, program.key, 3)
+    compatibility = _compatibility_for_program(film, program.key, layer_count, program=program)
     result = apply_process_program(
         material,
         latent_state,
@@ -1073,7 +1156,7 @@ def develop_color_negative_reduced(
 
 
 def develop_color_reversal_reduced(
-    image_linear: np.ndarray,
+    image_linear: np.ndarray | None,
     film: FilmStockConfig,
     recipe: DevelopRecipeConfig,
     *,
@@ -1081,14 +1164,17 @@ def develop_color_reversal_reduced(
     latent_layer_exposure_addition: np.ndarray | LayerExposureAdditionField | None = None,
     retain_latent_fraction: bool = True,
     retain_process_state: bool = True,
+    exposed_latent: FilmProcessState | None = None,
 ) -> ReducedColorDevelopment:
     """Form a dye positive from the halide remaining after first development."""
     effective = build_effective_development(recipe)
-    material = _color_material(film)
-    state = _material_latent_state(
+    layer_count = _material_layer_count(film, exposed_latent)
+    material = _color_material(film, layer_count)
+    state = _resolve_latent_state(
         image_linear,
         film,
         material,
+        exposed_latent=exposed_latent,
         latent_layer_exposure_addition=latent_layer_exposure_addition,
     )
     latent_fraction = (
@@ -1100,9 +1186,9 @@ def develop_color_reversal_reduced(
         recipe,
         mode="color_reversal",
         material_process="reversal",
-        layer_count=3,
+        layer_count=layer_count,
     )
-    compatibility = _compatibility_for_program(film, program.key, 3)
+    compatibility = _compatibility_for_program(film, program.key, layer_count, program=program)
     result = apply_process_program(
         material,
         state,

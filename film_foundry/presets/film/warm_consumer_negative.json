@@ -90,6 +90,22 @@
       0.027
     ],
     "grain_density_correlation_radius": 0.0014,
-    "halation_exponential_radius": 0.022
+    "halation_exponential_radius": 0.022,
+    "cross_process_layer_balance": [
+      1.16,
+      0.91,
+      0.72
+    ],
+    "cross_process_dye_coupling": 0.9,
+    "cross_process_dye_stability": 0.92,
+    "cross_process_silver_development": 0.96,
+    "cross_process_activation": 0.97,
+    "cross_process_halide_fixing": 0.97,
+    "auxiliary_layer_amount": 1.0,
+    "auxiliary_layer_density_rgb": [
+      0.08,
+      0.07,
+      0.06
+    ]
   }
 }

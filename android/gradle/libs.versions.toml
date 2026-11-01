@@ -1,0 +1,28 @@
+[versions]
+kotlin = "2.2.20"
+agp = "9.4.0"
+junit = "5.11.3"
+junit-platform = "1.11.3"
+json = "20240303"
+coroutines = "1.9.0"
+camerax = "1.5.3"
+lifecycle = "2.8.7"
+activity = "1.9.3"
+
+[libraries]
+json = { module = "org.json:json", version.ref = "json" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit-platform" }
+coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+camerax-core = { module = "androidx.camera:camera-core", version.ref = "camerax" }
+camerax-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "camerax" }
+camerax-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
+camerax-video = { module = "androidx.camera:camera-video", version.ref = "camerax" }
+camerax-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
+lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle" }
+activity = { module = "androidx.activity:activity", version.ref = "activity" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }

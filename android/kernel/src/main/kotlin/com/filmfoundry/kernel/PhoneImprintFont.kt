@@ -1,0 +1,133 @@
+package com.filmfoundry.kernel
+
+/** Fixed exposure glyphs: platform fonts cannot change the replay of saved photographs. */
+object PhoneImprintFont {
+    const val MAX_CHARACTERS=24
+    fun normalize(text: String)=text.map { when(it) {
+        in '\uFF01'..'\uFF5E' -> (it.code-0xFEE0).toChar()
+        '\u3000' -> ' '
+        else -> it
+    } }.joinToString("")
+    fun valid(text: String)=text.length<=MAX_CHARACTERS && text.all { it in ' '..'~' }
+    class Font(val width: Int,val height: Int,private val glyphs: Map<Char,IntArray>) {
+        fun lit(ch: Char,x: Int,y: Int)=glyphs.getValue(ch)[y] and (1 shl (width-1-x)) != 0
+    }
+    private val legacy=Font(3,5,mapOf(
+        48.toChar() to intArrayOf(7,5,5,5,7),
+        49.toChar() to intArrayOf(2,6,2,2,7),
+        50.toChar() to intArrayOf(7,1,7,4,7),
+        51.toChar() to intArrayOf(7,1,7,1,7),
+        52.toChar() to intArrayOf(5,5,7,1,1),
+        53.toChar() to intArrayOf(7,4,7,1,7),
+        54.toChar() to intArrayOf(7,4,7,5,7),
+        55.toChar() to intArrayOf(7,1,2,2,2),
+        56.toChar() to intArrayOf(7,5,7,5,7),
+        57.toChar() to intArrayOf(7,5,7,1,7),
+        45.toChar() to intArrayOf(0,0,7,0,0),
+        58.toChar() to intArrayOf(0,2,0,2,0),
+        47.toChar() to intArrayOf(1,1,2,4,4),
+        46.toChar() to intArrayOf(0,0,0,0,2),
+        32.toChar() to intArrayOf(0,0,0,0,0)
+    ))
+    private val ascii=Font(5,7,mapOf(
+        32.toChar() to "00 00 00 00 00 00 00",
+        33.toChar() to "04 04 04 04 04 00 04",
+        34.toChar() to "0A 0A 0A 00 00 00 00",
+        35.toChar() to "0A 0A 1F 0A 1F 0A 0A",
+        36.toChar() to "04 0F 14 0E 05 1E 04",
+        37.toChar() to "19 1A 02 04 08 0B 13",
+        38.toChar() to "0C 12 14 08 15 12 0D",
+        39.toChar() to "04 04 08 00 00 00 00",
+        40.toChar() to "02 04 08 08 08 04 02",
+        41.toChar() to "08 04 02 02 02 04 08",
+        42.toChar() to "00 04 15 0E 15 04 00",
+        43.toChar() to "00 04 04 1F 04 04 00",
+        44.toChar() to "00 00 00 00 04 04 08",
+        45.toChar() to "00 00 00 1F 00 00 00",
+        46.toChar() to "00 00 00 00 00 0C 0C",
+        47.toChar() to "01 02 02 04 08 08 10",
+        48.toChar() to "0E 11 13 15 19 11 0E",
+        49.toChar() to "04 0C 04 04 04 04 0E",
+        50.toChar() to "0E 11 01 02 04 08 1F",
+        51.toChar() to "1E 01 01 0E 01 01 1E",
+        52.toChar() to "02 06 0A 12 1F 02 02",
+        53.toChar() to "1F 10 10 1E 01 01 1E",
+        54.toChar() to "0E 10 10 1E 11 11 0E",
+        55.toChar() to "1F 01 02 04 08 08 08",
+        56.toChar() to "0E 11 11 0E 11 11 0E",
+        57.toChar() to "0E 11 11 0F 01 01 0E",
+        58.toChar() to "00 0C 0C 00 0C 0C 00",
+        59.toChar() to "00 0C 0C 00 04 04 08",
+        60.toChar() to "02 04 08 10 08 04 02",
+        61.toChar() to "00 00 1F 00 1F 00 00",
+        62.toChar() to "08 04 02 01 02 04 08",
+        63.toChar() to "0E 11 01 02 04 00 04",
+        64.toChar() to "0E 11 17 15 17 10 0F",
+        65.toChar() to "0E 11 11 1F 11 11 11",
+        66.toChar() to "1E 11 11 1E 11 11 1E",
+        67.toChar() to "0E 11 10 10 10 11 0E",
+        68.toChar() to "1E 11 11 11 11 11 1E",
+        69.toChar() to "1F 10 10 1E 10 10 1F",
+        70.toChar() to "1F 10 10 1E 10 10 10",
+        71.toChar() to "0E 11 10 17 11 11 0F",
+        72.toChar() to "11 11 11 1F 11 11 11",
+        73.toChar() to "0E 04 04 04 04 04 0E",
+        74.toChar() to "07 02 02 02 12 12 0C",
+        75.toChar() to "11 12 14 18 14 12 11",
+        76.toChar() to "10 10 10 10 10 10 1F",
+        77.toChar() to "11 1B 15 15 11 11 11",
+        78.toChar() to "11 19 19 15 13 13 11",
+        79.toChar() to "0E 11 11 11 11 11 0E",
+        80.toChar() to "1E 11 11 1E 10 10 10",
+        81.toChar() to "0E 11 11 11 15 12 0D",
+        82.toChar() to "1E 11 11 1E 14 12 11",
+        83.toChar() to "0F 10 10 0E 01 01 1E",
+        84.toChar() to "1F 04 04 04 04 04 04",
+        85.toChar() to "11 11 11 11 11 11 0E",
+        86.toChar() to "11 11 11 11 11 0A 04",
+        87.toChar() to "11 11 11 15 15 1B 11",
+        88.toChar() to "11 11 0A 04 0A 11 11",
+        89.toChar() to "11 11 0A 04 04 04 04",
+        90.toChar() to "1F 01 02 04 08 10 1F",
+        91.toChar() to "0E 08 08 08 08 08 0E",
+        92.toChar() to "10 08 08 04 02 02 01",
+        93.toChar() to "0E 02 02 02 02 02 0E",
+        94.toChar() to "04 0A 11 00 00 00 00",
+        95.toChar() to "00 00 00 00 00 00 1F",
+        96.toChar() to "08 04 02 00 00 00 00",
+        97.toChar() to "00 00 0E 01 0F 11 0F",
+        98.toChar() to "10 10 1E 11 11 11 1E",
+        99.toChar() to "00 00 0E 11 10 11 0E",
+        100.toChar() to "01 01 0F 11 11 11 0F",
+        101.toChar() to "00 00 0E 11 1F 10 0E",
+        102.toChar() to "06 09 08 1C 08 08 08",
+        103.toChar() to "00 0F 11 11 0F 01 0E",
+        104.toChar() to "10 10 1E 11 11 11 11",
+        105.toChar() to "04 00 0C 04 04 04 0E",
+        106.toChar() to "02 00 06 02 02 12 0C",
+        107.toChar() to "10 10 12 14 18 14 12",
+        108.toChar() to "0C 04 04 04 04 04 0E",
+        109.toChar() to "00 00 1A 15 15 15 15",
+        110.toChar() to "00 00 1E 11 11 11 11",
+        111.toChar() to "00 00 0E 11 11 11 0E",
+        112.toChar() to "00 1E 11 11 1E 10 10",
+        113.toChar() to "00 0F 11 11 0F 01 01",
+        114.toChar() to "00 00 16 19 10 10 10",
+        115.toChar() to "00 00 0F 10 0E 01 1E",
+        116.toChar() to "08 08 1C 08 08 09 06",
+        117.toChar() to "00 00 11 11 11 13 0D",
+        118.toChar() to "00 00 11 11 11 0A 04",
+        119.toChar() to "00 00 11 11 15 15 0A",
+        120.toChar() to "00 00 11 0A 04 0A 11",
+        121.toChar() to "00 11 11 11 0F 01 0E",
+        122.toChar() to "00 00 1F 02 04 08 1F",
+        123.toChar() to "02 04 04 08 04 04 02",
+        124.toChar() to "04 04 04 04 04 04 04",
+        125.toChar() to "08 04 04 02 04 04 08",
+        126.toChar() to "00 00 08 15 02 00 00"
+    ).mapValues { (_,rows)->rows.split(' ').map { it.toInt(16) }.toIntArray() })
+    fun forText(text: String): Font {
+        require(valid(text)) { "Use up to 24 English letters, digits, spaces or ASCII punctuation" }
+        return if(text.all { it in "0123456789 -:/." }) legacy else ascii
+    }
+}

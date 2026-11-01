@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import zipfile
 from typing import Any, Iterable, Iterator
 from uuid import uuid4
 
@@ -213,12 +214,29 @@ def atomic_savez(
     path: str | Path,
     *,
     compressed: bool = True,
+    compression_level: int | None = None,
     **arrays: np.ndarray,
 ) -> Path:
+    """Atomically write standard NPZ; an explicit level changes only ZIP transport."""
+    if compression_level is not None and (
+        isinstance(compression_level, bool)
+        or not isinstance(compression_level, int)
+        or not 0 <= compression_level <= 9
+    ):
+        raise ValueError("NPZ compression level must be an integer from 0 to 9.")
     target = Path(path)
     with atomic_output_path(target) as temporary:
-        writer = np.savez_compressed if compressed else np.savez
-        writer(temporary, **arrays)
+        if not compressed or compression_level is None:
+            writer = np.savez_compressed if compressed else np.savez
+            writer(temporary, **arrays)
+        else:
+            with zipfile.ZipFile(
+                temporary, "w", compression=zipfile.ZIP_DEFLATED,
+                compresslevel=compression_level, allowZip64=True,
+            ) as archive:
+                for key, value in arrays.items():
+                    with archive.open(f"{key}.npy", "w", force_zip64=True) as member:
+                        np.lib.format.write_array(member, np.asanyarray(value), allow_pickle=True)
     return target
 
 

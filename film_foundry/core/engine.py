@@ -1,11 +1,17 @@
-"""Single-image Film Foundry processing engine."""
+"""单张画面的形成入口。
+
+形成顺序在本文件的 `_develop_silver_halide_pipeline`。
+观察快照和片基衔接在 `optical_observation.py`，扫描编排在 `scan_runtime.py`，
+介质落盘在 `medium_export.py`。这三处的公开名字仍从这里再导出。
+材料与观察的阶段边界见公开文档《统一胶片冲洗模型》。
+"""
 
 from __future__ import annotations
 
 import copy
 from collections.abc import Callable
 from contextvars import ContextVar
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import json
 from pathlib import Path
@@ -44,8 +50,25 @@ from film_foundry.core.film_border import (
     apply_edge_imprint_to_linear,
     validate_film_border_config,
 )
+from film_foundry.core.incident_identity import incident_rng
 from film_foundry.core.halation import apply_halation, halation_return_field
 from film_foundry.core.implementation_plan import resolve_implementation_plan
+from film_foundry.core.material_geometry import project_formation_config, resolve_material_geometry
+from film_foundry.contracts.spectral_exposure import SpectralExposureProfile
+from film_foundry.contracts.material_snapshot import MaterialSnapshot
+from film_foundry.contracts.data_kernel import MATERIAL_SNAPSHOT_MODEL
+from film_foundry.contracts.data_kernel import SMITS_EXPOSURE_MODEL_ID
+from film_foundry.core.spectral_exposure import exposure_sensitivity_matrix
+from film_foundry.contracts.spectral_optics import (
+    SpectralMaterialProfile, SPECTRAL_POST_PROCESS_MODEL, SPECTRAL_POST_PROCESS_ARRAY_KEY,
+)
+from film_foundry.core.spectral_optics import SpectralMedium, final_pool_amounts, spectral_observation_density
+from film_foundry.core.spectral_grain import (
+    SPECTRAL_GRAIN_MODEL,
+    apply_spectral_emulsion_grain,
+    apply_spectral_silver_grain,
+    conserve_spectral_grain_totals,
+)
 from film_foundry.core.io_utils import load_image_with_color, probe_image_dimensions, save_image
 from film_foundry.core.light_piping import (
     LIGHT_PIPING_EDGE_MODES,
@@ -69,12 +92,16 @@ from film_foundry.core.execution import (
 )
 from film_foundry.core.execution_topology import reference_execution_enabled
 from film_foundry.core.film_process.integration import (
+    _exposure_material,
     develop_bw_negative_reduced,
     develop_bw_reversal_reduced,
     develop_color_negative_reduced,
     develop_color_reversal_reduced,
+    freeze_material_latent_state,
     shape_positive_dye_chroma,
 )
+from film_foundry.core.film_process.model import FilmProcessState
+from film_foundry.core.material_latent_grid import MaterialLatentSource
 from film_foundry.core.film_process.recipe import (
     process_program_payload,
     program_from_develop_recipe,
@@ -173,10 +200,14 @@ _RETAIN_FORMATION_LAYER_MASTERS: ContextVar[bool] = ContextVar(
 )
 
 
-NEGATIVE_MATERIAL_DIR_NAME = "negatives"
-POSITIVE_MATERIAL_DIR_NAME = "positives"
-NEGATIVE_SUFFIX = ".darkroom_negative.npz"
-POSITIVE_SUFFIX = ".darkroom_positive.npz"
+# 介质文件名定义在 medium_export，这里只再导出。
+from film_foundry.core.medium_export import (
+    NEGATIVE_MATERIAL_DIR_NAME,
+    NEGATIVE_SUFFIX,
+    POSITIVE_MATERIAL_DIR_NAME,
+    POSITIVE_SUFFIX,
+)
+
 
 
 def seed_from_path(path: str | Path, base_seed: int = 0) -> int:
@@ -296,6 +327,9 @@ def _force_bw_negative(config: DarkroomConfig, *, include_scanner: bool = False)
     config.scanner.print_color_shift = (0.0, 0.0, 0.0)
     config.scanner.print_color_bias = (1.0, 1.0, 1.0)
     config.scanner.highlight_color_bias = (1.0, 1.0, 1.0)
+    config.scanner.color_curve_rgb = None
+    config.scanner.tone_curve = None
+    config.scanner.device_response_rgb = None
     config.scanner.scan_normalize_mode = "luma"
 
 
@@ -393,195 +427,22 @@ def _legacy_final_medium_contract(
     return payload
 
 
-def _final_medium_observation_payload(medium: DevelopedNegative) -> dict[str, object] | None:
-    metadata = medium.metadata if isinstance(medium.metadata, dict) else {}
-    process_model = metadata.get("film_process_model")
-    if process_model is None and isinstance(metadata.get("developed_medium"), dict):
-        process_model = metadata["developed_medium"].get("film_process_model")
-    if not isinstance(process_model, dict):
-        return None
-    observation = process_model.get("optical_observation")
-    return observation if isinstance(observation, dict) else None
-
-
-def apply_optical_observation_snapshot(
-    config: DarkroomConfig,
-    observation: dict[str, object] | None,
-) -> bool:
-    """Restore immutable material optics from a developed-medium snapshot."""
-    if not isinstance(observation, dict):
-        return False
-    restored = False
-
-    def finite_array(key: str, shape: tuple[int, ...]) -> np.ndarray | None:
-        value = observation.get(key)
-        if value is None:
-            return None
-        try:
-            array = np.asarray(value, dtype=np.float64)
-        except (TypeError, ValueError):
-            return None
-        if array.shape != shape or not np.isfinite(array).all():
-            return None
-        return array
-
-    matrix = finite_array("dye_absorption_matrix", (3, 3))
-    if matrix is not None:
-        config.film.dye_absorption_matrix = tuple(
-            tuple(float(value) for value in row) for row in matrix
-        )
-        restored = True
-    base_interaction_matrix = finite_array("base_dye_interaction_matrix", (3, 3))
-    if base_interaction_matrix is not None:
-        config.film.base_dye_interaction_matrix = tuple(
-            tuple(float(value) for value in row) for row in base_interaction_matrix
-        )
-        restored = True
-    base_interaction_strength = observation.get("base_dye_interaction_strength")
-    if isinstance(base_interaction_strength, (int, float, np.number)) and np.isfinite(
-        float(base_interaction_strength)
-    ):
-        config.film.base_dye_interaction_strength = float(base_interaction_strength)
-        restored = True
-    base = finite_array("base_density_rgb", (3,))
-    if base is not None:
-        config.film.film_base_density_rgb = tuple(float(value) for value in base)
-        restored = True
-    density_min = finite_array("density_min", (3,))
-    if density_min is not None:
-        config.film.density_min = tuple(float(value) for value in density_min)
-        restored = True
-    density_max = finite_array("density_max", (3,))
-    if density_max is not None:
-        config.film.density_max = tuple(float(value) for value in density_max)
-        restored = True
-    color_process = observation.get("color_process")
-    if isinstance(color_process, str) and color_process.strip():
-        config.film.color_process = str(color_process)
-        restored = True
-    return restored
-
-
-def _apply_final_medium_observation(config: DarkroomConfig, medium: DevelopedNegative) -> bool:
-    """Restore immutable material optics without accepting them from a scanner preset."""
-    return apply_optical_observation_snapshot(
-        config,
-        _final_medium_observation_payload(medium),
-    )
-
-
-def _clear_base_scanner_sample(
-    config: DarkroomConfig,
-    medium: DevelopedNegative | None = None,
-) -> np.ndarray:
-    """Return the known clear-base scanner sample for generated negatives."""
-    clear_density = _clear_base_optical_density_rgb(config, medium).reshape(1, 1, 3)
-    return capture_optical_density(
-        clear_density,
-        config.scanner,
-        illuminant_rgb=transmission_illuminant_rgb(config.scanner),
-    ).reshape(1, 1, 3)
-
-
-def _clear_base_optical_density_rgb(
-    config: DarkroomConfig,
-    medium: DevelopedNegative | None = None,
-) -> np.ndarray:
-    if medium is not None and medium.clear_base_optical_density_rgb is not None:
-        return np.asarray(
-            medium.clear_base_optical_density_rgb,
-            dtype=np.float32,
-        ).reshape(3)
-    clear_layer_density = np.asarray(config.film.density_min, dtype=np.float32).reshape(
-        1,
-        1,
-        3,
-    )
-    return negative_total_density_rgb(clear_layer_density, config.film).reshape(3)
-
-
-def _optical_density_with_optional_reference_border(
-    optical_density_rgb: np.ndarray,
-    config: DarkroomConfig,
-    medium: DevelopedNegative,
-) -> np.ndarray:
-    """Frame a derived optical master without mutating or replacing the medium."""
-    if not bool(config.scanner.include_clear_base_border):
-        return optical_density_rgb
-    optical = np.asarray(optical_density_rgb, dtype=np.float32)
-    border = scanner_raw_export_border_width(
-        optical.shape,
-        config.output.scanner_raw_border_percent,
-        config.output.scanner_raw_border_min_px,
-    )
-    if border <= 0:
-        return optical
-    height, width = optical.shape[:2]
-    canvas = np.empty(
-        (height + border * 2, width + border * 2, 3),
-        dtype=np.float32,
-    )
-    canvas[...] = _clear_base_optical_density_rgb(config, medium).reshape(1, 1, 3)
-    canvas[border : border + height, border : border + width] = optical
-    return canvas
-
-
-def _with_scan_interpretation(
-    negative_config: DarkroomConfig,
-    scan_config: DarkroomConfig,
-) -> DarkroomConfig:
-    """保留已冲洗负片的胶片身份，只替换当前扫描/输出解释。"""
-    combined = copy.deepcopy(negative_config)
-    combined.scanner = copy.deepcopy(scan_config.scanner)
-    combined.output = copy.deepcopy(scan_config.output)
-    combined.look.print_contrast = float(scan_config.look.print_contrast)
-    combined.look.print_exposure_ev = float(scan_config.look.print_exposure_ev)
-    combined.enable_subtractive = bool(scan_config.enable_subtractive)
-    combined.fast_mode = bool(scan_config.fast_mode)
-    combined.debug_output = bool(scan_config.debug_output)
-    combined.save_sidecar = bool(scan_config.save_sidecar)
-    combined.comparison_grid = bool(scan_config.comparison_grid)
-    return combined
-
-
-def _config_for_developed_medium_export(
-    medium: DevelopedNegative,
-    requested_config: DarkroomConfig,
-) -> DarkroomConfig:
-    """Build an export config without accepting material optics from a caller."""
-    stored = medium.metadata.get("runtime_config")
-    if isinstance(stored, DarkroomConfig):
-        material_config = copy.deepcopy(stored)
-    else:
-        material_config = _config_from_developed_medium_identity(medium)
-    _apply_final_medium_observation(material_config, medium)
-    return _with_scan_interpretation(material_config, requested_config)
-
-
-def _config_from_developed_medium_identity(negative: DevelopedNegative) -> DarkroomConfig:
-    config = DarkroomConfig()
-    config.film.medium_family = str(getattr(negative, "medium_family", "film"))
-    config.film.medium_process = str(getattr(negative, "medium_process", "negative"))
-    config.film.image_polarity = str(getattr(negative, "image_polarity", "negative"))
-    config.film.film_base_density_rgb = (0.03, 0.03, 0.035) if str(getattr(negative, "base_type", "")) == "clear_base" else config.film.film_base_density_rgb
-
-    interpreters = tuple(str(v) for v in getattr(negative, "compatible_interpreters", ()) or ())
-    if "positive_transparency_scan" in interpreters or (
-        str(getattr(negative, "image_polarity", "")) == "positive"
-        and str(getattr(negative, "view_mode", "")) == "transmissive"
-    ):
-        config.scanner.interpreter_key = "positive_transparency_scan"
-        config.scanner.target_medium_process = config.film.medium_process
-        config.scanner.input_polarity = "positive"
-        config.scanner.output_polarity = "positive"
-        config.scanner.scan_method = "positive_transparency"
-        return config
-
-    config.scanner.interpreter_key = "negative_scan"
-    config.scanner.target_medium_process = "negative"
-    config.scanner.input_polarity = "negative"
-    config.scanner.output_polarity = "positive"
-    return config
+# 观察快照、解释器对齐和片基参考。扫描通过这些名字回调。
+from film_foundry.core.optical_observation import (
+    _align_interpreter_to_medium,
+    _apply_final_medium_observation,
+    _clear_base_optical_density_rgb,
+    _clear_base_scanner_sample,
+    _config_for_developed_medium_export,
+    _config_from_developed_medium_identity,
+    _final_medium_observation_payload,
+    _medium_optical_density_rgb,
+    _optical_density_with_optional_reference_border,
+    _resolve_scan_interpretation_config,
+    _validate_interpreter_compatibility,
+    _with_scan_interpretation,
+    apply_optical_observation_snapshot,
+)
 
 
 def _runtime_config(config: DarkroomConfig | None, prepared: bool = False) -> DarkroomConfig:
@@ -609,17 +470,6 @@ def _runtime_config(config: DarkroomConfig | None, prepared: bool = False) -> Da
     return runtime
 
 
-def _medium_optical_density_rgb(
-    medium: DevelopedNegative,
-    film,
-    row_slice: slice | None = None,
-) -> np.ndarray:
-    """Return authoritative RGB density, falling back to the portable CMY master."""
-    if medium.optical_density_rgb is not None:
-        optical = np.asarray(medium.optical_density_rgb, dtype=np.float32)
-        return optical if row_slice is None else optical[row_slice]
-    density = medium.density_grain if row_slice is None else medium.density_grain[row_slice]
-    return negative_total_density_rgb(density, film)
 
 
 def _clip01(value: float) -> float:
@@ -690,6 +540,7 @@ def _apply_process_variation(config: DarkroomConfig, rng: np.random.Generator) -
         return {"strength": 0.0, "applied": False}
 
     chem = config.chemistry
+    rng = incident_rng(chem,rng,"process_variation")
 
     time_factor = float(np.clip(1.0 + rng.normal(0.0, 0.035 * strength), 0.75, 1.35))
     concentration_factor = float(np.clip(1.0 + rng.normal(0.0, 0.030 * strength), 0.80, 1.25))
@@ -726,7 +577,9 @@ def _apply_process_variation(config: DarkroomConfig, rng: np.random.Generator) -
     occlusion_relative_deltas = {
         key: (
             float(np.clip(rng.normal(0.0, 0.10 * strength), -0.35, 0.45))
-            if original > 0.0
+            # Identified gate obstructions belong to capture, not bath
+            # variation. Preserve their on/off dose and geometry exactly.
+            if original > 0.0 and chem.incident_identity_seed is None
             else 0.0
         )
         for key, original in occlusion_originals.items()
@@ -792,68 +645,6 @@ def _apply_process_variation(config: DarkroomConfig, rng: np.random.Generator) -
         },
     }
 
-
-def _resolve_scan_interpretation_config(
-    negative: DevelopedNegative,
-    config: DarkroomConfig | None,
-    prepared_config: bool,
-) -> tuple[DarkroomConfig, bool]:
-    """Resolve scan-time config without changing the developed negative identity."""
-    stored = negative.metadata.get("runtime_config")
-    if isinstance(stored, DarkroomConfig):
-        material_config = copy.deepcopy(stored)
-        _apply_final_medium_observation(material_config, negative)
-        if config is None:
-            return material_config, True
-        if not prepared_config:
-            return _with_scan_interpretation(material_config, config), True
-        return config, prepared_config
-
-    material_config = _config_from_developed_medium_identity(negative)
-    has_observation_snapshot = _apply_final_medium_observation(material_config, negative)
-    if config is None:
-        return material_config, has_observation_snapshot
-    if has_observation_snapshot and not prepared_config:
-        return _with_scan_interpretation(material_config, config), True
-    return config, prepared_config
-
-
-def _align_interpreter_to_medium(config: DarkroomConfig, medium: DevelopedNegative) -> None:
-    """Resolve the legacy automatic mode into explicit observation controls."""
-    compatible = tuple(str(value) for value in medium.compatible_interpreters)
-    if not compatible:
-        return
-    key = compatible[0]
-    config.scanner.interpreter_key = key
-    config.scanner.target_medium_process = str(medium.medium_process)
-    config.scanner.input_polarity = str(medium.image_polarity)
-    config.scanner.output_polarity = "positive"
-    if key == "positive_transparency_scan":
-        config.scanner.remove_base_mask = False
-        config.scanner.invert_transmission = False
-        config.scanner.scan_method = "positive_transparency"
-    elif key == "negative_scan":
-        config.scanner.remove_base_mask = True
-        config.scanner.invert_transmission = True
-        if str(config.scanner.scan_method).lower() == "positive_transparency":
-            config.scanner.scan_method = "negative_inversion"
-
-
-def _validate_interpreter_compatibility(config: DarkroomConfig, medium: DevelopedNegative) -> None:
-    # Explicit user choices are observation decisions, not material mutations.
-    # The medium contract remains useful for recommendations and legacy auto
-    # mode, but it must not prohibit a direct negative transparency capture or
-    # an intentionally unconventional interpretation.
-    selection = str(config.scanner.interpretation_mode or "auto").strip().lower()
-    if selection in {"manual", "negative", "positive", "direct"}:
-        return
-    compatible = tuple(str(value) for value in medium.compatible_interpreters)
-    requested = str(config.scanner.interpreter_key)
-    if compatible and requested not in compatible:
-        raise ValueError(
-            f"Interpreter '{requested}' is incompatible with developed medium "
-            f"'{medium.medium_process}' ({medium.image_polarity}); expected one of {compatible}."
-        )
 
 
 def _processing_work_long_edge(config: DarkroomConfig, module_name: str) -> int | None:
@@ -1098,6 +889,8 @@ def _develop_reduced_material_tiled(
     latent_layer_exposure_addition: np.ndarray | LayerExposureAdditionField | None = None,
     silver_grain_plan: SilverGrainPlan | None = None,
     consume_input_as_density: bool = False,
+    spectral_component_output: np.ndarray | None = None,
+    spectral_base_output: list | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None, dict[str, object]]:
     """Run exact pointwise pool transitions in bounded row tiles."""
     image = np.asarray(image)
@@ -1127,11 +920,7 @@ def _develop_reduced_material_tiled(
     is_positive = str(developed_medium_contract(config)["image_polarity"]) == "positive"
     silver_grain_applied = False
     if latent_layer_exposure_addition is not None:
-        expected_layers = (
-            1
-            if material_is_mono and program_kind.startswith("bw_")
-            else 3
-        )
+        expected_layers = 1 if material_is_mono else 3
         expected_shape = (height, width, expected_layers)
         addition_shape = (
             latent_layer_exposure_addition.shape
@@ -1228,6 +1017,9 @@ def _develop_reduced_material_tiled(
         else:
             raise ValueError(f"Unsupported tiled material program: {program_kind}")
 
+        if spectral_component_output is not None:
+            base, _ = final_pool_amounts(reduced.process_result.final_medium, spectral_component_output[start:stop])
+            spectral_base_output[:] = base
         silver_grain_applied = (
             _apply_reduced_silver_grain(
                 reduced,
@@ -1301,6 +1093,90 @@ def _develop_reduced_material_tiled(
     return density, optical_density, clear_base_optical_density_rgb, audit
 
 
+def expose_image_to_latent(
+    image_srgb: np.ndarray,
+    config: DarkroomConfig | None = None,
+    rng: np.random.Generator | None = None,
+    *,
+    _prepared_config: bool = False,
+) -> FilmProcessState:
+    """Run pre-latent optics and freeze material state before any process program.
+
+    Recipe time, temperature, and process variation do not enter here. Those
+    belong to ``develop_negative_from_latent``.
+    """
+    image_srgb = _validate_rgb_image_array(image_srgb)
+    if config is not None and not _prepared_config:
+        _validate_develop_runtime(config)
+    runtime = _runtime_config(config, prepared=_prepared_config)
+    _validate_develop_runtime(runtime)
+    if rng is None:
+        rng, _ = _rng_for_input(None, runtime)
+    latent = _develop_silver_halide_pipeline(
+        image_srgb,
+        runtime,
+        rng,
+        True,
+        return_exposed_latent=True,
+    )
+    if not isinstance(latent, FilmProcessState):
+        raise RuntimeError("expose_image_to_latent did not return a latent state")
+    return latent
+
+
+def develop_negative_from_latent(
+    latent_state: FilmProcessState,
+    config: DarkroomConfig | None = None,
+    rng: np.random.Generator | None = None,
+    *,
+    _prepared_config: bool = False,
+    _allow_discarded_history: bool = False,
+) -> DevelopedNegative:
+    """Develop a previously frozen latent through the existing process program."""
+    latent_state.validate()
+    if config is not None and not _prepared_config and latent_state.material_snapshot is None:
+        _validate_develop_runtime(config)
+    runtime = _runtime_config(config, prepared=_prepared_config)
+    if latent_state.material_snapshot is not None:
+        # The source owns material coefficients; the caller owns baths and
+        # output controls. Snapshot values are already exposure-time runtime
+        # parameters, so do not apply look multipliers to them a second time.
+        runtime = copy.deepcopy(runtime) if _prepared_config else runtime
+        parameters = latent_state.material_snapshot.parameters()
+        try:
+            runtime.film = DarkroomConfig.from_dict({"film": parameters}).film
+        except (TypeError, ValueError) as exc:
+            raise ValueError("material snapshot cannot be evaluated by this desktop runtime") from exc
+    _validate_develop_runtime(
+        runtime,
+        allow_discarded_history=_allow_discarded_history,
+    )
+    if rng is None:
+        rng, _ = _rng_for_input(None, runtime)
+    variation = _apply_process_variation(runtime, rng)
+    negative = _develop_silver_halide_pipeline(
+        None,
+        runtime,
+        rng,
+        True,
+        exposed_latent=latent_state,
+    )
+    if not isinstance(negative, DevelopedNegative):
+        raise RuntimeError("develop_negative_from_latent did not return a developed medium")
+    _validate_developed_medium_state(negative)
+    negative.metadata["process_variation"] = variation
+    negative.metadata["developed_from_latent"] = True
+    negative.metadata["material_binding"] = {
+        "source": "latent_snapshot" if latent_state.material_snapshot is not None else "caller_legacy",
+        "model": MATERIAL_SNAPSHOT_MODEL,
+        "unspecified_parameters": "receiver_model_defaults",
+    }
+    if latent_state.material_snapshot is not None:
+        negative.metadata["material_binding"]["snapshot"] = latent_state.material_snapshot.as_dict()
+    negative.metadata["film_process_model"]["material_binding"] = negative.metadata["material_binding"]
+    return negative
+
+
 def develop_negative(
     image_srgb: np.ndarray,
     config: DarkroomConfig | None = None,
@@ -1331,15 +1207,99 @@ def develop_negative(
 develop_medium = develop_negative
 
 
+def _freeze_pre_process_latent(
+    after_halation: np.ndarray,
+    config: DarkroomConfig,
+    tiled_program_kind: str | None,
+    latent_layer_exposure_addition,
+) -> FilmProcessState:
+    """Freeze the material-pool latent after optics and before process operators."""
+    if tiled_program_kind not in {"color_negative", "color_reversal", "bw_negative", "bw_reversal"}:
+        raise ValueError(
+            "expose_to_latent requires a reduced material-pool program, "
+            f"got {tiled_program_kind!r}"
+        )
+    material = _exposure_material(config.film)
+    return freeze_material_latent_state(
+        after_halation,
+        config.film,
+        material,
+        latent_layer_exposure_addition=latent_layer_exposure_addition,
+    )
+
+
 def _develop_silver_halide_pipeline(
-    image_srgb: np.ndarray,
+    image_srgb: np.ndarray | None,
     config: DarkroomConfig | None = None,
     rng: np.random.Generator | None = None,
     _prepared_config: bool = False,
-) -> DevelopedNegative:
-    """把输入 sRGB 图像冲洗成 CMY 底片密度状态。"""
+    *,
+    exposed_latent: FilmProcessState | None = None,
+    return_exposed_latent: bool = False,
+) -> DevelopedNegative | FilmProcessState:
+    """银盐形成顺序：曝光、潜影前光学、材料池、冲洗后事故，最后组装介质。
+
+    已冻结的潜影从材料池进入，不再重做曝光。各阶段的公式在对应模块。
+    """
     config = _runtime_config(config, prepared=_prepared_config)
     implementation_plan = resolve_implementation_plan(config)
+    frame_shape = (
+        exposed_latent.developability.shape
+        if exposed_latent is not None
+        else image_srgb.shape if image_srgb is not None else (0, 0)
+    )
+    material_geometry = (
+        exposed_latent.material_geometry
+        if exposed_latent is not None
+        else resolve_material_geometry(config.film, config.chemistry, frame_shape)
+    )
+    spectral_profile = (
+        exposed_latent.spectral_exposure_profile
+        if exposed_latent is not None
+        else (SpectralExposureProfile.from_value(config.film.spectral_exposure_profile)
+              if config.film.spectral_exposure_profile is not None else None)
+    )
+    material_spectrum = (
+        exposed_latent.spectral_material_profile if exposed_latent is not None
+        else (SpectralMaterialProfile.from_value(config.film.spectral_material_profile)
+              if config.film.spectral_material_profile is not None else None)
+    )
+    if material_spectrum is not None or config.film.spectral_material_profile is not None:
+        config = replace(config, film=replace(config.film, spectral_material_profile=material_spectrum))
+    if material_spectrum is not None and not return_exposed_latent:
+        if not any(check(config) for check in (_uses_reduced_bw_negative, _uses_reduced_color_negative, _uses_reduced_bw_reversal, _uses_reduced_color_reversal)):
+            raise ValueError("spectral material formation requires a unified material-pool program")
+    if spectral_profile is not None or config.film.spectral_exposure_profile is not None:
+        config = replace(config, film=replace(config.film, spectral_exposure_profile=spectral_profile))
+    if exposed_latent is not None and material_geometry is None and (
+        config.film.spatial_reference_short_edge_mm is not None or config.chemistry.frame_long_edge_mm is not None
+    ):
+        config = replace(
+            config,
+            film=replace(config.film, spatial_reference_short_edge_mm=None),
+            chemistry=replace(config.chemistry, frame_long_edge_mm=None),
+        )
+    if material_geometry is not None:
+        # The exposed frame owns its extent. A develop recipe cannot resize a
+        # frozen latent. Keep a recipe snapshot in reference units for scan,
+        # sidecars and replay; only formation sees the projected private copy.
+        config = replace(
+            config,
+            film=replace(config.film, spatial_reference_short_edge_mm=material_geometry.reference_short_edge_mm),
+            chemistry=replace(config.chemistry, frame_long_edge_mm=material_geometry.frame_long_edge_mm),
+        )
+    material_runtime_config = config
+    if material_geometry is not None:
+        config = project_formation_config(config, material_geometry)
+    if spectral_profile is not None and spectral_profile.model != SMITS_EXPOSURE_MODEL_ID:
+        # Preintegrate before any source, tile or latent mapping. Formation
+        # receives the small operator; the saved recipe retains the spectra.
+        matrix = exposure_sensitivity_matrix(config.film)
+        config = replace(config, film=replace(
+            config.film,
+            layer_sensitivity_matrix=tuple(tuple(float(v) for v in row) for row in matrix),
+            spectral_exposure_profile=None,
+        ))
     if rng is None:
         rng, _ = _rng_for_input(None, config)
 
@@ -1347,184 +1307,262 @@ def _develop_silver_halide_pipeline(
     discard_history = history_policy == "discard"
     cold_history = history_policy == "cold_fp16"
     history_dtype = np.float16 if cold_history else np.float32
+    if exposed_latent is not None and return_exposed_latent:
+        raise ValueError("cannot both consume and return an exposed latent")
+    if exposed_latent is not None and image_srgb is not None:
+        raise ValueError("develop from latent does not re-expose an image")
 
-    linear = srgb_to_linear(image_srgb)
-    linear = linear * (2.0 ** float(config.look.exposure_ev))
-    if is_monochrome_material(config):
-        linear = np.repeat(luminance(linear)[..., None], 3, axis=-1)
-    linear, exposure_occlusion_map = apply_exposure_occlusion_to_linear(
-        linear,
-        config.chemistry,
-        rng=rng,
-    )
-    has_exposure_occlusion_map = exposure_occlusion_map is not None
-    del exposure_occlusion_map
-    linear_input = None if discard_history else np.clip(linear, 0.0, 1.0)
-
-    if config.enable_mtf:
-        # ``linear`` is a private formation buffer and has no consumer after
-        # this call; the public MTF helper remains non-mutating by default.
-        after_mtf = apply_emulsion_mtf(
-            linear,
-            config.film,
-            consume_input=True,
-            model=implementation_plan.emulsion_mtf_model,
+    # 曝光已经冻在潜影里时，跳过下面的曝光和潜影前光学。
+    if exposed_latent is not None:
+        exposed_latent.validate()
+        linear_input = None
+        after_mtf_history = None
+        after_accidents = np.empty((0, 0, 3), dtype=np.float32)
+        has_exposure_occlusion_map = False
+        has_edge_imprint_map = False
+        light_leak_pattern = None
+        light_leak_secondary_pattern = None
+        has_light_leak_map = False
+        emulsion_spread_applied = False
+        emulsion_spread_work_shape = None
+        halation_return_model = str(config.film.halation_return_model).strip().lower()
+        configured_layer_weights = (
+            np.asarray(config.film.halation_layer_return_weights, dtype=np.float32).reshape(3)
+            if halation_return_model == "layer_selective"
+            else None
         )
+        layer_halation_addition = None
+        layer_light_piping_addition = None
+        latent_layer_exposure_addition = None
+        light_piping_applied = False
+        light_piping_edge_weights = None
+        tiled_program_kind: str | None = None
+        if _uses_reduced_bw_negative(config):
+            tiled_program_kind = "bw_negative"
+        elif _uses_reduced_color_negative(config):
+            tiled_program_kind = "color_negative"
+        elif _uses_reduced_bw_reversal(config):
+            tiled_program_kind = "bw_reversal"
+        elif _uses_reduced_color_reversal(config):
+            tiled_program_kind = "color_reversal"
+        if tiled_program_kind is None:
+            raise ValueError("develop_latent requires a reduced material-pool program")
     else:
-        after_mtf = linear
-    del linear
-
-    # Date-back / lab-edge LEDs sit on the film plane. Apply them after MTF
-    # so the flash stays sharp, and after scene occlusion so a back/side lamp
-    # is not blocked by dust on the emulsion face.
-    after_mtf, edge_imprint_map = apply_edge_imprint_to_linear(
-        after_mtf,
-        config.film_border,
-    )
-    has_edge_imprint_map = edge_imprint_map is not None
-    del edge_imprint_map
-
-    # A leak is additional exposure reaching the material, not a density frame
-    # laid over the developed result. Put it before emulsion/base scattering so
-    # it shares the same latent-state path while its directional generator keeps
-    # it from becoming an artificial four-edge halo.
-    light_leak_pattern = None
-    light_leak_secondary_pattern = None
-    if float(config.chemistry.light_leak_strength) > 1e-6:
-        identity_seed = config.chemistry.light_leak_identity_seed
-        leak_rng = (
-            rng
-            if identity_seed is None
-            else np.random.default_rng(int(identity_seed))
+        if image_srgb is None:
+            raise ValueError("develop requires an input image")
+        linear = srgb_to_linear(image_srgb)
+        linear = linear * (2.0 ** float(config.look.exposure_ev))
+        if is_monochrome_material(config):
+            linear = np.repeat(luminance(linear)[..., None], 3, axis=-1)
+        linear, exposure_occlusion_map = apply_exposure_occlusion_to_linear(
+            linear,
+            config.chemistry,
+            rng=rng,
         )
-        # Default ``auto`` still consumes the frame RNG in the historical
-        # local-edge order. A dedicated identity seed is the only exception.
-        light_leak_pattern = sample_light_leak_pattern(
-            leak_rng,
-            template_key=resolved_light_leak_template(config.chemistry),
-        )
-        secondary_key = str(
-            config.chemistry.light_leak_secondary_template
-        ).strip().lower()
-        if secondary_key not in {"", "none"}:
-            light_leak_secondary_pattern = sample_light_leak_pattern(
-                leak_rng,
-                template_key=secondary_key,
+        has_exposure_occlusion_map = exposure_occlusion_map is not None
+        del exposure_occlusion_map
+        linear_input = None if discard_history else np.clip(linear, 0.0, 1.0)
+
+        # 潜影前：乳剂 MTF，然后边字和漏光。
+        if config.enable_mtf:
+            # ``linear`` is a private formation buffer and has no consumer after
+            # this call; the public MTF helper remains non-mutating by default.
+            after_mtf = apply_emulsion_mtf(
+                linear,
+                config.film,
+                consume_input=True,
+                model=implementation_plan.emulsion_mtf_model,
             )
-    after_light_leak, light_leak_map = apply_light_leak_to_exposure(
-        after_mtf,
-        config.chemistry,
-        rng=rng,
-        pattern=light_leak_pattern,
-        secondary_pattern=light_leak_secondary_pattern,
-    )
-    material_layer_count = (
-        1
-        if is_monochrome_material(config)
-        and (_uses_reduced_bw_negative(config) or _uses_reduced_bw_reversal(config))
-        else 3
-    )
-    layer_emulsion_spread_addition = emulsion_highlight_spread_field(
-        after_light_leak,
-        config.film,
-        layer_count=material_layer_count,
-        work_long_edge=_emulsion_spread_work_long_edge(config),
-    )
-    emulsion_spread_applied = layer_emulsion_spread_addition is not None
-    emulsion_spread_work_shape = (
-        None
-        if layer_emulsion_spread_addition is None
-        else tuple(int(value) for value in layer_emulsion_spread_addition.work_shape[:2])
-    )
-    halation_return_model = str(config.film.halation_return_model).strip().lower()
-    configured_layer_weights = (
-        np.asarray(config.film.halation_layer_return_weights, dtype=np.float32).reshape(3)
-        if halation_return_model == "layer_selective"
-        else None
-    )
-    layer_halation_addition: LayerExposureAdditionField | None = None
-    if halation_return_model == "layer_selective":
-        if (
-            config.enable_halation
-            and float(config.film.halation_strength) > 0.0
-            and configured_layer_weights is not None
-            and float(configured_layer_weights.max(initial=0.0)) > 0.0
-        ):
-            spread = halation_return_field(
+        else:
+            after_mtf = linear
+        del linear
+
+        # Date-back / lab-edge LEDs sit on the film plane. Apply them after MTF
+        # so the flash stays sharp, and after scene occlusion so a back/side lamp
+        # is not blocked by dust on the emulsion face.
+        after_mtf, edge_imprint_map = apply_edge_imprint_to_linear(
+            after_mtf,
+            config.film_border,
+        )
+        has_edge_imprint_map = edge_imprint_map is not None
+        del edge_imprint_map
+
+        # A leak is additional exposure reaching the material, not a density frame
+        # laid over the developed result. Put it before emulsion/base scattering so
+        # it shares the same latent-state path while its directional generator keeps
+        # it from becoming an artificial four-edge halo.
+        light_leak_pattern = None
+        light_leak_secondary_pattern = None
+        if float(config.chemistry.light_leak_strength) > 1e-6:
+            identity_seed = config.chemistry.light_leak_identity_seed
+            leak_rng = (
+                incident_rng(config.chemistry,rng,"light_leak")
+                if identity_seed is None
+                else np.random.default_rng(int(identity_seed))
+            )
+            # Default ``auto`` still consumes the frame RNG in the historical
+            # local-edge order. A dedicated identity seed is the only exception.
+            light_leak_pattern = sample_light_leak_pattern(
+                leak_rng,
+                template_key=resolved_light_leak_template(config.chemistry),
+            )
+            secondary_key = str(
+                config.chemistry.light_leak_secondary_template
+            ).strip().lower()
+            if secondary_key not in {"", "none"}:
+                light_leak_secondary_pattern = sample_light_leak_pattern(
+                    leak_rng,
+                    template_key=secondary_key,
+                )
+        after_light_leak, light_leak_map = apply_light_leak_to_exposure(
+            after_mtf,
+            config.chemistry,
+            rng=rng,
+            pattern=light_leak_pattern,
+            secondary_pattern=light_leak_secondary_pattern,
+        )
+        material_layer_count = 1 if is_monochrome_material(config) else 3
+        # 潜影前的层曝光：乳剂扩散、片基回返、片基光导，相加后一次进入材料。
+        layer_emulsion_spread_addition = emulsion_highlight_spread_field(
+            after_light_leak,
+            config.film,
+            layer_count=material_layer_count,
+            work_long_edge=_emulsion_spread_work_long_edge(config),
+        )
+        emulsion_spread_applied = layer_emulsion_spread_addition is not None
+        emulsion_spread_work_shape = (
+            None
+            if layer_emulsion_spread_addition is None
+            else tuple(int(value) for value in layer_emulsion_spread_addition.work_shape[:2])
+        )
+        halation_return_model = str(config.film.halation_return_model).strip().lower()
+        configured_layer_weights = (
+            np.asarray(config.film.halation_layer_return_weights, dtype=np.float32).reshape(3)
+            if halation_return_model == "layer_selective"
+            else None
+        )
+        layer_halation_addition: LayerExposureAdditionField | None = None
+        if halation_return_model == "layer_selective":
+            if (
+                config.enable_halation
+                and float(config.film.halation_strength) > 0.0
+                and configured_layer_weights is not None
+                and float(configured_layer_weights.max(initial=0.0)) > 0.0
+            ):
+                spread = halation_return_field(
+                    after_light_leak,
+                    config.film,
+                    fast=implementation_plan.lower_order_enabled,
+                    work_long_edge=_processing_work_long_edge(config, "halation"),
+                    spread_scale_weights=config.film.halation_spread_scale_weights,
+                    allow_empty_none=True,
+                    source_model=implementation_plan.halation_source_model,
+                )
+                if spread is None:
+                    layer_halation_addition = None
+                else:
+                    # filter2D may leave ~1e-17 negative round-off around an otherwise
+                    # non-negative optical return. Layer exposure cannot be negative,
+                    # so clamp only the material-layer branch; compatibility RGB keeps
+                    # its historical pixels and hash.
+                    np.maximum(spread, 0.0, out=spread)
+                    layer_weights = (
+                        (float(np.mean(configured_layer_weights)),)
+                        if material_layer_count == 1
+                        else tuple(float(value) for value in configured_layer_weights)
+                    )
+                    layer_halation_addition = LayerExposureAdditionField(
+                        spread,
+                        layer_weights,
+                        strength=float(config.film.halation_strength),
+                    )
+                    del spread
+            after_halation = after_light_leak
+        elif config.enable_halation:
+            after_halation = apply_halation(
                 after_light_leak,
                 config.film,
                 fast=implementation_plan.lower_order_enabled,
                 work_long_edge=_processing_work_long_edge(config, "halation"),
-                spread_scale_weights=config.film.halation_spread_scale_weights,
-                allow_empty_none=True,
                 source_model=implementation_plan.halation_source_model,
             )
-            if spread is None:
-                layer_halation_addition = None
-            else:
-                # filter2D may leave ~1e-17 negative round-off around an otherwise
-                # non-negative optical return. Layer exposure cannot be negative,
-                # so clamp only the material-layer branch; compatibility RGB keeps
-                # its historical pixels and hash.
-                np.maximum(spread, 0.0, out=spread)
-                layer_weights = (
-                    (float(np.mean(configured_layer_weights)),)
-                    if material_layer_count == 1
-                    else tuple(float(value) for value in configured_layer_weights)
-                )
-                layer_halation_addition = LayerExposureAdditionField(
-                    spread,
-                    layer_weights,
-                    strength=float(config.film.halation_strength),
-                )
-                del spread
-        after_halation = after_light_leak
-    elif config.enable_halation:
-        after_halation = apply_halation(
-            after_light_leak,
+        else:
+            after_halation = after_light_leak
+        layer_light_piping_addition = light_piping_exposure_field(
+            after_halation.shape,
             config.film,
-            fast=implementation_plan.lower_order_enabled,
-            work_long_edge=_processing_work_long_edge(config, "halation"),
-            source_model=implementation_plan.halation_source_model,
+            layer_count=material_layer_count,
         )
-    else:
-        after_halation = after_light_leak
-    layer_light_piping_addition = light_piping_exposure_field(
-        after_halation.shape,
-        config.film,
-        layer_count=material_layer_count,
-    )
-    light_piping_applied = layer_light_piping_addition is not None
-    light_piping_edge_weights = (
-        None
-        if layer_light_piping_addition is None
-        else tuple(float(value) for value in layer_light_piping_addition.edge_weights)
-    )
-    latent_layer_exposure_addition = combine_layer_exposure_addition_fields(
-        layer_emulsion_spread_addition,
-        layer_halation_addition,
-        layer_light_piping_addition,
-    )
-    del after_light_leak
-    has_light_leak_map = light_leak_map is not None
-    del light_leak_map
+        light_piping_applied = layer_light_piping_addition is not None
+        light_piping_edge_weights = (
+            None
+            if layer_light_piping_addition is None
+            else tuple(float(value) for value in layer_light_piping_addition.edge_weights)
+        )
+        latent_layer_exposure_addition = combine_layer_exposure_addition_fields(
+            layer_emulsion_spread_addition,
+            layer_halation_addition,
+            layer_light_piping_addition,
+        )
+        del after_light_leak
+        has_light_leak_map = light_leak_map is not None
+        del light_leak_map
 
-    tiled_program_kind: str | None = None
-    if _uses_reduced_bw_negative(config):
-        tiled_program_kind = "bw_negative"
-    elif _uses_reduced_color_negative(config):
-        tiled_program_kind = "color_negative"
-    elif _uses_reduced_bw_reversal(config):
-        tiled_program_kind = "bw_reversal"
-    elif _uses_reduced_color_reversal(config):
-        tiled_program_kind = "color_reversal"
+        tiled_program_kind: str | None = None
+        if _uses_reduced_bw_negative(config):
+            tiled_program_kind = "bw_negative"
+        elif _uses_reduced_color_negative(config):
+            tiled_program_kind = "color_negative"
+        elif _uses_reduced_bw_reversal(config):
+            tiled_program_kind = "bw_reversal"
+        elif _uses_reduced_color_reversal(config):
+            tiled_program_kind = "color_reversal"
 
+        if return_exposed_latent:
+            latent = _freeze_pre_process_latent(
+                after_halation,
+                config,
+                tiled_program_kind,
+                latent_layer_exposure_addition,
+            )
+            latent.material_geometry = material_geometry
+            latent.spectral_exposure_profile = spectral_profile
+            latent.spectral_material_profile = material_spectrum
+            # Store reference units, not the private geometry-projected film.
+            latent.material_snapshot = MaterialSnapshot(asdict(material_runtime_config.film))
+            return latent
+
+        after_accidents = after_halation
+        if cold_history:
+            # Both arrays have completed their last formation-side read. Compact
+            # them before the material pools are allocated, not after development.
+            linear_input = np.asarray(linear_input, dtype=np.float16)
+            after_mtf_history = np.asarray(after_mtf, dtype=np.float16)
+        elif discard_history:
+            after_mtf_history = None
+        else:
+            after_mtf_history = after_mtf
+        del after_mtf
+    # Local chemistry reads the same frozen material response in both workflows.
+    local_image = after_halation if exposed_latent is None else None
+    needs_local_pools = tiled_program_kind is not None and (
+        float(config.chemistry.development_adjacency_strength) > 0.0
+        or (tiled_program_kind in {"color_negative", "color_reversal"}
+            and np.any(np.asarray(config.film.dir_material_response_matrix) > 0.0)
+            and (config.chemistry.dir_process_effectiveness
+                 if config.chemistry.dir_process_effectiveness is not None
+                 else float(tiled_program_kind != "color_reversal")) > 0.0)
+    )
+    local_material_source = (MaterialLatentSource(config.film, image_linear=local_image,
+        exposed_latent=exposed_latent, latent_layer_exposure_addition=latent_layer_exposure_addition)
+        if needs_local_pools else None)
     uneven_development_map = uneven_development_rate_field(
-        after_halation,
+        local_image,
         config.chemistry,
         rng=rng,
         fast=implementation_plan.lower_order_enabled,
         work_long_edge=_processing_work_long_edge(config, "grain"),
+        frame_shape=tuple(frame_shape[:2]),
     )
     adjacency_rate_field = None
     adjacency_audit: dict[str, object] = {
@@ -1534,11 +1572,12 @@ def _develop_silver_halide_pipeline(
     }
     if tiled_program_kind is not None:
         adjacency_rate_field, adjacency_audit = build_development_adjacency_field(
-            after_halation,
+            local_image,
             config.film,
             config.chemistry,
             tiled_program_kind,
             latent_layer_exposure_addition=latent_layer_exposure_addition,
+            exposed_latent=exposed_latent, material_source=local_material_source,
             work_long_edge=_adjacency_work_long_edge(config),
         )
     dir_rate_field = None
@@ -1557,11 +1596,12 @@ def _develop_silver_halide_pipeline(
     }
     if tiled_program_kind in {"color_negative", "color_reversal"}:
         dir_rate_field, dir_audit = build_dir_material_response_field(
-            after_halation,
+            local_image,
             config.film,
             config.chemistry,
             tiled_program_kind,
             latent_layer_exposure_addition=latent_layer_exposure_addition,
+            exposed_latent=exposed_latent, material_source=local_material_source,
             work_long_edge=_dir_work_long_edge(config),
         )
     step_rate_fields = ()
@@ -1580,7 +1620,7 @@ def _develop_silver_halide_pipeline(
             else str(dir_audit["color_development_step"])
         )
         development_rate_field: object | None = StepDevelopmentRateField(
-            full_shape=after_halation.shape[:2],
+            full_shape=tuple(frame_shape[:2]),
             first_step_label=first_step_label,
             common_rate=uneven_development_map,
             first_step_rate=adjacency_rate_field,
@@ -1588,28 +1628,30 @@ def _develop_silver_halide_pipeline(
         )
     else:
         development_rate_field = uneven_development_map
-    after_accidents = after_halation
-    if cold_history:
-        # Both arrays have completed their last formation-side read. Compact
-        # them before the material pools are allocated, not after development.
-        linear_input = np.asarray(linear_input, dtype=np.float16)
-        after_mtf_history = np.asarray(after_mtf, dtype=np.float16)
-    elif discard_history:
-        after_mtf_history = None
-    else:
-        after_mtf_history = after_mtf
-    del after_mtf, after_halation
+    del local_material_source, local_image
+    if exposed_latent is None:
+        del after_halation
     reduced_bw = None
     reduced_color = None
     formed_optical_density_rgb: np.ndarray | None = None
     clear_base_optical_density_rgb: np.ndarray | None = None
     reduced_process_payload: dict[str, object] | None = None
-    tile_rows = _material_pool_tile_rows(config, after_accidents)
-
+    spectral_components = None if material_spectrum is None else np.empty(tuple(frame_shape[:2]) + (9,), dtype=np.float32)
+    spectral_base: list[float] = []
+    tile_rows = (
+        None
+        if exposed_latent is not None
+        else _material_pool_tile_rows(config, after_accidents)
+    )
+    grain_shape = (
+        tuple(int(value) for value in exposed_latent.developability.shape[:2])
+        if exposed_latent is not None
+        else after_accidents.shape[:2]
+    )
     silver_grain_plan = _silver_grain_plan(
         config,
         rng,
-        after_accidents.shape[:2],
+        grain_shape,
         tiled_program_kind,
     )
     independent_silver_grain_applied = False
@@ -1624,7 +1666,12 @@ def _develop_silver_halide_pipeline(
             4.0,
         ).astype(np.float32, copy=False)
 
-    if tile_rows is not None and tiled_program_kind is not None:
+    material_image = None if exposed_latent is not None else after_accidents
+    material_addition = (
+        None if exposed_latent is not None else latent_layer_exposure_addition
+    )
+    # 材料池形成。分块只改变内存，不改变程序或随机流。
+    if tile_rows is not None and tiled_program_kind is not None and exposed_latent is None:
         (
             density_cmy,
             formed_optical_density_rgb,
@@ -1638,6 +1685,8 @@ def _develop_silver_halide_pipeline(
             local_development_rate=development_rate_field,
             latent_layer_exposure_addition=latent_layer_exposure_addition,
             silver_grain_plan=silver_grain_plan,
+            spectral_component_output=spectral_components,
+            spectral_base_output=spectral_base,
             consume_input_as_density=bool(
                 discard_history and not reference_execution_enabled()
             ),
@@ -1649,13 +1698,14 @@ def _develop_silver_halide_pipeline(
             )
     elif _uses_reduced_bw_negative(config):
         reduced_bw = develop_bw_negative_reduced(
-            after_accidents,
+            material_image,
             config.film,
             config.chemistry,
             local_development_rate=development_rate_field,
-            latent_layer_exposure_addition=latent_layer_exposure_addition,
+            latent_layer_exposure_addition=material_addition,
             retain_latent_fraction=False,
             retain_process_state=False,
+            exposed_latent=exposed_latent,
         )
         independent_silver_grain_applied = _apply_reduced_silver_grain(
             reduced_bw,
@@ -1667,13 +1717,14 @@ def _develop_silver_halide_pipeline(
         clear_base_optical_density_rgb = reduced_bw.clear_base_optical_density_rgb
     elif _uses_reduced_color_negative(config):
         reduced_color = develop_color_negative_reduced(
-            after_accidents,
+            material_image,
             config.film,
             config.chemistry,
             local_development_rate=development_rate_field,
-            latent_layer_exposure_addition=latent_layer_exposure_addition,
+            latent_layer_exposure_addition=material_addition,
             retain_latent_fraction=False,
             retain_process_state=False,
+            exposed_latent=exposed_latent,
         )
         independent_silver_grain_applied = _apply_reduced_silver_grain(
             reduced_color,
@@ -1685,13 +1736,14 @@ def _develop_silver_halide_pipeline(
         clear_base_optical_density_rgb = reduced_color.clear_base_optical_density_rgb
     elif _uses_reduced_bw_reversal(config):
         reduced_bw = develop_bw_reversal_reduced(
-            after_accidents,
+            material_image,
             config.film,
             config.chemistry,
             local_development_rate=development_rate_field,
-            latent_layer_exposure_addition=latent_layer_exposure_addition,
+            latent_layer_exposure_addition=material_addition,
             retain_latent_fraction=False,
             retain_process_state=False,
+            exposed_latent=exposed_latent,
         )
         independent_silver_grain_applied = _apply_reduced_silver_grain(
             reduced_bw,
@@ -1703,13 +1755,14 @@ def _develop_silver_halide_pipeline(
         clear_base_optical_density_rgb = reduced_bw.clear_base_optical_density_rgb
     elif _uses_reduced_color_reversal(config):
         reduced_color = develop_color_reversal_reduced(
-            after_accidents,
+            material_image,
             config.film,
             config.chemistry,
             local_development_rate=development_rate_field,
-            latent_layer_exposure_addition=latent_layer_exposure_addition,
+            latent_layer_exposure_addition=material_addition,
             retain_latent_fraction=False,
             retain_process_state=False,
+            exposed_latent=exposed_latent,
         )
         independent_silver_grain_applied = _apply_reduced_silver_grain(
             reduced_color,
@@ -1734,7 +1787,7 @@ def _develop_silver_halide_pipeline(
     )
     after_halation_history = (
         None
-        if discard_history
+        if discard_history or exposed_latent is not None
         else np.asarray(after_accidents, dtype=history_dtype)
     )
     del after_accidents
@@ -1745,6 +1798,12 @@ def _develop_silver_halide_pipeline(
     # Collapse the large transient pool result into its small audit payload
     # before density accidents and grain allocate their own full-frame fields.
     # The authoritative formed density has already been extracted above.
+    if spectral_components is not None:
+        reduced_source = reduced_bw if reduced_bw is not None else reduced_color
+        if reduced_source is not None:
+            base, _ = final_pool_amounts(reduced_source.process_result.final_medium, spectral_components)
+            spectral_base[:] = base
+        del reduced_source
     if reduced_bw is not None:
         reduced_process_payload = {}
         material_is_mono = is_monochrome_material(config)
@@ -1821,6 +1880,7 @@ def _develop_silver_halide_pipeline(
     # frame without adding a diagnostic export.
     del uneven_development_map
 
+    # 冲洗后事故写在已形成密度上，不回到曝光，也不改扫描解释。
     accident_components = apply_density_accident_components(
         density_cmy,
         config.chemistry,
@@ -1863,6 +1923,16 @@ def _develop_silver_halide_pipeline(
         and tiled_program_kind is not None
         and tiled_program_kind.startswith("bw_")
     )
+    spectral_grain_totals = None
+    spectral_silver_grain_applied = False
+    if spectral_components is not None and config.enable_grain:
+        spectral_grain_totals = np.sum(spectral_components[..., :4], axis=(0, 1), dtype=np.float64)
+        spectral_silver_grain_applied = apply_spectral_silver_grain(spectral_components, silver_grain_plan)
+        spectral_grain_range = np.maximum(
+            np.asarray(config.film.density_max, dtype=np.float32)
+            - np.asarray(config.film.density_min, dtype=np.float32),
+            np.float32(1e-6),
+        )
     consume_layer_density_for_deferred_accidents = False
     optical_layer_density_is_effective_delta = False
     if config.enable_grain and not independent_silver_only_grain:
@@ -1880,6 +1950,7 @@ def _develop_silver_halide_pipeline(
             component_scope="emulsion",
             consume_input_as_effective_delta=discard_formation_layer_masters,
             model=implementation_plan.emulsion_grain_model,
+            spatial_scale_factor=(1.0 if material_geometry is None else material_geometry.radius_factor),
         )
         optical_layer_density_is_effective_delta = (
             discard_formation_layer_masters
@@ -1953,6 +2024,12 @@ def _develop_silver_halide_pipeline(
     if is_monochrome_material(config) and not discard_formation_layer_masters:
         density_grain = np.repeat(density_grain.mean(axis=-1, keepdims=True), 3, axis=-1)
 
+    spectral_post_process = (
+        np.zeros_like(formed_optical_density_rgb)
+        if spectral_components is not None and any(
+            name in accident_maps for name in ("chemical_stain", "silver_plating", "reticulation")
+        ) else None
+    )
     if formed_optical_density_rgb is not None:
         # Grain remains a layer/emulsion phenomenon and therefore passes
         # through the dye absorption matrix. Chemical stain, deposited surface
@@ -1979,6 +2056,11 @@ def _develop_silver_halide_pipeline(
                 layer_delta = (
                     optical_layer_density[start:stop]
                     - formed_density_cmy[start:stop]
+                )
+            if spectral_grain_totals is not None and not independent_silver_only_grain:
+                apply_spectral_emulsion_grain(
+                    spectral_components[start:stop], layer_delta, spectral_grain_range,
+                    independent_silver=silver_grain_plan is not None,
                 )
             if is_monochrome_material(config):
                 # The legacy dye-layer generator has partly independent layer
@@ -2008,11 +2090,15 @@ def _develop_silver_halide_pipeline(
                         "...l,rl->...r", stain_layers, absorption
                     ).astype(np.float32, copy=False)
                 formed_optical_density_rgb[start:stop] += stain_rgb
+                if spectral_post_process is not None:
+                    spectral_post_process[start:stop] += stain_rgb
                 del stain_layers, stain_rgb
             if plating_map is not None and plating_scale > 0.0:
                 formed_optical_density_rgb[start:stop] += (
                     plating_map[start:stop, ..., None] * plating_scale
                 )
+                if spectral_post_process is not None:
+                    spectral_post_process[start:stop] += plating_map[start:stop, ..., None] * plating_scale
             if (
                 reticulation_map is not None
                 and accident_reticulation_optical_scale > 0.0
@@ -2021,6 +2107,10 @@ def _develop_silver_halide_pipeline(
                     reticulation_map[start:stop, ..., None]
                     * accident_reticulation_optical_scale
                 )
+                if spectral_post_process is not None:
+                    spectral_post_process[start:stop] += (
+                        reticulation_map[start:stop, ..., None] * accident_reticulation_optical_scale
+                    )
             np.maximum(formed_optical_density_rgb[start:stop], 0.0, out=formed_optical_density_rgb[start:stop])
             if consume_layer_density_for_deferred_accidents:
                 # Reuse the private formed+grain layer buffer as the final
@@ -2071,6 +2161,8 @@ def _develop_silver_halide_pipeline(
                 np.maximum(density_tile, 0.0, out=density_tile)
                 del compatibility_scalar, density_tile
             del layer_delta, rgb_delta
+    if spectral_grain_totals is not None:
+        conserve_spectral_grain_totals(spectral_components, spectral_grain_totals)
     del processed_density_cmy
     del optical_layer_density
     optical_component_contract = {
@@ -2300,11 +2392,12 @@ def _develop_silver_halide_pipeline(
     # result and then copying that result again through astype().  Disabled MTF
     # or halation may make two histories alias; preserve the public fields as
     # independently mutable snapshots in that case.
-    if discard_history:
+    if discard_history or exposed_latent is not None:
         # Output-only callers have no consumer for these already-completed
         # formation stages. Keep explicit, independently owned empty sentinels
         # so the state shape is unambiguous without retaining three image-sized
         # buffers. Persisted and diagnostic media never select this policy.
+        # Develop-from-latent also has no stored pre-process history arrays.
         linear_input_output = np.empty((0, 0, 3), dtype=np.float32)
         after_mtf_output = np.empty((0, 0, 3), dtype=np.float32)
         after_halation_output = np.empty((0, 0, 3), dtype=np.float32)
@@ -2352,7 +2445,45 @@ def _develop_silver_halide_pipeline(
         if np.shares_memory(optical_density_output, density_grain_output):
             density_grain_output = density_grain_output.copy()
 
-    return DevelopedNegative(
+    if material_geometry is not None:
+        final_medium_contract["material_geometry"] = material_geometry.as_dict()
+        final_medium_contract["emulsion_grain_formation"]["spatial_scale_factor"] = material_geometry.radius_factor
+    if spectral_profile is not None:
+        final_medium_contract["spectral_exposure_profile"] = spectral_profile.as_dict()
+        final_medium_contract["execution_implementation"]["component_models"]["exposure_mapping"] = spectral_profile.model
+    if material_spectrum is not None:
+        final_medium_contract["execution_implementation"]["component_models"]["spectral_material"] = material_spectrum.model
+        final_medium_contract["spectral_grain_formation"] = {
+            "model": SPECTRAL_GRAIN_MODEL,
+            "enabled": bool(config.enable_grain),
+            "emulsion_field_model": implementation_plan.emulsion_grain_model,
+            "independent_silver_applied": bool(spectral_silver_grain_applied),
+            "destination": "spectral_medium.component_amounts",
+            "conserved_components": ["dye_c", "dye_m", "dye_y", "metallic_silver"],
+            "normalization_scope": "full_frame_per_component",
+            "scanner_owned": False,
+        }
+        if spectral_post_process is not None:
+            final_medium_contract["spectral_post_process_formation"] = {
+                "model": SPECTRAL_POST_PROCESS_MODEL,
+                "source_components": sorted(set(accident_map_names) & {"chemical_stain", "silver_plating", "reticulation"}),
+                "stage": "final_medium_optical_overlay",
+                "destination": SPECTRAL_POST_PROCESS_ARRAY_KEY,
+                "scanner_owned": False,
+            }
+    if config.chemistry.incident_identity_seed is not None:
+        final_medium_contract["incident_identity"]={
+            "model":"roll_batch_incident_identity_v1",
+            "seed":int(config.chemistry.incident_identity_seed),
+            "gate_reference_long_edge":900,
+            "grain_scope":"frame_rng",
+            "gate_source":"frozen_latent" if exposed_latent is not None else "current_exposure",
+        }
+
+    # 组装最终介质。扫描只读这份结果。
+    negative = DevelopedNegative(
+        spectral_medium=(None if material_spectrum is None else SpectralMedium(
+            material_spectrum, spectral_components, tuple(spectral_base), spectral_post_process)),
         linear_input=linear_input_output,
         after_mtf=after_mtf_output,
         after_halation=after_halation_output,
@@ -2372,7 +2503,7 @@ def _develop_silver_halide_pipeline(
         color_system=str(medium_contract["color_system"]),
         compatible_interpreters=tuple(str(v) for v in medium_contract["compatible_interpreters"]),
         metadata={
-            "runtime_config": config,
+            "runtime_config": material_runtime_config,
             "stage": "developed_positive_transparency" if is_positive else "developed_negative",
             "medium": config.medium,
             "medium_family": str(medium_contract["medium_family"]),
@@ -2419,6 +2550,7 @@ def _develop_silver_halide_pipeline(
             "exposure_occlusion_insect": float(config.chemistry.exposure_occlusion_insect),
             "exposure_occlusion_debris": float(config.chemistry.exposure_occlusion_debris),
             "exposure_occlusion_identity_seed": config.chemistry.exposure_occlusion_identity_seed,
+            "incident_identity_seed": config.chemistry.incident_identity_seed,
             "has_exposure_occlusion_map": has_exposure_occlusion_map,
             "imprint_style": str(config.film_border.imprint_style),
             "imprint_side": str(config.film_border.imprint_side),
@@ -2477,6 +2609,12 @@ def _develop_silver_halide_pipeline(
             ),
         },
     )
+    if exposed_latent is not None:
+        storage = dict(negative.metadata.get("stage_storage") or {})
+        storage["history"] = "unavailable"
+        storage["source"] = "developed_from_latent"
+        negative.metadata["stage_storage"] = storage
+    return negative
 
 
 def _positive_transparency_density_from_negative_proxy(
@@ -2753,389 +2891,19 @@ def process_array(
     return output
 
 
-def _save_debug_outputs(
-    output_path: Path,
-    image_srgb: np.ndarray,
-    stages: dict[str, np.ndarray],
-    config: DarkroomConfig,
-) -> None:
-    debug_dir = output_path.with_suffix("")
-    debug_dir = debug_dir.parent / f"{debug_dir.name}_debug"
-    debug_dir.mkdir(parents=True, exist_ok=True)
-
-    save_image(image_srgb, debug_dir / "00_original.png", config.output)
-    for name, array in stages.items():
-        if "density" in name:
-            np.save(debug_dir / f"{name}.npy", array)
-            if name == "06_negative_total_density":
-                save_image(_rgb_density_preview(array), debug_dir / f"{name}_density_debug.png", config.output)
-            else:
-                save_image(_density_preview(array, config), debug_dir / f"{name}_density_debug.png", config.output)
-            if name == "04_density_cmy":
-                save_image(negative_visual_preview(array, config.film), debug_dir / "10_negative_visual_no_grain.png", config.output)
-            if name == "05_density_grain":
-                save_image(negative_visual_preview(array, config.film), debug_dir / "11_negative_visual.png", config.output)
-        else:
-            is_srgb = name == "11_output_srgb"
-            preview = array if is_srgb else linear_to_srgb(array)
-            save_image(preview, debug_dir / f"{name}.png", config.output)
-
-    if config.comparison_grid:
-        original = image_srgb
-        after_mtf = linear_to_srgb(stages["02_after_mtf"])
-        no_grain = linear_to_srgb(stages["04_positive_no_grain"])
-        final = stages["11_output_srgb"]
-        min_h = min(original.shape[0], after_mtf.shape[0], no_grain.shape[0], final.shape[0])
-        min_w = min(original.shape[1], after_mtf.shape[1], no_grain.shape[1], final.shape[1])
-        cells = [img[:min_h, :min_w] for img in (original, after_mtf, no_grain, final)]
-        grid = np.vstack((np.hstack((cells[0], cells[1])), np.hstack((cells[2], cells[3]))))
-        save_image(grid, debug_dir / "comparison_grid.png", config.output)
-
-
-def _save_sidecar(
-    input_path: Path,
-    output_path: Path,
-    config: DarkroomConfig,
-    resolved_seed: int | None,
-    preview: bool,
-) -> None:
-    provenance = None
-    if config.output.watermark_metadata:
-        provenance = provenance_payload(
-            stage="final_positive",
-            input_path=input_path,
-            output_path=output_path,
-            resolved_seed=resolved_seed,
-        )
-    sidecar = final_positive_sidecar(
-        input_path=input_path,
-        output_path=output_path,
-        config=config,
-        resolved_seed=resolved_seed,
-        preview=preview,
-        provenance=provenance,
-    )
-    sidecar_path = output_path.with_suffix(output_path.suffix + ".json")
-    atomic_write_json(sidecar_path, sidecar)
-
-
-def _is_positive_developed_medium(medium: DevelopedNegative) -> bool:
-    return str(getattr(medium, "image_polarity", "")).lower() == "positive"
-
-
-def _developed_medium_path(input_path: Path, output_path: Path, medium: DevelopedNegative) -> Path:
-    if _is_positive_developed_medium(medium):
-        return output_path.parent / POSITIVE_MATERIAL_DIR_NAME / f"{input_path.stem}{POSITIVE_SUFFIX}"
-    return output_path.parent / NEGATIVE_MATERIAL_DIR_NAME / f"{input_path.stem}{NEGATIVE_SUFFIX}"
-
-
-def _developed_medium_bundle_targets(
-    negative_path: Path,
-) -> tuple[Path, ...]:
-    """Return the complete managed namespace for one medium generation.
-
-    Disabled products are included deliberately.  On successful replacement,
-    stale raw/sidecar/material directories from an older configuration are
-    removed; on failure the complete older generation is restored.
-    """
-    material_base = negative_path.with_suffix("")
-    scanner_raw = negative_path.with_suffix(".scanner_raw.tiff")
-    light_table_raw = negative_path.with_suffix(".light_table_raw.tiff")
-    return (
-        negative_path,
-        negative_path.with_suffix(".negative_visual.png"),
-        negative_path.with_suffix(".positive_visual.png"),
-        scanner_raw,
-        scanner_raw.with_suffix(scanner_raw.suffix + ".json"),
-        light_table_raw,
-        light_table_raw.with_suffix(light_table_raw.suffix + ".json"),
-        negative_path.with_suffix(negative_path.suffix + ".json"),
-        material_base.parent / f"{material_base.name}_layer_pack",
-        material_base.parent / f"{material_base.name}_transparent_plate",
-        material_base.parent / f"{material_base.name}_plate_set",
-    )
-
-
-def _assert_output_set_safe(input_path: Path, targets: tuple[Path, ...]) -> None:
-    source = input_path.resolve()
-    for target in targets:
-        resolved = target.resolve()
-        if resolved == source or resolved in source.parents:
-            raise ValueError(
-                "Output paths must not overwrite the source input or replace a directory containing it: "
-                f"{target}"
-            )
-
-
-def _save_full_developed_medium_materials(
-    input_path: Path,
-    output_path: Path,
-    negative: DevelopedNegative,
-    config: DarkroomConfig,
-    resolved_seed: int | None,
-    developed_path: Path | None = None,
-    _transactional: bool = True,
-    _export_config_prepared: bool = False,
-) -> dict[str, str]:
-    """Save the reusable developed medium created by the full pipeline."""
-    if not _export_config_prepared:
-        config = _config_for_developed_medium_export(negative, config)
-    _validate_develop_runtime(config)
-    _validate_output_runtime(config)
-    _validate_developed_medium_state(negative)
-    is_positive = _is_positive_developed_medium(negative)
-    if is_positive or config.output.save_scanner_raw:
-        _validate_scan_runtime(config)
-    negative_path = developed_path or _developed_medium_path(input_path, output_path, negative)
-    bundle_targets = _developed_medium_bundle_targets(negative_path)
-    _assert_output_set_safe(input_path, bundle_targets)
-    if _transactional:
-        with atomic_path_set(bundle_targets):
-            return _save_full_developed_medium_materials(
-                input_path,
-                output_path,
-                negative,
-                config,
-                resolved_seed,
-                developed_path=negative_path,
-                _transactional=False,
-                _export_config_prepared=True,
-            )
-    negative_path.parent.mkdir(parents=True, exist_ok=True)
-    material_key = "positive_path" if is_positive else "negative_path"
-    visual_suffix = ".positive_visual.png" if is_positive else ".negative_visual.png"
-    provenance_stage = "developed_positive_transparency" if is_positive else "developed_negative"
-    provenance = provenance_payload(
-        stage=provenance_stage,
-        input_path=input_path,
-        output_path=output_path,
-        negative_path=negative_path,
-        resolved_seed=resolved_seed,
-    )
-    npz_payload: dict[str, np.ndarray] = {
-        "density_cmy": np.asarray(negative.density_cmy, dtype=np.float32),
-        "density_grain": np.asarray(negative.density_grain, dtype=np.float32),
-        "developed_medium_metadata": np.asarray(
-            json.dumps(developed_medium_metadata(negative), ensure_ascii=False, allow_nan=False)
-        ),
-    }
-    if negative.optical_density_rgb is not None:
-        npz_payload["optical_density_rgb"] = np.asarray(
-            negative.optical_density_rgb,
-            dtype=np.float32,
-        )
-    if negative.clear_base_optical_density_rgb is not None:
-        npz_payload["clear_base_optical_density_rgb"] = np.asarray(
-            negative.clear_base_optical_density_rgb,
-            dtype=np.float32,
-        )
-    if config.output.watermark_negative_material:
-        npz_payload["film_foundry_provenance"] = provenance_npz_array(payload_with_config(provenance, asdict(config)))
-    atomic_savez(
-        negative_path,
-        compressed=(
-            str(config.output.medium_npz_compression).strip().lower()
-            == "compressed"
-        ),
-        **npz_payload,
-    )
-    del npz_payload
-
-    paths: dict[str, str] = {material_key: str(negative_path)}
-    if is_positive:
-        paths["negative_path"] = str(negative_path)
-    preview_path = negative_path.with_suffix(visual_suffix)
-    positive_transmission_raw: np.ndarray | None = None
-    if is_positive:
-        positive_transmission_raw = capture_optical_density(
-            _medium_optical_density_rgb(negative, config.film),
-            config.scanner,
-            illuminant_rgb=transmission_illuminant_rgb(config.scanner),
-        )
-        preview_linear = positive_transmission_raw
-        save_image(linear_to_srgb(np.clip(preview_linear, 0.0, 1.0)), preview_path, config.output)
-        del preview_linear
-        paths["positive_visual_preview"] = str(preview_path)
-    else:
-        preview = (
-            negative_visual_preview(negative.density_grain, config.film)
-            if negative.optical_density_rgb is None
-            else optical_density_visual_preview(negative.optical_density_rgb)
-        )
-        save_image(preview, preview_path, config.output)
-        del preview
-        paths["negative_visual_preview"] = str(preview_path)
-
-    scanner_raw_path: Path | None = None
-    scanner_raw_border_px = 0
-    if config.output.save_scanner_raw:
-        scanner_raw_border_px = scanner_raw_export_border_width(
-            negative.density_grain.shape,
-            config.output.scanner_raw_border_percent,
-            config.output.scanner_raw_border_min_px,
-        )
-        if is_positive:
-            scanner_raw = positive_transmission_raw
-            if scanner_raw is None:
-                scanner_raw = capture_optical_density(
-                    _medium_optical_density_rgb(negative, config.film),
-                    config.scanner,
-                    illuminant_rgb=transmission_illuminant_rgb(config.scanner),
-                )
-            scanner_raw = scanner_raw_with_reference_border(
-                scanner_raw,
-                _clear_base_scanner_sample(config, negative).reshape(3),
-                border_percent=config.output.scanner_raw_border_percent,
-                border_min_px=config.output.scanner_raw_border_min_px,
-            )
-            scanner_raw_path = negative_path.with_suffix(".light_table_raw.tiff")
-        else:
-            scanner_raw = scanner_raw_with_clear_border(
-                negative.density_grain,
-                config.film,
-                config.scanner,
-                border_percent=config.output.scanner_raw_border_percent,
-                border_min_px=config.output.scanner_raw_border_min_px,
-                optical_density_rgb=negative.optical_density_rgb,
-                clear_base_optical_density_rgb=negative.clear_base_optical_density_rgb,
-            )
-            scanner_raw_path = negative_path.with_suffix(".scanner_raw.tiff")
-        if config.output.watermark_scanner_raw_border:
-            scanner_raw = apply_scanner_raw_border_watermark(
-                scanner_raw,
-                provenance,
-                border_width=scanner_raw_border_px,
-            )
-        save_linear_rgb_tiff(scanner_raw, scanner_raw_path)
-        del scanner_raw
-        paths["light_table_raw_path" if is_positive else "scanner_raw_path"] = str(scanner_raw_path)
-        if config.save_sidecar:
-            scanner_raw_sidecar_path = scanner_raw_path.with_suffix(scanner_raw_path.suffix + ".json")
-            atomic_write_json(
-                scanner_raw_sidecar_path,
-                scanner_raw_sidecar(
-                    input_path=input_path,
-                    negative_path=negative_path,
-                    scanner_raw_path=scanner_raw_path,
-                    config=config,
-                    negative=negative,
-                    provenance=provenance if config.output.watermark_metadata else None,
-                    border_width_px=scanner_raw_border_px,
-                ),
-            )
-            paths["scanner_raw_sidecar"] = str(scanner_raw_sidecar_path)
-    positive_transmission_raw = None
-
-    material_base = negative_path.with_suffix("")
-    material_paths: dict[str, str] = {}
-    if config.output.export_layer_pack:
-        material_paths.update(
-            export_layer_pack(
-                negative,
-                config.film,
-                material_base.parent / f"{material_base.name}_layer_pack",
-                polarity="positive" if is_positive else "negative",
-                source_negative_path=negative_path,
-                scanner_raw_path=scanner_raw_path,
-                orange_preview_path=preview_path,
-                metadata={
-                    **layer_pack_metadata(
-                        input_path=input_path,
-                        output_path=output_path,
-                        negative_path=negative_path,
-                        config=config,
-                        negative=negative,
-                        paths=paths,
-                    ),
-                },
-            )
-        )
-    else:
-        if config.output.export_transparent_plate:
-            material_paths.update(
-                export_transparent_plate_set(
-                    negative.density_grain,
-                    config.film,
-                    material_base.parent / f"{material_base.name}_transparent_plate",
-                    polarity="positive" if is_positive else "negative",
-                    optical_density_rgb=negative.optical_density_rgb,
-                    clear_base_optical_density_rgb=negative.clear_base_optical_density_rgb,
-                )
-            )
-        if config.output.export_plate_set:
-            material_paths.update(
-                export_plate_set(
-                    negative.density_cmy,
-                    negative.density_grain,
-                    negative.after_mtf,
-                    negative.after_halation,
-                    config.film,
-                    material_base.parent / f"{material_base.name}_plate_set",
-                )
-            )
-    paths.update({f"material:{key}": value for key, value in material_paths.items()})
-
-    if config.save_sidecar:
-        sidecar_path = negative_path.with_suffix(negative_path.suffix + ".json")
-        atomic_write_json(
-            sidecar_path,
-            developed_negative_sidecar(
-                input_path=input_path,
-                output_path=output_path,
-                negative_path=negative_path,
-                config=config,
-                negative=negative,
-                paths=paths,
-                resolved_seed=resolved_seed,
-                provenance=provenance if config.output.watermark_metadata else None,
-            ),
-        )
-        paths["sidecar"] = str(sidecar_path)
-    return paths
-
-
-def _save_full_negative_materials(
-    input_path: Path,
-    output_path: Path,
-    negative: DevelopedNegative,
-    config: DarkroomConfig,
-    resolved_seed: int | None,
-) -> dict[str, str]:
-    """Compatibility wrapper for older callers/tests."""
-    return _save_full_developed_medium_materials(input_path, output_path, negative, config, resolved_seed)
-
-
-def save_developed_medium_materials(
-    input_path: str | Path,
-    output_path: str | Path,
-    medium: DevelopedNegative,
-    config: DarkroomConfig,
-    resolved_seed: int | None = None,
-) -> dict[str, str]:
-    """Save reusable electronic negative/positive medium files for tools and GUIs."""
-    return _save_full_developed_medium_materials(Path(input_path), Path(output_path), medium, config, resolved_seed)
-
-
-def save_developed_medium_at_path(
-    input_path: str | Path,
-    developed_path: str | Path,
-    medium: DevelopedNegative,
-    config: DarkroomConfig,
-    resolved_seed: int | None = None,
-) -> dict[str, str]:
-    """Save a developed medium at an explicit path using the unified exporter."""
-    developed_path = Path(developed_path)
-    input_path = Path(input_path)
-    if developed_path.resolve() == input_path.resolve():
-        raise ValueError("Developed-medium output path must not overwrite the source input file.")
-    return _save_full_developed_medium_materials(
-        input_path,
-        developed_path,
-        medium,
-        config,
-        resolved_seed,
-        developed_path=developed_path,
-    )
+# 已形成介质的写出。process_file 仍在下面调用这些名字。
+from film_foundry.core.medium_export import (
+    _assert_output_set_safe,
+    _developed_medium_bundle_targets,
+    _developed_medium_path,
+    _is_positive_developed_medium,
+    _save_debug_outputs,
+    _save_full_developed_medium_materials,
+    _save_full_negative_materials,
+    _save_sidecar,
+    save_developed_medium_at_path,
+    save_developed_medium_materials,
+)
 
 
 def process_file(

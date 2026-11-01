@@ -1,0 +1,774 @@
+[
+  {
+    "coordinate": "androidx.activity:activity:1.9.3",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/activity/activity/1.9.3/activity-1.9.3-sources.jar",
+    "artifact_names": [
+      "activity-1.9.3.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.annotation:annotation-experimental:1.4.1",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/annotation/annotation-experimental/1.4.1/annotation-experimental-1.4.1-sources.jar",
+    "artifact_names": [
+      "annotation-experimental-1.4.1.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.annotation:annotation-jvm:1.8.1",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/annotation/annotation-jvm/1.8.1/annotation-jvm-1.8.1-sources.jar",
+    "artifact_names": [
+      "annotation-jvm-1.8.1.jar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.annotation:annotation:1.8.1",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/annotation/annotation/1.8.1/annotation-1.8.1-sources.jar",
+    "artifact_names": [],
+    "native_libraries": [],
+    "kind": "metadata / platform constraint"
+  },
+  {
+    "coordinate": "androidx.appcompat:appcompat-resources:1.1.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/appcompat/appcompat-resources/1.1.0/appcompat-resources-1.1.0-sources.jar",
+    "artifact_names": [
+      "appcompat-resources-1.1.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.appcompat:appcompat:1.1.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/appcompat/appcompat/1.1.0/appcompat-1.1.0-sources.jar",
+    "artifact_names": [
+      "appcompat-1.1.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.arch.core:core-common:2.2.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/arch/core/core-common/2.2.0/core-common-2.2.0-sources.jar",
+    "artifact_names": [
+      "core-common-2.2.0.jar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.arch.core:core-runtime:2.2.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/arch/core/core-runtime/2.2.0/core-runtime-2.2.0-sources.jar",
+    "artifact_names": [
+      "core-runtime-2.2.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.camera.featurecombinationquery:featurecombinationquery:1.5.3",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/camera/featurecombinationquery/featurecombinationquery/1.5.3/featurecombinationquery-1.5.3-sources.jar",
+    "artifact_names": [
+      "featurecombinationquery-1.5.3.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.camera:camera-camera2:1.5.3",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/camera/camera-camera2/1.5.3/camera-camera2-1.5.3-sources.jar",
+    "artifact_names": [
+      "camera-camera2-1.5.3.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.camera:camera-core:1.5.3",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      },
+      {
+        "name": "BSD License",
+        "url": "https://chromium.googlesource.com/libyuv/libyuv/+/refs/heads/main/README.chromium"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/camera/camera-core/1.5.3/camera-core-1.5.3-sources.jar",
+    "artifact_names": [
+      "camera-core-1.5.3.aar"
+    ],
+    "native_libraries": [
+      "jni/arm64-v8a/libimage_processing_util_jni.so",
+      "jni/arm64-v8a/libsurface_util_jni.so",
+      "jni/armeabi-v7a/libimage_processing_util_jni.so",
+      "jni/armeabi-v7a/libsurface_util_jni.so",
+      "jni/x86/libimage_processing_util_jni.so",
+      "jni/x86/libsurface_util_jni.so",
+      "jni/x86_64/libimage_processing_util_jni.so",
+      "jni/x86_64/libsurface_util_jni.so"
+    ],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.camera:camera-lifecycle:1.5.3",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/camera/camera-lifecycle/1.5.3/camera-lifecycle-1.5.3-sources.jar",
+    "artifact_names": [
+      "camera-lifecycle-1.5.3.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.camera:camera-video:1.5.3",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/camera/camera-video/1.5.3/camera-video-1.5.3-sources.jar",
+    "artifact_names": [
+      "camera-video-1.5.3.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.camera:camera-view:1.5.3",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/camera/camera-view/1.5.3/camera-view-1.5.3-sources.jar",
+    "artifact_names": [
+      "camera-view-1.5.3.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.collection:collection:1.1.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/collection/collection/1.1.0/collection-1.1.0-sources.jar",
+    "artifact_names": [
+      "collection-1.1.0.jar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.concurrent:concurrent-futures-ktx:1.1.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/concurrent/concurrent-futures-ktx/1.1.0/concurrent-futures-ktx-1.1.0-sources.jar",
+    "artifact_names": [
+      "concurrent-futures-ktx-1.1.0.jar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.concurrent:concurrent-futures:1.1.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/concurrent/concurrent-futures/1.1.0/concurrent-futures-1.1.0-sources.jar",
+    "artifact_names": [
+      "concurrent-futures-1.1.0.jar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.core:core-ktx:1.13.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/core/core-ktx/1.13.0/core-ktx-1.13.0-sources.jar",
+    "artifact_names": [
+      "core-ktx-1.13.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.core:core:1.13.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/core/core/1.13.0/core-1.13.0-sources.jar",
+    "artifact_names": [
+      "core-1.13.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.cursoradapter:cursoradapter:1.0.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/cursoradapter/cursoradapter/1.0.0/cursoradapter-1.0.0-sources.jar",
+    "artifact_names": [
+      "cursoradapter-1.0.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.customview:customview:1.0.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/customview/customview/1.0.0/customview-1.0.0-sources.jar",
+    "artifact_names": [
+      "customview-1.0.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.drawerlayout:drawerlayout:1.0.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/drawerlayout/drawerlayout/1.0.0/drawerlayout-1.0.0-sources.jar",
+    "artifact_names": [
+      "drawerlayout-1.0.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.exifinterface:exifinterface:1.4.2",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/exifinterface/exifinterface/1.4.2/exifinterface-1.4.2-sources.jar",
+    "artifact_names": [
+      "exifinterface-1.4.2.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.fragment:fragment:1.1.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/fragment/fragment/1.1.0/fragment-1.1.0-sources.jar",
+    "artifact_names": [
+      "fragment-1.1.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.interpolator:interpolator:1.0.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/interpolator/interpolator/1.0.0/interpolator-1.0.0-sources.jar",
+    "artifact_names": [
+      "interpolator-1.0.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.lifecycle:lifecycle-common:2.6.2",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-common/2.6.2/lifecycle-common-2.6.2-sources.jar",
+    "artifact_names": [
+      "lifecycle-common-2.6.2.jar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.lifecycle:lifecycle-livedata-core:2.6.2",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-livedata-core/2.6.2/lifecycle-livedata-core-2.6.2-sources.jar",
+    "artifact_names": [
+      "lifecycle-livedata-core-2.6.2.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.lifecycle:lifecycle-livedata:2.6.2",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-livedata/2.6.2/lifecycle-livedata-2.6.2-sources.jar",
+    "artifact_names": [
+      "lifecycle-livedata-2.6.2.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.lifecycle:lifecycle-runtime:2.6.2",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-runtime/2.6.2/lifecycle-runtime-2.6.2-sources.jar",
+    "artifact_names": [
+      "lifecycle-runtime-2.6.2.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.lifecycle:lifecycle-viewmodel-savedstate:2.6.2",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-viewmodel-savedstate/2.6.2/lifecycle-viewmodel-savedstate-2.6.2-sources.jar",
+    "artifact_names": [
+      "lifecycle-viewmodel-savedstate-2.6.2.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.lifecycle:lifecycle-viewmodel:2.6.2",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-viewmodel/2.6.2/lifecycle-viewmodel-2.6.2-sources.jar",
+    "artifact_names": [
+      "lifecycle-viewmodel-2.6.2.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.loader:loader:1.0.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/loader/loader/1.0.0/loader-1.0.0-sources.jar",
+    "artifact_names": [
+      "loader-1.0.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.profileinstaller:profileinstaller:1.3.1",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/profileinstaller/profileinstaller/1.3.1/profileinstaller-1.3.1-sources.jar",
+    "artifact_names": [
+      "profileinstaller-1.3.1.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.savedstate:savedstate:1.2.1",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/savedstate/savedstate/1.2.1/savedstate-1.2.1-sources.jar",
+    "artifact_names": [
+      "savedstate-1.2.1.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.startup:startup-runtime:1.1.1",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/startup/startup-runtime/1.1.1/startup-runtime-1.1.1-sources.jar",
+    "artifact_names": [
+      "startup-runtime-1.1.1.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.tracing:tracing-ktx:1.2.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/tracing/tracing-ktx/1.2.0/tracing-ktx-1.2.0-sources.jar",
+    "artifact_names": [
+      "tracing-ktx-1.2.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.tracing:tracing:1.2.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/tracing/tracing/1.2.0/tracing-1.2.0-sources.jar",
+    "artifact_names": [
+      "tracing-1.2.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.vectordrawable:vectordrawable-animated:1.1.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/vectordrawable/vectordrawable-animated/1.1.0/vectordrawable-animated-1.1.0-sources.jar",
+    "artifact_names": [
+      "vectordrawable-animated-1.1.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.vectordrawable:vectordrawable:1.1.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/vectordrawable/vectordrawable/1.1.0/vectordrawable-1.1.0-sources.jar",
+    "artifact_names": [
+      "vectordrawable-1.1.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.versionedparcelable:versionedparcelable:1.1.1",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/versionedparcelable/versionedparcelable/1.1.1/versionedparcelable-1.1.1-sources.jar",
+    "artifact_names": [
+      "versionedparcelable-1.1.1.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "androidx.viewpager:viewpager:1.0.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://dl.google.com/dl/android/maven2/androidx/viewpager/viewpager/1.0.0/viewpager-1.0.0-sources.jar",
+    "artifact_names": [
+      "viewpager-1.0.0.aar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "com.google.auto.value:auto-value-annotations:1.6.3",
+    "licenses": [
+      {
+        "name": "Apache 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://repo.maven.apache.org/maven2/com/google/auto/value/auto-value-annotations/1.6.3/auto-value-annotations-1.6.3-sources.jar",
+    "artifact_names": [
+      "auto-value-annotations-1.6.3.jar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "com.google.guava:listenablefuture:1.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://repo.maven.apache.org/maven2/com/google/guava/listenablefuture/1.0/listenablefuture-1.0-sources.jar",
+    "artifact_names": [
+      "listenablefuture-1.0.jar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "org.jetbrains.kotlin:kotlin-stdlib:2.2.20",
+    "licenses": [
+      {
+        "name": "Apache-2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.2.20/kotlin-stdlib-2.2.20-sources.jar",
+    "artifact_names": [
+      "kotlin-stdlib-2.2.20.jar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-android/1.9.0/kotlinx-coroutines-android-1.9.0-sources.jar",
+    "artifact_names": [
+      "kotlinx-coroutines-android-1.9.0.jar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "org.jetbrains.kotlinx:kotlinx-coroutines-bom:1.9.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-bom/1.9.0/kotlinx-coroutines-bom-1.9.0-sources.jar",
+    "artifact_names": [],
+    "native_libraries": [],
+    "kind": "metadata / platform constraint"
+  },
+  {
+    "coordinate": "org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.9.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.9.0/kotlinx-coroutines-core-jvm-1.9.0-sources.jar",
+    "artifact_names": [
+      "kotlinx-coroutines-core-jvm-1.9.0.jar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-core/1.9.0/kotlinx-coroutines-core-1.9.0-sources.jar",
+    "artifact_names": [],
+    "native_libraries": [],
+    "kind": "metadata / platform constraint"
+  },
+  {
+    "coordinate": "org.jetbrains:annotations:23.0.0",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://repo.maven.apache.org/maven2/org/jetbrains/annotations/23.0.0/annotations-23.0.0-sources.jar",
+    "artifact_names": [
+      "annotations-23.0.0.jar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "org.json:json:20240303",
+    "licenses": [
+      {
+        "name": "Public Domain",
+        "url": "https://github.com/stleary/JSON-java/blob/master/LICENSE"
+      }
+    ],
+    "sources": "https://repo.maven.apache.org/maven2/org/json/json/20240303/json-20240303-sources.jar",
+    "artifact_names": [
+      "json-20240303.jar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  },
+  {
+    "coordinate": "org.jspecify:jspecify:1.0.0",
+    "licenses": [
+      {
+        "name": "The Apache License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ],
+    "sources": "https://repo.maven.apache.org/maven2/org/jspecify/jspecify/1.0.0/jspecify-1.0.0-sources.jar",
+    "artifact_names": [
+      "jspecify-1.0.0.jar"
+    ],
+    "native_libraries": [],
+    "kind": "runtime artifact"
+  }
+]

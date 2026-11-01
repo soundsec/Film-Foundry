@@ -43,6 +43,12 @@ def resolve_program_key(
     material_process: str = "negative",
 ) -> str:
     """Resolve ``auto`` without treating the program name as the final state."""
+    if getattr(recipe, "process_steps", None) is not None:
+        from film_foundry.contracts.process_steps import validate_process_steps
+        rows = validate_process_steps(recipe.process_steps)
+        color = any(row["action"] == "develop_color" for row in rows)
+        positive = program_from_develop_recipe(recipe).output_polarity == "positive"
+        return ("color_" if color else "bw_") + ("reversal" if positive else "negative")
     configured = _normalized(getattr(recipe, "program_key", "auto")) or "auto"
     if configured != "auto":
         if configured not in FILM_PROCESS_PROGRAM_KEYS:
@@ -79,7 +85,35 @@ def program_from_develop_recipe(
     layer_count: int = 3,
 ) -> FilmProcessProgram:
     """Build an executable reduced program from existing recipe controls."""
+    if getattr(recipe, "process_steps", None) is not None:
+        from film_foundry.contracts.process_steps import validate_process_steps, CONDITION_RANGES, CHEMISTRY_FIELDS, validate_process_conditions
+        rows = validate_process_steps(recipe.process_steps)
+        adjusted = []
+        for row in rows:
+            controls = {key: row.get(key, getattr(recipe, key)) for key in (*CONDITION_RANGES, *CHEMISTRY_FIELDS)}
+            validate_process_conditions(controls)
+            local = replace(recipe, **controls)
+            effective = build_effective_development(local)
+            strength = float(row.get("strength", 1.0)) * float(np.clip(effective.progress_ratio, 0., 1.))
+            action = FilmProcessAction(row["action"])
+            if action == FilmProcessAction.FIX_HALIDE:
+                strength *= 1.0 - effective.clearing_failure
+            elif action == FilmProcessAction.BLEACH_SILVER:
+                strength *= 1.0 - float(local.silver_retention)
+            adjusted.append(FilmProcessStep(action, strength=strength, label=str(row.get("label", "")),
+                developability_gamma=float(effective.gamma_factor) if action in {FilmProcessAction.DEVELOP_SILVER, FilmProcessAction.DEVELOP_COLOR} else 1.0,
+                highlight_compensation=float(effective.highlight_compensation) if action in {FilmProcessAction.DEVELOP_SILVER, FilmProcessAction.DEVELOP_COLOR} else 0.0,
+                dye_destruction_basis="explicit" if action == FilmProcessAction.DESTROY_DYE else "compatibility"))
+            if float(row.get("dye_damage_strength", 0.0)) > 0:
+                adjusted.append(FilmProcessStep(FilmProcessAction.DESTROY_DYE, strength=float(row["dye_damage_strength"]), label="bath_dye_damage", dye_destruction_basis="explicit"))
+        if float(recipe.dye_damage_strength) > 0:
+            adjusted.append(FilmProcessStep(FilmProcessAction.DESTROY_DYE, strength=float(recipe.dye_damage_strength), label="explicit_process_dye_damage", dye_destruction_basis="explicit"))
+        positive = _custom_positive_reference([{"action": step.action.value, "strength": step.strength} for step in adjusted])
+        return FilmProcessProgram(key="custom", steps=tuple(adjusted), output_polarity="positive" if positive else "negative",
+            compatible_interpreters=("positive_transparency_scan" if positive else "negative_scan",))
     key = resolve_program_key(recipe, mode=mode, material_process=material_process)
+    if key == "custom":
+        raise ValueError("custom program requires process_steps")
     if key == "legacy_density":
         normalized_process = _normalized(material_process)
         positive = normalized_process in {"slide", "reversal", "positive"}
@@ -235,3 +269,25 @@ def process_program_payload(program: FilmProcessProgram) -> dict[str, object]:
             for step in program.steps
         ],
     }
+
+def _custom_positive_reference(steps):
+    # A small reference material determines interpretation; zero-strength or
+    # wrongly ordered reversal steps must not force a positive label.
+    color = any(step["action"] == "develop_color" for step in steps)
+    def density(activation):
+        halide, silver, coupler, dye, bleached = 1., 0., 1., 0., 0.
+        for step in steps:
+            action, f = step["action"], float(step.get("strength", 1.))
+            if action in {"develop_silver", "develop_color"}:
+                n = halide * activation * f
+                halide -= n; silver += n
+                if action == "develop_color":
+                    c = min(coupler, n); coupler -= c; dye += c
+            elif action == "activate_remaining_halide": activation += (1 - activation) * f
+            elif action == "bleach_silver":
+                n = silver * f; silver -= n; bleached += n
+            elif action == "fix_halide": halide *= 1 - f; bleached *= 1 - f
+            elif action == "remove_silver": silver *= 1 - f
+            elif action == "destroy_dye": dye *= 1 - f
+        return dye * color + silver * .85 + (halide + bleached) * .12
+    return density(.01) > density(.99) + 1e-8

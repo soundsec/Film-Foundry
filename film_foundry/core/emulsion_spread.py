@@ -12,6 +12,8 @@ import cv2
 import numpy as np
 
 from film_foundry.core.halation import soft_threshold
+from film_foundry.core.spectral_exposure import exposure_sensitivity_matrix, map_layer_exposure
+from film_foundry.contracts.data_kernel import SMITS_EXPOSURE_MODEL_ID
 from film_foundry.core.spatial_fields import (
     GlobalLayerExposureAdditionField,
     GlobalRateMultiplierField,
@@ -61,6 +63,10 @@ def _layer_source(
     source = np.multiply(image[..., 0], sensitivity[0], dtype=np.float32)
     source += image[..., 1] * sensitivity[1]
     source += image[..., 2] * sensitivity[2]
+    return _excess_source(source, threshold, softness)
+
+
+def _excess_source(source, threshold, softness):
     gate = soft_threshold(source, threshold, softness)
     source -= np.float32(threshold)
     np.maximum(source, 0.0, out=source)
@@ -124,12 +130,10 @@ def emulsion_highlight_spread_field(
         "emulsion_highlight_spread_layer_strengths",
         strictly_positive=False,
     )
-    sensitivity_matrix = np.asarray(
-        film.layer_sensitivity_matrix,
-        dtype=np.float32,
-    ).reshape(3, 3)
+    smits = film.spectral_exposure_profile is not None and film.spectral_exposure_profile.model == SMITS_EXPOSURE_MODEL_ID
+    sensitivity_matrix = None if smits else exposure_sensitivity_matrix(film)
     if layer_count == 1:
-        sensitivities = sensitivity_matrix.mean(axis=0, keepdims=True)
+        sensitivities = None if smits else sensitivity_matrix.mean(axis=0, keepdims=True)
         radius_scales = np.asarray((float(np.mean(radius_scales)),), dtype=np.float32)
         layer_strengths = np.asarray((float(np.mean(layer_strengths)),), dtype=np.float32)
     else:
@@ -141,12 +145,13 @@ def emulsion_highlight_spread_field(
     grid = global_field_grid(image.shape, edge)
     layer_fields: list[GlobalRateMultiplierField] = []
     for layer in range(int(layer_count)):
-        source = _layer_source(
-            image,
-            sensitivities[layer],
-            threshold,
-            softness,
-        )
+        if smits:
+            mapped = map_layer_exposure(image, film, layer=layer if layer_count == 3 else None)
+            source = mapped[..., 0] if layer_count == 3 else mapped.mean(axis=-1)
+            source = _excess_source(source, threshold, softness)
+            del mapped
+        else:
+            source = _layer_source(image, sensitivities[layer], threshold, softness)
         work_source = resample_global_scalar_field(source, grid, to_work_grid=True)
         del source
         sigma = max(
