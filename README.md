@@ -69,7 +69,7 @@ python run_film_foundry_launcher.py
 
 ## 致敬与许可
 
-感谢 spektrafilm、SpektraLab、Fotufilm、Smits 光谱研究及各依赖的作者。[致敬与借鉴说明](docs/REFERENCE.md#acknowledgements)区分设计参考与实际采用的算法；项目开发使用 AI 工具辅助。
+感谢 spektrafilm、Fotufilm、Smits 光谱研究及各依赖的作者。[致敬与借鉴说明](docs/REFERENCE.md#acknowledgements)区分设计参考与实际采用的算法；项目开发使用 AI 工具辅助。
 
 [GPL-3.0-or-later](LICENSE) · [第三方署名与许可](THIRD_PARTY_NOTICES.md) · [源码状态](docs/REFERENCE.md#source)。其他授权请联系作者。
 

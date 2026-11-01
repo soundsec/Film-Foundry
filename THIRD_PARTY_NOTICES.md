@@ -33,13 +33,7 @@ retroactively resolve the provenance of older source snapshots or binaries.
 
 ## Design references
 
-[SpektraLab](https://github.com/JamesQiu2005/SpektraLab) informed discussions
-of stage separation, caching, physical scales and observation reuse. It is
-not a bundled dependency. The source review found no imported SpektraLab
-engine, profile, LUT or image asset. This statement describes that review's
-scope rather than proving the absence of every possible external influence.
-
-Research and design references also include spektrafilm, Fotufilm and the
+Research and design references include spektrafilm, Fotufilm and the
 Smits RGB-to-spectrum method. See [acknowledgements](docs/REFERENCE.md#acknowledgements)
 and [desktop performance strategies](docs/REFERENCE.md#performance) for
 the specific references and local implementation boundaries. These design

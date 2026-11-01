@@ -25,7 +25,7 @@
 
 Qt 包中附带的商业许可说明不代表本项目购买了商业授权。包内原有的 `_internal/*.dist-info` 许可也应保留。
 
-SpektraLab、spektrafilm、Fotufilm 等设计参考见[致敬与借鉴说明](https://github.com/soundsec/Film-Foundry/blob/main/docs/REFERENCE.md#acknowledgements)，不会仅因参考设计而成为随包依赖。
+spektrafilm、Fotufilm 等设计参考见[致敬与借鉴说明](https://github.com/soundsec/Film-Foundry/blob/main/docs/REFERENCE.md#acknowledgements)，不会仅因参考设计而成为随包依赖。
 
 此目录记录本次依赖版本的许可材料，不限制用户只能安装这些版本；更换依赖或重新打包时，应重新收集实际捆绑版本的通知。当前原生文件已单独列出，实际发布二进制时仍须提供适用的对应源码材料；本目录不冒充依赖源码归档。
 

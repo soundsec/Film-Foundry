@@ -71,7 +71,7 @@ The detailed desktop documents are primarily in Chinese, with an English workben
 
 ## Acknowledgements and license
 
-Thanks to spektrafilm, SpektraLab, Fotufilm, Smits's spectral research and the dependency authors. [Acknowledgements](docs/REFERENCE.md#acknowledgements) distinguish design references from adopted algorithms. AI tools assisted development.
+Thanks to spektrafilm, Fotufilm, Smits's spectral research and the dependency authors. [Acknowledgements](docs/REFERENCE.md#acknowledgements) distinguish design references from adopted algorithms. AI tools assisted development.
 
 [GPL-3.0-or-later](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Source status](docs/REFERENCE.md#source). Contact the author for other licensing arrangements.
 

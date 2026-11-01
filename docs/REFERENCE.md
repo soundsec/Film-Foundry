@@ -713,8 +713,6 @@ These controls are bounded accident controls. They are meant to produce repeatab
 
 ### 借鉴来源
 
-[SpektraLab的架构](https://github.com/JamesQiu2005/SpektraLab/blob/f1440bd1e22ffe0acf719852c51277b2f1692cb4/ARCHITECTURE.md)启发了设置预计算、已形成介质复用和缓冲生命周期安排。
-
 [Fotufilm的谱表实现](https://github.com/DhaliwalX/fotufilm-engine/blob/c30bf7176bdff85cc3bb8a34453311ebba359d57/Sources/FotufilmCore/SpectralModel.swift)为按配置准备数据、有界缓存与构建协调提供了参考。
 
 ### 使用建议
@@ -730,7 +728,6 @@ These controls are bounded accident controls. They are meant to produce repeatab
 | 项目／资料 | 借鉴方向 |
 | --- | --- |
 | [spektrafilm](https://github.com/andreavolpato/spektrafilm) · Andrea Volpato | 胶片、相纸与观察分阶段的光谱摄影研究 |
-| [SpektraLab](https://github.com/JamesQiu2005/SpektraLab) | 设置预计算、形成与观察分离、阶段复用和缓冲生命周期；[架构说明](https://github.com/JamesQiu2005/SpektraLab/blob/f1440bd1e22ffe0acf719852c51277b2f1692cb4/ARCHITECTURE.md) |
 | [Fotufilm](https://github.com/DhaliwalX/fotufilm-engine) | 按配置构建谱表、有界缓存与重复准备协调；[源码参考](https://github.com/DhaliwalX/fotufilm-engine/blob/c30bf7176bdff85cc3bb8a34453311ebba359d57/Sources/FotufilmCore/SpectralModel.swift) |
 | Brian Smits 的 [RGB→光谱方法](https://doi.org/10.1080/10867651.1999.10487511)、[PBRT光谱说明](https://www.pbr-book.org/3ed-2018/Color_and_Radiometry/The_SampledSpectrum_Class) | 七基颜色分解的方法背景；本项目采用自有解析基谱 |
 
