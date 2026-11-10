@@ -53,3 +53,11 @@ def startup_opencv_threads() -> int:
     """Return the OpenCV thread count captured before Film Foundry policy."""
 
     return _STARTUP_OPENCV_THREADS
+
+
+def output_worker_limit(processing) -> int:
+    """Explicit export scratch budget; callers without a policy stay serial."""
+    from .material_parallel import thread_count
+    if processing.memory_budget_mb is not None:
+        return 1
+    return min(4, thread_count(), resolve_native_thread_limit(processing.native_thread_limit))

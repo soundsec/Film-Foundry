@@ -17,7 +17,7 @@ object RecipeShareCodec {
     private const val MAX_DECODED_BYTES = 262144
     private const val MAX_INPUT_CHARS = 524288
     private val allowedFields = DataKernel.CONFIG_SHARE_FIELDS.toSet()
-    private val objectFields = setOf("film", "develop", "scanner", "look", "film_border")
+    private val objectFields = setOf("film", "exposure", "develop", "scanner", "look", "film_border")
     private val aliases = mapOf("chemistry" to "develop")
     private val tokenChars = (
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"

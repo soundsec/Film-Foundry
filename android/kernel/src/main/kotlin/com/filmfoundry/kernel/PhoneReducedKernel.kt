@@ -4,6 +4,7 @@ import com.filmfoundry.interchange.DataKernel
 import com.filmfoundry.interchange.FloatNd
 import com.filmfoundry.interchange.SpectralOptics
 import com.filmfoundry.interchange.PhoneMaterialPhenomena
+import com.filmfoundry.interchange.PhoneFormationProfile
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
@@ -52,6 +53,7 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
         val sensitivity = spectral?.matrix ?: matrix3(mapOf(recipe, "film"), "layer_sensitivity_matrix", DEFAULT_SENSITIVITY)
             .map { it.copyOf() }.toTypedArray()
         val metadata = latentMetadata(recipe, layers, subtractive).toMutableMap()
+        PhoneFormationProfile.validate(recipe[PhoneFormationProfile.OPTION])?.let { metadata[PhoneFormationProfile.OPTION]=it }
         val film=mapOf(recipe,"film").orEmpty()
         val boundFilm=film.toMutableMap().apply {
             putIfAbsent("image_polarity",metadata["image_polarity"])
@@ -240,6 +242,8 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
         if (shape.size != 3 || shape[2] !in listOf(1, 3)) throw KernelException("latent pools must have shape HxWx1 or HxWx3.")
         require(fullHeight >= shape[0]) { "fullHeight must contain the row block" }
         val sourceMetadata = preparedValues(latent.metadata)
+        val formationProfile=PhoneFormationProfile.resolve(recipe,sourceMetadata)
+        val lightweight=formationProfile==PhoneFormationProfile.LIGHTWEIGHT
         val geometry = if (DataKernel.MATERIAL_GEOMETRY_KEY in sourceMetadata)
             PhoneMaterialGeometry.from(sourceMetadata[DataKernel.MATERIAL_GEOMETRY_KEY], fullHeight, shape[1]) else null
         val spectral = if (DataKernel.SPECTRAL_EXPOSURE_PROFILE_KEY in sourceMetadata)
@@ -291,7 +295,7 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
         }
         val retained = float3(mapOf(recipe, "film")?.get("retained_halide_density_rgb"), DEFAULT_RETAINED)
         val programPositive=program?.positiveFor(subtractive,absorption,retained) ?: false
-        val effects=PhoneFormationEffects(program?.effectsRecipe(recipe) ?: recipe,sourceMetadata,shape[1],fullHeight)
+        val effects=PhoneFormationEffects(program?.effectsRecipe(recipe) ?: recipe,sourceMetadata,shape[1],fullHeight,lightweight)
         val metadata = developedMetadata(recipe, sourceMetadata, layers, subtractive, cross).toMutableMap()
         metadata["material_binding"]=com.filmfoundry.interchange.MaterialSnapshot.binding(sourceMetadata)
         if(program!=null) {
@@ -307,6 +311,12 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
         }
         @Suppress("UNCHECKED_CAST")
         val process = (metadata["film_process_model"] as Map<String, Any?>).toMutableMap()
+        if(formationProfile!=null) metadata[PhoneFormationProfile.OPTION]=formationProfile
+        if(lightweight) process["formation_budget"]=mapOf(
+            "profile" to formationProfile,"resolution" to "unchanged","chemical_program" to "unchanged",
+            "omitted" to listOf("adjacency","dir_inhibition"),
+            "simplified" to listOf("layer_dye_grain","silver_grain"),
+            "incident_representation" to "parameter_driven_density_overlay_v1","scan" to "unchanged")
         if(program!=null) {
             process["ordered_process"]=program.record()
             val implementation=(process["execution_implementation"] as Map<String,Any?>).toMutableMap()
@@ -350,14 +360,14 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
         if (materialSpectrum != null) metadata[SpectralOptics.MEDIUM_KEY] = mapOf(
             "profile" to materialSpectrum.metadata, "base_component_amounts" to baseAmounts!!.toList()) +
             if(effects.hasOverlay) mapOf("post_process_model" to "piecewise_rgb_density_overlay_v1") else emptyMap()
-        val spatial=if(processModel==com.filmfoundry.interchange.PhoneProcessModels.CURRENT && program!=null)
+        val spatial=if(!lightweight && processModel==com.filmfoundry.interchange.PhoneProcessModels.CURRENT && program!=null)
             PhoneDevelopmentSpatial(material,develop,sourceMetadata,shape[1],fullHeight,layers,subtractive,program,effects) else null
         if(spatial!=null && spatial.requested && !spatial.enabled) {
             process["spatial_development"]=spatial.inactiveRecord()
             metadata["film_process_model"]=process
         }
         val silver=if(recipe[PhoneMaterialPhenomena.DEVELOPMENT_OPTION]==PhoneMaterialPhenomena.CURRENT)
-            PhoneSilverGrain(program?.effectsRecipe(recipe) ?: recipe,sourceMetadata,shape[1],fullHeight) else null
+            PhoneSilverGrain(program?.effectsRecipe(recipe) ?: recipe,sourceMetadata,shape[1],fullHeight,lightweight) else null
         require(silver?.enabled!=true || program!=null) { "independent silver grain requires an ordered phone process" }
         return DevelopmentSetup(shape[1], fullHeight, layers, hasCoupler, hasDye, sourceMetadata,
             preparedValues(metadata), completion, absorption, base, retained, baseAmounts, cross,effects,dyeOpticalScale,program,spatial,silver)
@@ -367,6 +377,7 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
     private fun prepareSilverGrain(source: LatentRows,setup: DevelopmentSetup,spatial: PhoneDevelopmentSpatial.Fields?): PhoneSilverGrain.Normalization? {
         val grain=setup.silverGrain?.takeIf { it.enabled } ?: return null
         if(setup.program!!.clearsRetainedSilver) return grain.normalization(0.0,0.0)
+        if(grain.lightweight) return grain.lightweightNormalization()
         val p=PhoneProcessProgram.Pools();var total=0.0;var candidate=0.0
         val step=source.readRowsPerPass.coerceIn(1,setup.fullHeight)
         for(start in 0 until setup.fullHeight step step) {
@@ -582,7 +593,7 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
             val implementation=(process["execution_implementation"] as Map<String,Any?>).toMutableMap()
             @Suppress("UNCHECKED_CAST")
             val components=(implementation["component_models"] as Map<String,Any?>).toMutableMap()
-            components["silver_grain"]=PhoneSilverGrain.MODEL
+            components["silver_grain"]=silverNormalization.record.getValue("model")
             implementation["component_models"]=components;process["execution_implementation"]=implementation
             metadata["film_process_model"]=process
         }

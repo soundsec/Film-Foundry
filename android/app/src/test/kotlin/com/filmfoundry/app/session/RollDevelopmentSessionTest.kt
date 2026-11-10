@@ -11,6 +11,23 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 
 class RollDevelopmentSessionTest {
+    @Test fun lightweightRollFreezesItsProfileAcrossTaskCreationAndReprocessing() = runBlocking {
+        val library=FilmLibrary()
+        library.loadRoll("roll",12,mapOf("grain_strength" to .03),captureSettings=mapOf(PhoneFormationProfile.ROLL_SETTING to PhoneFormationProfile.LIGHTWEIGHT))
+        val shoot=capture(library);shoot.capture("roll",camera);shoot.seal("roll")
+        val engine=session(library)
+        val task=engine.create("roll","fast",mapOf(PhoneFormationProfile.OPTION to PhoneFormationProfile.DETAILED))
+        assertEquals(RollDevelopmentSession.LIGHTWEIGHT_REVISION,task.revision)
+        val first=engine.run("roll",task.id).single()
+        val medium=MediumStore(storage())
+        assertEquals(PhoneFormationProfile.LIGHTWEIGHT,medium.readLatent(cameraLatentPath("roll",1)).metadata[PhoneFormationProfile.OPTION])
+        val a=medium.readOptical(first.opticalPath)
+        assertEquals(PhoneFormationProfile.LIGHTWEIGHT,a.metadata[PhoneFormationProfile.OPTION])
+        engine.create("roll","again",emptyMap());val second=engine.run("roll","again").single()
+        assertArrayEquals(a.opticalDensityRgb.values,medium.readOptical(second.opticalPath).opticalDensityRgb.values,0f)
+        assertEquals(1,exposeRuns);assertEquals(2,developRuns)
+        Unit
+    }
     @Test fun committedFilmRowsReachScanningAndFailedConsumerCanResumeFromDurableFilm() = runBlocking {
         val library=FilmLibrary();roll(library,1);val engine=session(library)
         val task=engine.create("roll","optical-handoff",emptyMap())

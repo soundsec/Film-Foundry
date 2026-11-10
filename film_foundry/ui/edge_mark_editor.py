@@ -1,4 +1,5 @@
 """Small grid stencil editor; no image-processing or barcode interpretation."""
+from copy import deepcopy
 from film_foundry.contracts.edge_marks import EdgeMarkPattern
 from film_foundry.ui.qt import QtCore, QtGui, QtWidgets
 from film_foundry.ui.curve_editor import text
@@ -71,12 +72,14 @@ class EdgeMarkGrid(QtWidgets.QWidget):
 class EdgeMarkEditor(QtWidgets.QDialog):
     def __init__(self, config, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(text("片边点阵图案", "Film-edge stencil"))
+        self.setWindowTitle(text("片边厂标与识别条纹", "Film-edge lettering & bars"))
         self.resize(720, 470)
+        self.config=deepcopy(config)
         self.codes = [config.factory_pattern_top, config.factory_pattern_bottom]
         self.current = 0
         layout = QtWidgets.QVBoxLayout(self)
-        note = QtWidgets.QLabel(text("涂格生成图案编码。图案替换材料名称区域，格号自动追加。桌面目前仅支持布局编辑，正式片边输出暂不支持。", "Draw cells to generate a stencil code. The stencil replaces the stock-name area; frame numbers remain automatic. Desktop currently edits layouts; rendered film edges are not yet supported."))
+        note = QtWidgets.QLabel(text("片边厂标图案", "Factory-edge stencil"))
+        note.setToolTip(text("点阵覆盖所选片边的模板，和画面内打印分开。未编辑时继续使用当前布局；生成字码沿用布局与编码选择。编辑条码单元可能破坏可读性，自定义图案不会自动更新片序。", "Stencils override the selected edge, separately from picture imprints. Until edited, the active layout remains in use. Generation follows its layout and barcode choice. Editing barcode cells may break readability; a custom stencil does not update frame digits automatically."))
         note.setWordWrap(True)
         layout.addWidget(note)
         controls = QtWidgets.QHBoxLayout()
@@ -110,6 +113,18 @@ class EdgeMarkEditor(QtWidgets.QDialog):
         self.spread.setEnabled(self.mark_type.currentData() == "laser")
         self.mark_type.currentIndexChanged.connect(lambda _: self.spread.setEnabled(self.mark_type.currentData() == "laser"))
         process.addStretch()
+        template = QtWidgets.QHBoxLayout()
+        layout.addLayout(template)
+        self.template_text = QtWidgets.QLineEdit()
+        self.template_text.setText(config.stock_label or 'FILM FOUNDRY')
+        self.template_text.setPlaceholderText(text("厂标文字：最多14位英文/数字", "Factory label: up to 14 letters/digits"))
+        self.template_batch = QtWidgets.QSpinBox()
+        self.template_batch.setRange(0,4095)
+        self.template_batch.setValue(config.factory_batch)
+        self.template_batch.setPrefix(text("批号 ", "Batch "))
+        template.addWidget(self.template_text,1);template.addWidget(self.template_batch)
+        generate = QtWidgets.QPushButton(text("按当前模板生成", "Generate from layout"))
+        generate.clicked.connect(self.generate_label);template.addWidget(generate)
         self.grid = EdgeMarkGrid()
         scroll = QtWidgets.QScrollArea()
         scroll.setWidget(self.grid)
@@ -146,11 +161,24 @@ class EdgeMarkEditor(QtWidgets.QDialog):
         self.codes[self.current] = self.grid.pattern().encode()
         self.code.setPlainText(self.codes[self.current])
 
+    def generate_label(self):
+        try:
+            pattern=self.generated_pattern()
+        except ValueError:
+            self.error.setText(text("请输入1–14位英文字母、数字、空格或连字符。", "Use 1–14 letters, digits, spaces or hyphens."))
+            return
+        self.grid.load(pattern);self.store();self.error.clear()
+
+    def generated_pattern(self):
+        from film_foundry.contracts.edge_marks import factory_edge_pattern
+        return factory_edge_pattern(self.template_text.text().strip().upper(),self.template_batch.value(),
+            self.config.frame_number,self.config.factory_layout,self.config.factory_barcode,'top' if self.current==0 else 'bottom',self.config.factory_barcode_seed)
+
     def select(self, index):
         self.current = index
         code = self.codes[index]
         try:
-            pattern = EdgeMarkPattern.decode(code) if code else EdgeMarkPattern(32, 8, bytes(32))
+            pattern = EdgeMarkPattern.decode(code) if code else self.generated_pattern()
         except ValueError:
             self.error.setText(text("已保存的编码无效，请重新导入或清空。", "Saved code is invalid; import a code or clear the stencil."))
             self.grid.load(EdgeMarkPattern(32, 8, bytes(32)))

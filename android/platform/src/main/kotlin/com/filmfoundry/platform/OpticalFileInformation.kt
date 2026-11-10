@@ -26,8 +26,7 @@ object OpticalFileInformationReader {
         val image=member(DataKernel.OPTICAL_DENSITY_KEY)
         val header=zip.getInputStream(image).use { NpyCodec.readHeader(it,image.size) }
         require(header.shape.size==3 && header.shape[2]==3 && header.shape.all { it>0 })
-        require(header.descriptor in setOf("<f4","|f4","=f4","f4","<f8","|f8","=f8","f8"))
-        val bytes=Math.multiplyExact(header.shape.fold(1L) { acc,n -> Math.multiplyExact(acc,n.toLong()) },if(header.descriptor.endsWith("f8")) 8L else 4L)
+        val bytes=Math.multiplyExact(header.shape.fold(1L) { acc,n -> Math.multiplyExact(acc,n.toLong()) },NpyCodec.numericItemBytes(header.descriptor).toLong())
         require(image.size>=header.headerBytes+bytes)
         val metadata=member(DataKernel.DEVELOPED_METADATA_KEY)
         require(metadata.size in 1..8L*1024*1024) { "Metadata too large" }

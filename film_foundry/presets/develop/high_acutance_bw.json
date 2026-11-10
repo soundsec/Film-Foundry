@@ -17,7 +17,8 @@
     "compensation": 0.12,
     "silver_retention": 0.0,
     "development_adjacency_strength": 0.32,
-    "development_adjacency_radius": 0.0022
+    "development_adjacency_radius": 0.0022,
+    "formation_history_model": "bath_products_local_v2"
   },
   "mode": "bw_negative",
   "look": {

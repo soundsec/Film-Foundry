@@ -31,7 +31,7 @@ def probe_scan_archive_memory(path: str | Path) -> tuple[int, int, int, int] | N
         names = set(archive.namelist())
         master = "optical_density_rgb" if "optical_density_rgb.npy" in names else "density_grain"
         selected = [master] if master == "optical_density_rgb" else ["density_cmy", "density_grain"]
-        selected += [key for key in ("spectral_component_amounts", "spectral_post_process_density_rgb") if key + ".npy" in names]
+        selected += [key for key in ("spectral_component_amounts", "spectral_post_process_density_rgb", "spectral_emulsion_coverage", "spectral_covered_density_rgb") if key + ".npy" in names]
         geometry = None
         resident = largest_decode = 0
         for key in selected:
@@ -47,13 +47,14 @@ def probe_scan_archive_memory(path: str | Path) -> tuple[int, int, int, int] | N
                     return None  # Leave other NPY versions to NumPy's loader.
                 if dtype.hasobject:
                     return None
-                if len(shape) != 3 or min(shape) <= 0 or (key != "spectral_component_amounts" and shape[2] != 3):
+                coverage_field=key=="spectral_emulsion_coverage"
+                if min(shape,default=0)<=0 or (len(shape)!=2 if coverage_field else len(shape)!=3 or shape[2]!=(9 if key=="spectral_component_amounts" else 3)):
                     raise ValueError(f"{path}: invalid scan field geometry for {key}: {shape}")
                 if geometry is None:
                     geometry = shape[:2]
                 elif geometry != shape[:2]:
                     raise ValueError(f"{path}: scan fields have inconsistent geometry")
-                count = int(shape[0]) * int(shape[1]) * int(shape[2])
+                count = int(shape[0]) * int(shape[1]) * (1 if coverage_field else int(shape[2]))
                 encoded = count * dtype.itemsize
                 if archive.getinfo(key + ".npy").file_size - stream.tell() != encoded:
                     raise ValueError(f"{path}: truncated or inconsistent NPY size for {key}")
@@ -247,6 +248,10 @@ def _load_medium_metadata(
         metadata["medium_identity_source"] = "filename_fallback"
     if medium_payload:
         metadata["developed_medium"] = medium_payload
+        if isinstance(medium_payload.get('input_color'), dict):
+            metadata['input_color'] = medium_payload['input_color']
+        if isinstance(medium_payload.get('process_control'),dict):metadata['process_control']=medium_payload['process_control']
+        if isinstance(medium_payload.get('film_process_continuation'),dict):metadata['film_process_continuation']=medium_payload['film_process_continuation']
         if isinstance(medium_payload.get("film_process_model"), dict):
             metadata["film_process_model"] = medium_payload["film_process_model"]
         if FRAME_IDENTITY_KEY in medium_payload:
@@ -355,6 +360,8 @@ def load_developed_negative_npz(
     metadata, medium_payload, identity_kwargs = _load_medium_metadata(path)
     with np.load(path, allow_pickle=False) as data:
         spectral_medium = load_spectral_medium(data, medium_payload, density_grain.shape)
+        from film_foundry.core.process_operations import load_surface_fields
+        process_surface=load_surface_fields(data,metadata)
     metadata["stage_storage"] = {
         "profile": "portable_layers_without_history_v1",
         "history": "unavailable",
@@ -367,6 +374,7 @@ def load_developed_negative_npz(
         after_halation=_unavailable_rgb_field(),
         density_cmy=density_cmy,
         spectral_medium=spectral_medium,
+        process_surface=process_surface,
         density_grain=density_grain,
         optical_density_rgb=optical_density_rgb,
         clear_base_optical_density_rgb=clear_base_optical_density_rgb,
@@ -379,6 +387,7 @@ def load_developed_medium_for_scan(
     path: str | Path,
     *,
     allow_legacy_pickle: bool | None = None,
+    include_process_surface: bool = False,
 ) -> DevelopedNegative:
     """Load the smallest exact medium representation required by a scanner.
 
@@ -387,6 +396,8 @@ def load_developed_medium_for_scan(
     but are not decompressed into RAM. Older archives transparently fall back
     to :func:`load_developed_negative_npz`, preserving the complete legacy
     reconstruction path. No saved data or scan formula is changed.
+    ``include_process_surface`` additionally loads the small frozen surface
+    fields for reflection observers; ordinary scanners leave them compressed.
     """
     path = Path(path)
     if not path.is_file() or path.stat().st_size <= 0:
@@ -437,10 +448,17 @@ def load_developed_medium_for_scan(
     metadata, _medium_payload, identity_kwargs = _load_medium_metadata(path)
     with np.load(path, allow_pickle=False) as data:
         spectral_medium = load_spectral_medium(data, _medium_payload, optical_density_rgb.shape)
+        from film_foundry.core.process_operations import surface_archive_header
+        surface_header=surface_archive_header(data,metadata)
+        if include_process_surface:
+            from film_foundry.core.process_operations import load_surface_fields
+            process_surface=load_surface_fields(data,metadata)
+        else:process_surface=None
     metadata["stage_storage"] = {
         "profile": "scan_optical_only_v1",
         "history": "unavailable",
         "layer_masters": "stored_not_loaded",
+        "process_surface": "resident_readonly" if process_surface is not None else "stored_not_loaded" if surface_header is not None else "absent",
         "optical_master": "resident_authoritative",
         "reversible_full_loader": "load_developed_negative_npz",
     }
@@ -455,4 +473,5 @@ def load_developed_medium_for_scan(
         **identity_kwargs,
         metadata=metadata,
         spectral_medium=spectral_medium,
+        process_surface=process_surface,
     )

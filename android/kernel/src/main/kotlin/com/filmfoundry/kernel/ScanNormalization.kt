@@ -40,21 +40,27 @@ internal class ScanNormalization private constructor(
         }
     }
 
-    companion object {
-        fun bounded(value: Float): Float { val x=value.coerceAtLeast(0f);return x/(1f+x) }
-        /** Exact IEEE float order statistics with two whole-frame passes and bounded radix bins. */
-        fun measureRows(pixels: Int,strength: Float,mode: String,blackPercentile: Float,whitePercentile: Float,
-            eachBlock: ((FloatArray)->Unit)->Unit): ScanNormalization {
-            require(pixels>0)
-            val rgb=mode=="rgb";val channels=if(rgb) 3 else 1
-            val positions=floatArrayOf((blackPercentile.coerceIn(0f,100f)/100f)*(pixels-1),(whitePercentile.coerceIn(0f,100f)/100f)*(pixels-1))
-            val ranks=intArrayOf(positions[0].toInt(),minOf(positions[0].toInt()+1,pixels-1),positions[1].toInt(),minOf(positions[1].toInt()+1,pixels-1))
-            fun key(value: Float): Int { require(value.isFinite());val bits=value.toRawBits();return bits xor if(bits<0) -1 else Int.MIN_VALUE }
-            fun value(block: FloatArray,i: Int,c: Int)=if(rgb) block[i+c] else block[i]*.2126f+block[i+1]*.7152f+block[i+2]*.0722f
-            val high=Array(channels){IntArray(65536)}
-            var seen=0
-            eachBlock { block -> require(block.size%3==0);seen+=block.size/3;for(i in block.indices step 3) for(c in 0 until channels) high[c][key(value(block,i,c)) ushr 16]++ }
-            require(seen==pixels)
+    /** First radix pass can consume freshly generated scan rows before they reach disk. */
+    class RowMeasurement(private val pixels: Int,private val strength: Float,mode: String,
+        blackPercentile: Float,whitePercentile: Float) {
+        init { require(pixels>0) }
+        private val rgb=mode=="rgb";private val channels=if(rgb) 3 else 1
+        private val positions=floatArrayOf((blackPercentile.coerceIn(0f,100f)/100f)*(pixels-1),(whitePercentile.coerceIn(0f,100f)/100f)*(pixels-1))
+        private val ranks=intArrayOf(positions[0].toInt(),minOf(positions[0].toInt()+1,pixels-1),positions[1].toInt(),minOf(positions[1].toInt()+1,pixels-1))
+        private fun key(value: Float): Int { require(value.isFinite());val bits=value.toRawBits();return bits xor if(bits<0) -1 else Int.MIN_VALUE }
+        private fun value(block: FloatArray,i: Int,c: Int)=if(rgb) block[i+c] else block[i]*.2126f+block[i+1]*.7152f+block[i+2]*.0722f
+        private val high=Array(channels){IntArray(65536)}
+        private var seen=0
+        private var finished=false
+        fun collect(block: FloatArray,startPixel: Int=0,count: Int=block.size/3-startPixel) {
+            check(!finished)
+            require(block.size%3==0 && startPixel>=0 && count>=0 && (startPixel.toLong()+count)*3<=block.size)
+            require(seen.toLong()+count<=pixels)
+            seen+=count
+            for(i in startPixel*3 until (startPixel+count)*3 step 3) for(c in 0 until channels) high[c][key(value(block,i,c)) ushr 16]++
+        }
+        fun finish(eachBlock: ((FloatArray)->Unit)->Unit): ScanNormalization {
+            check(!finished);require(seen==pixels);finished=true
             val prefixes=Array(channels){IntArray(4)};val offsets=Array(channels){IntArray(4)}
             val low=Array(channels){linkedMapOf<Int,IntArray>()}
             for(c in 0 until channels) for(r in ranks.indices) {
@@ -63,9 +69,12 @@ internal class ScanNormalization private constructor(
                 prefixes[c][r]=prefix;offsets[c][r]=ranks[r]-preceding
                 low[c].getOrPut(prefix){IntArray(65536)}
             }
-            eachBlock { block -> for(i in block.indices step 3) for(c in 0 until channels) {
+            var secondCount=0L
+            eachBlock { block -> require(block.size%3==0);secondCount+=block.size/3;require(secondCount<=pixels)
+                for(i in block.indices step 3) for(c in 0 until channels) {
                 val k=key(value(block,i,c));low[c][k ushr 16]?.let { it[k and 65535]++ }
             } }
+            require(secondCount==pixels.toLong())
             val black=FloatArray(channels);val spans=FloatArray(channels)
             for(c in 0 until channels) {
                 val selected=FloatArray(4) { r ->
@@ -79,6 +88,17 @@ internal class ScanNormalization private constructor(
                 spans[c]=selected[2]*(1f-wf)+selected[3]*wf-black[c]
             }
             return ScanNormalization(black,spans,strength,rgb)
+        }
+    }
+
+    companion object {
+        fun bounded(value: Float): Float { val x=value.coerceAtLeast(0f);return x/(1f+x) }
+        /** Exact IEEE float order statistics; the standalone path still reads both passes. */
+        fun measureRows(pixels: Int,strength: Float,mode: String,blackPercentile: Float,whitePercentile: Float,
+            eachBlock: ((FloatArray)->Unit)->Unit): ScanNormalization {
+            val measurement=RowMeasurement(pixels,strength,mode,blackPercentile,whitePercentile)
+            eachBlock { measurement.collect(it) }
+            return measurement.finish(eachBlock)
         }
         fun measure(linear: FloatArray, pixels: Int, strength: Float, mode: String,
                     blackPercentile: Float, whitePercentile: Float,startPixel: Int=0): ScanNormalization {

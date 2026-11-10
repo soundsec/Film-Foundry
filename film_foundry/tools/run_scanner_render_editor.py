@@ -160,14 +160,15 @@ def save_json(path: Path, payload: dict) -> None:
 
 
 class ScannerRenderEditor:
-    def __init__(self, interpretation: str = "negative", *, parent=None, config=None, on_apply=None) -> None:
+    def __init__(self, interpretation: str = "negative", *, parent=None, config=None, on_apply=None, embedded=False) -> None:
         USER_SCANNER_PRESET_DIR.mkdir(parents=True, exist_ok=True)
 
         self._set_interpretation_state(interpretation)
 
         self._base_config = None
+        self._preview_context = copy.deepcopy(config)
         self._on_apply = on_apply
-        self.root = ui.Application() if parent is None else ui.Window(parent)
+        self.root = ui.Application() if parent is None else ui.Window(parent,embedded=embedded)
         self.root.title(local_text("Film Foundry · 扫描编辑组件", "Film Foundry · Scanner editor component"))
         self.root.geometry("1040x760")
         self.root.minsize(840, 620)
@@ -187,10 +188,7 @@ class ScannerRenderEditor:
         self.include_clear_base_border = ui.BoolValue(value=False)
         self.negative_channel_compensation = ui.BoolValue(value=False)
         self.scan_normalize_mode = ui.TextValue(value="luma")
-        self.status = ui.TextValue(value=local_text(
-            "加载正片扫描预设，调整后保存到 user_presets/scanner。" if self.is_positive else "加载负片扫描预设，调整后保存到 user_presets/scanner。",
-            "Load a positive scan preset, adjust it, then save to user_presets/scanner." if self.is_positive else "Load a negative scan preset, adjust it, then save to user_presets/scanner.",
-        ))
+        self.status = ui.TextValue(value="")
         self.curve_photo = None
 
         self.vars: dict[str, ui.FloatValue] = {
@@ -305,24 +303,7 @@ class ScannerRenderEditor:
         self.preset_combo.bind("<<ComboboxSelected>>", self._on_preset_selected)
         ui.Button(header, text="加载", command=self._load_selected_preset).grid(row=2, column=2, padx=(0, 8))
         ui.Button(header, text=local_text("保存为用户扫描预设", "Save User Scan Preset"), command=self._save_user_preset).grid(row=2, column=3)
-        ui.Label(header, text=local_text("说明", "Note")).grid(row=3, column=0, sticky="w", pady=3)
-        medium_row = ui.Frame(header)
-        medium_row.grid(row=3, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=3)
-        ui.Label(
-            medium_row,
-            text=local_text(
-                "负片常用：去片基 + 反相；正片常用：保留片基 + 不反相。",
-                "Typical negative: remove base + invert; typical positive: preserve base + no inversion.",
-            ),
-        ).pack(side="left", padx=(0, 10))
-        ui.Label(
-            medium_row,
-            text=local_text(
-                "也可保留片基且不反相，输出灯台上的负片翻拍。",
-                "Preserve the base and disable inversion for a photographed negative on the light table.",
-            ),
-            wraplength=520,
-        ).pack(side="left")
+        header.set_tooltip(local_text("负片通常去片基并反相；正片通常保留片基且不反相。保留片基且不反相也可输出灯台上的负片。", "Negatives usually remove base and invert; positives preserve base without inversion. Preserve base without inversion to view a negative on the light table."))
         header.columnconfigure(1, weight=1)
         add_apply_button(header, self, row=4)
 
@@ -398,17 +379,36 @@ class ScannerRenderEditor:
         row = self._slider(controls, "黑点 percentile", "scan_black_percentile", 0.0, 5.0, row)
         row = self._slider(controls, "白点 percentile", "scan_white_percentile", 95.0, 100.0, row)
 
-        preview = ui.Group(shell, text="scan/render 曲线预览", padding=10)
+        preview = ui.Group(shell, text=local_text("扫描预览", "Scan preview"), padding=10)
         preview.grid(row=1, column=1, sticky="nsew")
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(0, weight=1)
-        self.curve_label = ui.Label(preview)
+        from film_foundry.ui.qt import QtWidgets
+        from film_foundry.ui.material_preview import MaterialPreview
+        curve_page = ui.Frame(preview)
+        curve_page.columnconfigure(0, weight=1);curve_page.rowconfigure(0, weight=1)
+        self.curve_label = ui.Label(curve_page)
         self.curve_label.grid(row=0, column=0, sticky="nsew")
-        ui.Button(preview, text="刷新曲线", command=self._refresh_curve).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        ui.Button(curve_page, text="刷新曲线", command=self._refresh_curve).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.preview_tabs = QtWidgets.QTabWidget()
+        self.preview_tabs.addTab(curve_page.qt,local_text("曲线","Curves"))
+        self.quick_preview = MaterialPreview(self._preview_config)
+        self.preview_tabs.addTab(self.quick_preview,local_text("效果预览","Image preview"))
+        preview_layout = QtWidgets.QVBoxLayout(preview.qt)
+        preview_layout.setContentsMargins(0,0,0,0);preview_layout.addWidget(self.preview_tabs)
 
         ui.Label(self.root, textvariable=self.status, padding=(12, 0, 12, 8), wraplength=960).pack(fill="x", side="bottom")
         self.controls_scroller.bind_mousewheel()
         localize_widget_tree(self.root, SCANNER_EDITOR_EN)
+
+    def set_execution_context(self, config):
+        self._preview_context = copy.deepcopy(config)
+        if hasattr(self, 'quick_preview'):self.quick_preview.invalidate()
+
+    def _preview_config(self):
+        from film_foundry.app.config_assets import apply_recipe_bank
+        draft = self._config_from_controls()
+        return apply_recipe_bank(self._preview_context or draft, draft, 'scanner')
 
     def _refresh_preset_choices(self) -> None:
         labels, mapping = scanner_preset_choices(self.interpretation)
@@ -512,6 +512,9 @@ class ScannerRenderEditor:
             return
         config = DarkroomConfig.from_json(path)
         self._set_controls_from_config(config)
+        from film_foundry.app.seasonal_collection import localized_description
+        from film_foundry.ui.i18n import current_language
+        self.preset_combo.set_tooltip(localized_description('scanner',self.preset_name.get(),current_language()) if path.parent != USER_SCANNER_PRESET_DIR else '')
         source = "用户" if path.parent == USER_SCANNER_PRESET_DIR else "内置"
         self.status.set(local_text(
             f"已加载{source}扫描预设：{path.name}",
@@ -638,6 +641,7 @@ class ScannerRenderEditor:
         }
 
     def _refresh_curve(self) -> None:
+        if hasattr(self, 'quick_preview'):self.quick_preview.invalidate()
         if not hasattr(self, "curve_label"):
             return
         try:

@@ -10,6 +10,28 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 
 class RowObservationSessionTest {
+    @Test fun unmeteredScanStreamsThroughOutputBackendWithoutRgbScratch() {
+        val kernel=PhoneReducedKernel();val w=31;val h=23
+        val master=kernel.develop(kernel.expose(RgbVolume(w,h,linearRgb=FloatArray(w*h*3) { (it%103)/70f }),emptyMap()),emptyMap())
+        val file=root.resolve("direct.npz").toFile()
+        file.writeBytes(NpzMediumArchive().writeDevelopedOptical(DevelopedOpticalArchive(master.opticalDensityRgb,master.metadata,master.clearBaseOpticalDensityRgb)))
+        val recipe=mapOf("scanner" to mapOf("scan_normalize" to false,"print_mapping_mode" to "sigmoid",
+            "tone_curve" to listOf(listOf(0.0,.02),listOf(.5,.6),listOf(1.0,1.0))))
+        val expected=kernel.observe(master,recipe).outputRgb.values
+        var actual=FloatArray(0);var dispatches=0
+        RowObservationSession.scan(io,"direct.npz",recipe,object: RowObservationSession.Output {
+            override fun begin(width: Int,height: Int) { actual=FloatArray(width*height*3) }
+            override fun rows(start: Int,count: Int,rgb: FloatArray) {
+                assertFalse(io.scratchRoot.walkTopDown().any { it.name.startsWith("film-scan-") },"Unmetered scans must not create a full RGB scratch file")
+                rgb.copyInto(actual,start*w*3)
+            }
+        },transmissionCompute=object: DensityTransmissionCompute {
+            override fun transmit(density: FloatArray)=DensityTransmissionCompute.reference(density)
+            override fun encodeOutput(values: FloatArray,plan: ScanOutputPlan): FloatArray { dispatches++;return plan.reference(values) }
+        })
+        assertTrue(dispatches>0);assertArrayEquals(expected,actual,0f)
+        assertTrue(io.scratchRoot.listFiles().orEmpty().isEmpty())
+    }
     @Test fun optionalTransmissionPortMatchesCpuRowsAndLeavesTheOpticalArchiveUntouched() {
         val kernel=PhoneReducedKernel();val w=23;val h=17
         val master=kernel.develop(kernel.expose(RgbVolume(w,h,linearRgb=FloatArray(w*h*3) { (it%71)/60f }),emptyMap()),emptyMap())

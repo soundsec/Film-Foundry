@@ -80,9 +80,9 @@ class RGBCurveField:
         for channel, value in enumerate(self.values):
             ui.Label(parent, text="RGB"[channel] + " · x:y").grid(row=row+channel+1, column=0, sticky="w")
             entry = ui.TextInput(parent, textvariable=value)
+            entry.set_tooltip(tr("curve.help"))
             entry.grid(row=row+channel+1, column=1, columnspan=3, sticky="ew", pady=2)
             self.entries.append(entry)
-        ui.Label(parent, text=tr("curve.help"), wraplength=500).grid(row=row+4, column=0, columnspan=4, sticky="ew", pady=3)
         self._sync()
 
     def _sync(self):

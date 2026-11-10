@@ -166,6 +166,7 @@ def test_large_channelwise_mtf_is_exactly_the_reference_rgb_topology():
         optimized_input,
         film,
         consume_input=True,
+        workers=3,
     )
     with execution_topology(REFERENCE_TOPOLOGY):
         reference = apply_emulsion_mtf(

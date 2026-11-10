@@ -50,7 +50,7 @@ def test_film_border_layout_places_sprockets_outside_the_image_gate():
     assert layout.imprint.origin_xy[1] > gate_bottom
 
 
-def test_film_border_sprocket_layout_does_not_change_formed_pixels():
+def test_film_border_preserves_image_gate_and_expands_formed_medium():
     config = DarkroomConfig()
     config.film_border.enabled = True
     config.film_border.format_key = "half_frame"
@@ -71,10 +71,11 @@ def test_film_border_sprocket_layout_does_not_change_formed_pixels():
     bordered.enable_halation = False
     medium_clean = develop_negative(image, clean, rng=np.random.default_rng(5))
     medium_border = develop_negative(image, bordered, rng=np.random.default_rng(5))
-    assert np.array_equal(medium_clean.optical_density_rgb, medium_border.optical_density_rgb)
     layout = resolve_film_border_layout(bordered.film_border, image.shape)
     assert layout is not None
-    assert layout.pipeline_status == "interface_only"
+    assert layout.pipeline_status == "formed_rebate_reference_v1"
+    rows = layout.image_rect[1]
+    assert np.array_equal(medium_clean.optical_density_rgb, medium_border.optical_density_rgb[rows:-rows])
 
 
 def test_edge_imprint_adds_bounded_bright_linear_exposure_without_mutating_input():

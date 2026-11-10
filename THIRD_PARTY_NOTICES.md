@@ -31,6 +31,14 @@ are retained; the exact noise realization changes when 8-bit anti-banding is on.
 This replacement does not alter developed media or 16-bit output. It does not
 retroactively resolve the provenance of older source snapshots or binaries.
 
+## Print delivery dependencies
+
+The print/plate workspace uses separately installed Pillow (ImageCms/LittleCMS)
+for ICC conversion and tifffile for standard 16-bit TIFF files. Print-shop ICC
+profiles are supplied by the user; the system profile used for local checks is
+not copied into this repository or its runtime resources. Future binaries must
+include the notices from the dependency versions actually bundled.
+
 ## Design references
 
 Research and design references include spektrafilm, Fotufilm and the
@@ -97,3 +105,9 @@ Open-source licenses. A release build checks that the recorded dependency
 coordinates match the resolved graph; changing dependencies requires refreshing
 the collected notices. The JDK/Gradle/SDK and test tools are separate build-time
 dependencies, not part of this runtime list.
+
+## Current source input codecs (not yet rebuilt into a release)
+
+- DNG decoding: [rawpy](https://github.com/letmaik/rawpy), MIT; its LibRaw dependency is LGPL-2.1/CDDL-1.0 dual licensed. The wheel retains the original license terms.
+- Ultra HDR JPEG: [imagecodecs](https://github.com/cgohlke/imagecodecs), BSD-3-Clause, using [libultrahdr](https://github.com/google/libultrahdr), Apache-2.0/MIT. No gain-map formula is copied into the formation pipeline.
+- Original notices are retained in `third_party_licenses/input-codecs/`. These describe source-runtime dependencies; regenerate the actual packaged inventory before distributing a new executable.

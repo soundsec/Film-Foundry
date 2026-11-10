@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -176,8 +176,14 @@ class ReducedFilmMaterial:
     latent_extreme_reversal_strength: float = 0.0
     latent_extreme_reversal_start_loge: tuple[float, ...] | None = None
     latent_extreme_reversal_width: float = 0.18
+    chemical_fog_susceptibility: float = 1.0
+    time_response: dict | None = None
 
     def __post_init__(self) -> None:
+        from film_foundry.contracts.film_time import validate_response
+        object.__setattr__(self,'time_response',validate_response(self.time_response))
+        from film_foundry.contracts.formation_history import validate_fog_susceptibility
+        validate_fog_susceptibility(self.chemical_fog_susceptibility)
         if int(self.layer_count) <= 0:
             raise ValueError("layer_count must be positive")
         layers = int(self.layer_count)
@@ -393,6 +399,7 @@ class ReducedFilmMaterial:
         developability = np.asarray(developability, dtype=np.float32)
         return FilmProcessState(
             halide=halide,
+            chemical_fog_susceptibility=self.chemical_fog_susceptibility,
             developability=developability,
             metallic_silver=silver,
             coupler=coupler,
@@ -422,6 +429,14 @@ class FilmProcessState:
     spectral_exposure_profile: SpectralExposureProfile | None = None
     spectral_material_profile: SpectralMaterialProfile | None = None
     material_snapshot: MaterialSnapshot | None = None
+    exposure_duration_seconds: float | None = field(default=None, kw_only=True)
+    film_border_snapshot: dict | None = field(default=None, kw_only=True)
+    emulsion_coverage: np.ndarray | None = None
+    emulsion_removed: dict[str, float] | None = None
+    emulsion_outside: dict[str, float] | None = None
+    chemical_fog_susceptibility: float = 1.0
+    formation_history: dict[str, np.ndarray] | None = None
+    formation_created: dict[str, float] | None = None
 
     def copy(self) -> "FilmProcessState":
         return FilmProcessState(
@@ -446,9 +461,22 @@ class FilmProcessState:
             spectral_exposure_profile=self.spectral_exposure_profile,
             spectral_material_profile=self.spectral_material_profile,
             material_snapshot=self.material_snapshot,
+            exposure_duration_seconds=self.exposure_duration_seconds,
+            film_border_snapshot=None if self.film_border_snapshot is None else dict(self.film_border_snapshot),
+            emulsion_coverage=None if self.emulsion_coverage is None else self.emulsion_coverage.copy(),
+            emulsion_removed=None if self.emulsion_removed is None else dict(self.emulsion_removed),
+            emulsion_outside=None if self.emulsion_outside is None else dict(self.emulsion_outside),
+            chemical_fog_susceptibility=self.chemical_fog_susceptibility,
+            formation_history=None if self.formation_history is None else {k: v.copy() for k, v in self.formation_history.items()},
+            formation_created=None if self.formation_created is None else dict(self.formation_created),
         )
 
     def validate(self) -> None:
+        from film_foundry.contracts.film_exposure import validate_duration
+        validate_duration(self.exposure_duration_seconds)
+        if self.film_border_snapshot is not None:
+            from film_foundry.core.formed_film_border import validate_border_snapshot
+            validate_border_snapshot(self.film_border_snapshot)
         if self.material_snapshot is not None and not isinstance(self.material_snapshot, MaterialSnapshot):
             raise ValueError("material_snapshot must be a MaterialSnapshot")
         if self.spectral_material_profile is not None and not isinstance(self.spectral_material_profile, SpectralMaterialProfile):
@@ -504,6 +532,18 @@ class FilmProcessState:
             raise ValueError("auxiliary_remaining must stay within [0, 1]")
         if not 0.0 <= float(self.masking_coupler_remaining) <= 1.0:
             raise ValueError("masking_coupler_remaining must stay within [0, 1]")
+        if self.emulsion_coverage is not None:
+            c=np.asarray(self.emulsion_coverage)
+            if c.shape!=shape[:-1] or not np.isfinite(c).all() or np.any(c<0) or np.any(c>1):
+                raise ValueError('Invalid process emulsion coverage')
+        if self.emulsion_outside is not None and any(not np.isfinite(v) or v<0 for v in self.emulsion_outside.values()):
+            raise ValueError('Invalid out-of-frame emulsion inventory')
+        if self.emulsion_removed is not None and any(not np.isfinite(v) or v<0 for v in self.emulsion_removed.values()):
+            raise ValueError('Invalid removed emulsion inventory')
+        if self.formation_history is not None:
+            for value in self.formation_history.values():
+                if value.shape != shape or not np.isfinite(value).all() or np.min(value) < -1e-6:
+                    raise ValueError('Invalid film formation history')
 
     def developable_halide(self) -> np.ndarray:
         """Return the derived latent-activated halide view ``H * e``.
@@ -542,7 +582,7 @@ class FilmProcessState:
                     dtype=np.float64,
                 )
             )
-        return {
+        totals = {
             "halide": halide_total,
             "developable_halide": developable_total,
             "inactive_halide": halide_total - developable_total,
@@ -557,6 +597,14 @@ class FilmProcessState:
             "auxiliary_remaining": float(self.auxiliary_remaining),
             "masking_coupler_remaining": float(self.masking_coupler_remaining),
         }
+        if self.emulsion_coverage is not None:
+            totals['emulsion_retained_area']=float(np.sum(self.emulsion_coverage,dtype=np.float64))
+            totals.update({f'emulsion_removed_{key}':value for key,value in (self.emulsion_removed or {}).items()})
+        if self.emulsion_outside is not None:
+            totals.update({f'emulsion_outside_{key}':value for key,value in self.emulsion_outside.items()})
+        from film_foundry.core.film_process.formation_history import history_totals
+        totals.update(history_totals(self))
+        return totals
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,17 +633,33 @@ class FilmFinalMedium:
     bleached_halide_density_per_layer: tuple[float, ...] | None = None
     bleached_halide_density_rgb: tuple[float, float, float] | None = None
 
+    # New ordered processing stores actual pools in FilmProcessState. Optical
+    # adapters consume these normalized per-covered-area sources and ownership.
+    emulsion_coverage: np.ndarray | None = None
+
     def __post_init__(self) -> None:
         # frozen=True does not make NumPy buffers immutable. Finalization owns
         # copied pool arrays, so mark those buffers read-only as well and keep
         # the material state safe from scanner/export side effects.
-        for name in ("metallic_silver", "dye", "residual_halide", "bleached_halide"):
+        for name in ("metallic_silver", "dye", "residual_halide", "bleached_halide", "emulsion_coverage"):
             value = getattr(self, name)
             if value is None:
                 continue
             array = np.asarray(value, dtype=np.float32)
             array.setflags(write=False)
             object.__setattr__(self, name, array)
+
+    def retained_pool(self,name):
+        """Actual remaining material; raw optical source arrays are conditional.
+
+The source amounts describe covered areas when emulsion_coverage is present.
+Chemical auditing uses FilmProcessState; observers never mutate either object.
+"""
+        if name not in ('metallic_silver','dye','residual_halide','bleached_halide'):
+            raise ValueError('Unknown final material pool')
+        pool=getattr(self,name)
+        if pool is None or self.emulsion_coverage is None:return pool
+        return pool*self.emulsion_coverage[...,None]
 
     def total_fixable_halide(self) -> np.ndarray:
         """Return all silver-salt material that a complete fixer would remove."""
@@ -711,7 +775,7 @@ class FilmFinalMedium:
         auxiliary_density_rgb = _vector(
             self.auxiliary_density_rgb, 3, "auxiliary_density_rgb"
         ) * float(self.auxiliary_remaining)
-        return compose_optical_density_rgb(
+        optical = compose_optical_density_rgb(
             dye_density_layers=dye_density_layers,
             dye_absorption_matrix=(
                 None if dye_density_layers is None else self.dye_absorption_matrix
@@ -722,6 +786,11 @@ class FilmFinalMedium:
             base_density_rgb=_vector(self.base_density_rgb, 3, "base_density_rgb"),
             auxiliary_density_rgb=auxiliary_density_rgb,
         )
+        if self.emulsion_coverage is not None:
+            from film_foundry.core.emulsion_integrity import mix_density
+            support=np.asarray(self.clear_support_density_rgb if self.clear_support_density_rgb is not None else self.base_density_rgb,np.float32)+auxiliary_density_rgb
+            optical=mix_density(optical,support,self.emulsion_coverage)
+        return optical
 
     def transmittance_rgb(self) -> np.ndarray:
         return np.power(10.0, -self.optical_density_rgb()).astype(

@@ -50,7 +50,8 @@ def test_export_failure_restores_prior_bundle_and_preserves_latent_for_retry(exp
     previous = {path.name: path.read_bytes() for path in target.parent.iterdir()}
     original = latent.read_bytes()
     def failed_preview(*args, **kwargs):
-        assert target.is_file()  # Failure follows the real NPZ write, inside the transaction.
+        # NPZ may still be compressing. The enclosing transaction must wait
+        # for it before restoring the previous bundle and reporting failure.
         raise PermissionError('simulated preview write failure')
     with monkeypatch.context() as patch:
         patch.setattr(medium_export, 'save_image', failed_preview)

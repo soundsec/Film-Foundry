@@ -4,6 +4,14 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class PhoneMaterialDefaultsTest {
+    @Test fun formationBudgetIsExplicitAndOldRollsHaveNoNewDefault() {
+        val key=com.filmfoundry.interchange.PhoneFormationProfile.OPTION
+        val setting=com.filmfoundry.interchange.PhoneFormationProfile.ROLL_SETTING
+        val fast=com.filmfoundry.interchange.PhoneFormationProfile.LIGHTWEIGHT
+        assertFalse(PhoneMaterialDefaults.exposureRecipe(emptyMap(),emptyMap()).containsKey(key))
+        assertEquals(fast,PhoneMaterialDefaults.exposureRecipe(emptyMap(),mapOf(setting to fast))[key])
+        assertThrows(IllegalArgumentException::class.java) { PhoneMaterialDefaults.exposureRecipe(emptyMap(),mapOf(setting to "future")) }
+    }
     @Test fun naturalKeepsStockStrengthsAndOtherLevelsAdjustThemWithoutChangingTheSource() {
         val stock=mapOf("grain_strength" to .045,"silver_grain_strength" to .06,"emulsion_mtf_strength" to .3,"halation_strength" to .2,
             "name" to "fixture","density_max" to listOf(2.0,1.9,2.1))

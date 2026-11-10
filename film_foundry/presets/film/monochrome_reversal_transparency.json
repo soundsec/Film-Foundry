@@ -11,17 +11,53 @@
     "halation_core_radius": 0.0022,
     "halation_outer_radius": 0.008,
     "halation_exponential_radius": 0.008,
-    "halation_color": [1.0, 1.0, 1.0],
-    "hd_gamma": [0.82, 0.82, 0.82],
-    "density_min": [0.045, 0.045, 0.045],
-    "density_max": [2.25, 2.25, 2.25],
-    "log_exposure_toe": [-2.15, -2.15, -2.15],
-    "log_exposure_shoulder": [0.22, 0.22, 0.22],
+    "halation_color": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "hd_gamma": [
+      0.82,
+      0.82,
+      0.82
+    ],
+    "density_min": [
+      0.045,
+      0.045,
+      0.045
+    ],
+    "density_max": [
+      2.25,
+      2.25,
+      2.25
+    ],
+    "log_exposure_toe": [
+      -2.15,
+      -2.15,
+      -2.15
+    ],
+    "log_exposure_shoulder": [
+      0.22,
+      0.22,
+      0.22
+    ],
     "hd_toe_width": 0.13,
     "hd_shoulder_width": 0.17,
-    "film_base_density_rgb": [0.030, 0.030, 0.030],
-    "retained_halide_density_rgb": [1.0, 1.0, 1.0],
-    "granularity_sigma": [0.015, 0.015, 0.015],
+    "film_base_density_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "retained_halide_density_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "granularity_sigma": [
+      0.0,
+      0.0,
+      0.0
+    ],
     "grain_density_correlation_radius": 0.0008,
     "positive_density_contrast": 1.14,
     "positive_density_bias": 0.02,
@@ -30,7 +66,10 @@
     "positive_midtone_density": 0.18,
     "positive_shadow_toe": 0.25,
     "positive_shadow_toe_width": 0.27,
-    "positive_highlight_shoulder": 0.40,
-    "positive_highlight_shoulder_width": 0.24
+    "positive_highlight_shoulder": 0.4,
+    "positive_highlight_shoulder_width": 0.24,
+    "silver_grain_strength": 0.018,
+    "silver_grain_radius": 0.00065,
+    "silver_grain_clump_mix": 0.16
   }
 }

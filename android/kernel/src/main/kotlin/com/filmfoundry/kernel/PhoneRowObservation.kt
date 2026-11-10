@@ -9,6 +9,8 @@ class PhoneRowObservation(private val recipe: Map<String,Any?>,private val trans
     private fun field(key: String)=scanner?.get(key) ?: recipe[key]
     val projection=recipe["observe_mode"]=="viewer_projection"
     private val viewer=projection || recipe["observe_mode"]=="viewer_light_table"
+    private val normalizationStrength=(field("scan_normalize_strength") as? Number)?.toFloat()?.coerceIn(0f,1f) ?: .45f
+    val requiresNormalization get()=!viewer && field("scan_normalize")!=false && normalizationStrength>0f
     private val rowRecipe=(recipe-"scan_grid_long_edge")+("scanner" to (scanner?.entries?.associate { it.key.toString() to it.value }.orEmpty()-"scan_grid_long_edge"))
     private val fallbackBase=PhoneReducedKernel().baseDensity(recipe)
     private val device=if(viewer) null else PhoneScannerCapture(scanner?.entries?.associate { it.key.toString() to it.value },rowRecipe)
@@ -30,6 +32,21 @@ class PhoneRowObservation(private val recipe: Map<String,Any?>,private val trans
         return ScanOutputPlan(measureNormalization(pixels,eachBlock),!viewer && PhoneObserve.rangeFirstNegative(recipe,invert),
             PhoneObserve.outputEncoding(rowRecipe,viewer,invert))
     }
+    /** Same global percentiles, with the first pass fused into linear row production. */
+    fun outputMeasurement(pixels: Int)=OutputMeasurement(if(requiresNormalization) ScanNormalization.RowMeasurement(
+        pixels,normalizationStrength,field("scan_normalize_mode")?.toString() ?: "luma",
+        (field("scan_black_percentile") as? Number)?.toFloat() ?: .3f,
+        (field("scan_white_percentile") as? Number)?.toFloat() ?: 99.7f) else null)
+    inner class OutputMeasurement internal constructor(private val measurement: ScanNormalization.RowMeasurement?) {
+        fun collect(values: FloatArray,startPixel: Int=0,count: Int=values.size/3-startPixel) {
+            measurement?.collect(values,startPixel,count)
+        }
+        fun finish(eachBlock: ((FloatArray)->Unit)->Unit): ScanOutputPlan {
+            val invert=checkNotNull(actualInversion) { "Read final film interpretation before encoding scan rows" }
+            return ScanOutputPlan(measurement?.finish(eachBlock),!viewer && PhoneObserve.rangeFirstNegative(recipe,invert),
+                PhoneObserve.outputEncoding(rowRecipe,viewer,invert))
+        }
+    }
     fun output(values: FloatArray,plan: ScanOutputPlan) {
         val result=transmissionCompute?.encodeOutput(values,plan)
         if(result==null) plan.applyInPlace(values)
@@ -39,9 +56,8 @@ class PhoneRowObservation(private val recipe: Map<String,Any?>,private val trans
         }
     }
     private fun measureNormalization(pixels: Int,eachBlock: ((FloatArray)->Unit)->Unit): ScanNormalization? {
-        val strength=(field("scan_normalize_strength") as? Number)?.toFloat()?.coerceIn(0f,1f) ?: .45f
-        if(viewer || field("scan_normalize")==false || strength<=0f) return null
-        return ScanNormalization.measureRows(pixels,strength,field("scan_normalize_mode")?.toString() ?: "luma",
+        if(!requiresNormalization) return null
+        return ScanNormalization.measureRows(pixels,normalizationStrength,field("scan_normalize_mode")?.toString() ?: "luma",
             (field("scan_black_percentile") as? Number)?.toFloat() ?: .3f,(field("scan_white_percentile") as? Number)?.toFloat() ?: 99.7f,eachBlock)
     }
     companion object {

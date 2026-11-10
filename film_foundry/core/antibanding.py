@@ -60,6 +60,24 @@ def _coordinate_noise_region(
     full_height: int,
 ) -> np.ndarray:
     """Generate the same global deterministic field for a row interval."""
+    from film_foundry.core.execution_topology import reference_execution_enabled
+    if not reference_execution_enabled():
+        from .desktop_compute import try_coordinate_noise
+        accelerated=try_coordinate_noise(y_start,y_end,width,full_height)
+        if accelerated is not None:return accelerated
+        # Both summands use the same coordinate field, shifted by (3, 5).
+        # Generate their shared rows once, including wrapped top-edge rows.
+        y=(np.arange(y_start-3,y_end,dtype=np.int64)%full_height).astype(np.uint32)[:,None]
+        x=np.arange(width,dtype=np.uint32)[None,:]
+        base=_dither_mix(x)^_dither_mix(y^np.uint32(0xA511E9B3))
+        output=np.empty((y_end-y_start,width,3),np.float32)
+        # Consume one channel at a time; do not stack then roll a complete RGB
+        # temporary. Coordinate identity and float operation order stay v2.
+        for channel,salt in enumerate((0x9E3779B9,0x85EBCA6B,0xC2B2AE35)):
+            values=_dither_mix(base^np.uint32(salt))
+            field=values.astype(np.float32)/np.float32(2**32-1)-.5
+            output[...,channel]=(field[3:]+np.roll(field[:-3],5,axis=1))*.5
+        return output
     y = np.arange(y_start, y_end, dtype=np.uint32).reshape(-1, 1)
     x = np.arange(width, dtype=np.uint32).reshape(1, -1)
     shifted_y = ((y.astype(np.int64) - 3) % full_height).astype(np.uint32)
@@ -87,6 +105,22 @@ def apply_output_antibanding_region(
     y_end = min(height, int(y_end))
     if y_end <= y_start:
         return np.empty((0, width, 3), dtype=np.float32)
+    from .execution_topology import reference_execution_enabled
+    if not reference_execution_enabled():
+        if strength <= 0.0 or height < 2 or width < 2:
+            return np.clip(image[y_start:y_end], 0.0, 1.0).astype(np.float32, copy=False)
+        source_start, source_end = max(0, y_start-4), min(height, y_end+4)
+        source = np.clip(image[source_start:source_end], 0.0, 1.0).astype(np.float32, copy=False)
+        local_start = y_start-source_start
+        rows = slice(local_start, local_start+y_end-y_start)
+        mask = _smooth_mask(source)[rows, ..., None]
+        noise = _coordinate_noise_region(y_start, y_end, width, height)
+        np.multiply(noise, mask, out=noise)
+        np.multiply(noise, strength * 1.35 / 255.0, out=noise)
+        block = source[rows]
+        np.add(block, noise, out=block)
+        np.clip(block, 0.0, 1.0, out=block)
+        return block
     block = np.clip(image[y_start:y_end], 0.0, 1.0).astype(np.float32)
     if strength <= 0.0 or height < 2 or width < 2:
         return block

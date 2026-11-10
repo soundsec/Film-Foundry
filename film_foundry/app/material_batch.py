@@ -13,6 +13,7 @@ from film_foundry.app.frame_batch import frame_identity_for_item
 from film_foundry.app.incident_batch import prepare_incident_config
 from film_foundry.core.io_utils import assert_unique_output_stems
 from film_foundry.model.session import save_session,session_payload,SESSION_KIND,SESSION_VERSION
+from film_foundry.app.source_seed import normalize_offsets, offset_for
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,7 @@ class MaterialBatchResult:
     record_error: Exception | None
 
 
-def run_material_batch(command, source, output_root, config, *, scaled_override=False, settings=None, control=None):
+def run_material_batch(command, source, output_root, config, *, scaled_override=False, settings=None, control=None,on_result=None):
     if command not in {"expose", "develop_latent"}:
         raise ValueError("material batch requires expose or develop_latent")
     if control is not None:
@@ -44,6 +45,7 @@ def run_material_batch(command, source, output_root, config, *, scaled_override=
         negative_path=str(source) if command == "develop_latent" else "",
         output_path=str(output_root),presets={})
     payload.update(copy.deepcopy(settings or {}))
+    payload['path_seed_offsets']=normalize_offsets(payload.get('path_seed_offsets'))
     payload["kind"]=SESSION_KIND;payload["version"]=SESSION_VERSION
     payload["pipeline_mode"]=command
     options=dict(payload.get("ui_options") or {})
@@ -68,8 +70,12 @@ def run_material_batch(command, source, output_root, config, *, scaled_override=
                 control.check_cancel()
             result = run_request(WorkflowRequest(command, path, medium_root, config,
                 scaled_override=scaled_override, control=control,
-                frame_identity=frame_identity_for_item(settings, item_index, len(inputs))))
+                frame_identity=frame_identity_for_item(settings, item_index, len(inputs)),
+                path_seed_offset=offset_for(path,payload['path_seed_offsets'])))
             result_path = result.output_path
+            if on_result:
+                from film_foundry.app.workspace_jobs import workflow_result_record
+                on_result(workflow_result_record(path,result))
             completed += 1
         except Exception as exc:
             failures.append((path, exc))

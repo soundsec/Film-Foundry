@@ -61,6 +61,13 @@ def add_numeric_control(
         justify="right",
     )
     number_input.grid(row=row, column=input_column, sticky="e", pady=pady)
+    label_widget.qt.setWordWrap(True)
+    label_widget.qt.setMaximumWidth(200)
+    slider.qt.setMinimumWidth(120)
+    slider.qt.setMinimumHeight(28)
+    number_input.qt.setMinimumWidth(108)
+    number_input.qt.setMaximumWidth(132)
+    parent._ensure_grid_layout().setHorizontalSpacing(12)
     parent.columnconfigure(slider_column, weight=1)
     if on_change is not None:
         value.trace_add("write", lambda *_: on_change())

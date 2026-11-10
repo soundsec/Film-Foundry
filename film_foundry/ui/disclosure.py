@@ -16,7 +16,12 @@ class Disclosure(Widget):
         self.header.setAccessibleName(title)
         self.title=title
         self.body=QtWidgets.QWidget(frame)
-        outer.addWidget(self.header);outer.addWidget(self.body)
+        head=QtWidgets.QHBoxLayout();head.setContentsMargins(0,0,0,0);head.setSpacing(0)
+        head.addWidget(self.header,1)
+        from film_foundry.ui.control_reset import reset_button
+        self.reset_button=reset_button(frame)
+        self.reset_button.setToolTip('重置这一组 / Reset section');self.reset_button.hide();head.addWidget(self.reset_button)
+        outer.addLayout(head);outer.addWidget(self.body)
         super().__init__(parent,frame,padding=10)
         self._on_toggle=on_toggle
         self.header.toggled.connect(self.set_expanded)
@@ -41,4 +46,9 @@ class Disclosure(Widget):
     def set_summary(self, summary):
         label=self.title+(" · "+summary if summary else "")
         self.header.setText(label.replace("&","&&"))
-        self.header.setToolTip(label)
+        help_text=self.qt.toolTip()
+        self.header.setToolTip(label+("\n"+help_text if help_text else ""))
+
+    def set_tooltip(self, text):
+        super().set_tooltip(text)
+        self.header.setToolTip(text)

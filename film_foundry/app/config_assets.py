@@ -1,6 +1,7 @@
 """Read existing portable recipe/profile values for any frontend."""
 
 import json
+import copy
 from pathlib import Path
 
 from film_foundry.contracts.spectral_exposure import SpectralExposureProfile
@@ -15,6 +16,28 @@ PROFILE_TYPES = {
     "spectral_material_profile": ("film", SpectralMaterialProfile),
     "spectral_observation_profile": ("scanner", SpectralObservationProfile),
 }
+
+
+def apply_recipe_bank(current, edited, bank):
+    """Compose the same draft for applying an editor and for previewing it."""
+    from film_foundry.model.config import DEVELOP_LOOK_FIELDS, SCAN_LOOK_FIELDS
+    config = copy.deepcopy(current)
+    if bank == 'film':
+        config.film = copy.deepcopy(edited.film)
+        config.mode, config.medium = edited.mode, edited.medium
+    elif bank == 'develop':
+        config.chemistry = copy.deepcopy(edited.chemistry)
+        config.mode, config.medium = edited.mode, edited.medium
+        config.process_control_mode = edited.process_control_mode
+        for key in ('enable_grain','enable_halation','enable_mtf'):
+            setattr(config,key,getattr(edited,key))
+        for key in DEVELOP_LOOK_FIELDS:setattr(config.look, key, copy.deepcopy(getattr(edited.look,key)))
+    elif bank in {'scanner','positive_scanner'}:
+        config.scanner = copy.deepcopy(edited.scanner)
+        config.enable_subtractive = edited.enable_subtractive
+        for key in SCAN_LOOK_FIELDS:setattr(config.look, key, getattr(edited.look,key))
+    else:raise ValueError(f'Unknown recipe bank: {bank}')
+    return config
 
 
 def _json(text):

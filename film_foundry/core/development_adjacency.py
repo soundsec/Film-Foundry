@@ -45,6 +45,7 @@ def _provisional_first_development_source(
     film: FilmStockConfig,
     recipe: DevelopRecipeConfig,
     program_kind: str,
+    process_contact=None,
 ) -> tuple[np.ndarray, str]:
     if not program_kind.startswith(("bw_", "color_")):
         raise ValueError(f"unsupported adjacency material program: {program_kind}")
@@ -68,7 +69,11 @@ def _provisional_first_development_source(
     if first_step is None:
         raise ValueError("adjacency requires a process program with development")
     compatibility = _compatibility_for_program(film, program.key, layer_count, program=program)
-    provisional = provisional_developed_halide(state, first_step, compatibility)
+    if first_step.reaction_window is not None or process_contact is not None or recipe.latent_wait is not None:
+        from film_foundry.core.film_process.operators import provisional_formed_silver_for_bath
+        provisional=provisional_formed_silver_for_bath(state,program,first_step.bath_index,compatibility,process_contact)
+    else:
+        provisional = provisional_developed_halide(state, first_step, compatibility)
     capacity = np.asarray(material.halide_capacity, dtype=np.float32).reshape(
         (1,) * (provisional.ndim - 1) + (layer_count,)
     )
@@ -91,6 +96,7 @@ def build_development_adjacency_field(
     work_long_edge: int = 1800,
     exposed_latent=None,
     material_source: MaterialLatentSource | None = None,
+    process_contact=None,
 ) -> tuple[GlobalRateMultiplierField | None, dict[str, object]]:
     """Build one first-development-only rate field without consuming pools."""
     strength = float(recipe.development_adjacency_strength)
@@ -121,6 +127,7 @@ def build_development_adjacency_field(
         film,
         recipe,
         program_kind,
+        process_contact.at_shape(grid.work_shape) if process_contact is not None else None,
     )
 
     sigma = max(0.45, radius * float(min(grid.work_shape)))

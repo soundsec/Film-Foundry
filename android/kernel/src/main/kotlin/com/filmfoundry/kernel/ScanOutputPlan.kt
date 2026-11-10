@@ -7,7 +7,7 @@ class ScanOutputPlan internal constructor(private val referenceNormalization: Sc
     val boundedInput: Boolean,val encoding: Encoding) {
     class Normalization internal constructor(val black: List<Float>,val spans: List<Float>,val strength: Float,val rgb: Boolean)
     class Encoding internal constructor(val printGain: Float,val lampColor: List<Float>?,val contrast: Float,
-        val curves: List<List<Pair<Float,Float>>>?,val tone: List<Pair<Float,Float>>?) {
+        val curves: List<List<Pair<Float,Float>>>?,val tone: List<Pair<Float,Float>>?,val mixer: ColorMixer?=null) {
         // Keep the CPU loop's primitive/indexed storage; the backend-facing snapshot must not
         // introduce boxed List<Float> access for every channel when GPU is unavailable.
         internal val lampValues=lampColor?.toFloatArray()

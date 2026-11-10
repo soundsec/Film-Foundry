@@ -164,6 +164,7 @@ def test_runtime_export_session_and_frame_identity_reach_real_archive(tmp_path, 
         runtime = panel._editor_windows["runtime"]
         runtime.values["input_icc_policy"].set("ignore")
         runtime.values["native_thread_limit"].set("2")
+        runtime.values["reduced_profile"].set("builtin_reduced_fast_v1")
         runtime.values["memory_budget_mb"].set("512")
         runtime.values["medium_npz_compression"].set("store")
         runtime.values["bit_depth"].set("16")
@@ -182,6 +183,7 @@ def test_runtime_export_session_and_frame_identity_reach_real_archive(tmp_path, 
         assert actual.processing.quality_mode == "high" and actual.fast_mode
         assert not panel.run_as_preview.get()
         assert actual.processing.native_thread_limit == 2
+        assert actual.processing.reduced_profile == "builtin_reduced_fast_v1"
         assert actual.input_icc_policy == "ignore" and actual.look.look_strength == .75
         source = images(tmp_path/"images")
         panel.input_path.set(str(source))

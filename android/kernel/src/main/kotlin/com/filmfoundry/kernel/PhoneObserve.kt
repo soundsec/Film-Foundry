@@ -201,7 +201,7 @@ internal object PhoneObserve {
         } else null
         val contrast=if(viewer) 1f else numberOf(look?.get("print_contrast"),1f).coerceAtLeast(.01f)
         require(contrast.isFinite()) { "look.print_contrast must be finite" }
-        return ScanOutputPlan.Encoding(printGain,lampColor?.toList(),contrast,curve?.toList(),tone)
+        return ScanOutputPlan.Encoding(printGain,lampColor?.toList(),contrast,curve?.toList(),tone,if(viewer) null else ColorMixer.parse(field(scanner,recipe,"color_mixer")))
     }
     internal fun encodeRows(raw: FloatArray,encoding: ScanOutputPlan.Encoding,fused: Boolean=true) {
         val pixels=raw.size/3
@@ -237,6 +237,7 @@ internal object PhoneObserve {
                 }
             }
         }
+        encoding.mixer?.apply(raw)
     }
 
     private fun interpretScanner(

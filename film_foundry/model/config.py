@@ -19,8 +19,12 @@ from pathlib import Path
 from typing import Any
 import copy
 import math
+import math
 
 from film_foundry.core.atomic_io import strict_json_load
+from film_foundry.core.file_cache import FileRevisionCache
+
+_config_file_cache = FileRevisionCache(128)
 from film_foundry.contracts.spectral_exposure import SpectralExposureProfile
 from film_foundry.contracts.spectral_optics import SpectralMaterialProfile, SpectralObservationProfile
 
@@ -88,11 +92,35 @@ def normalize_scanner_color_curve_rgb(
     return (channels[0], channels[1], channels[2])
 
 
+def normalize_color_mixer(value):
+    """Eight H/S/L rows: red, orange, yellow, green, aqua, blue, purple, magenta."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 8:
+        raise ValueError("scanner.color_mixer requires eight H/S/L rows")
+    rows = []
+    for row in value:
+        if not isinstance(row, (list, tuple)) or len(row) != 3:
+            raise ValueError("scanner.color_mixer requires three values per row")
+        values = tuple(float(v) for v in row)
+        if any(not math.isfinite(v) or abs(v) > limit for v, limit in zip(values, (30, 100, 100))):
+            raise ValueError("color_mixer: hue must be ±30 degrees; saturation/lightness ±100")
+        rows.append(values)
+    return tuple(rows) if any(v != 0 for row in rows for v in row) else None
+
+
 @dataclass(slots=True)
 class FilmStockConfig:
     """胶片本体属性。"""
 
     name: str = "Generic Color Negative"
+    process_response: dict[str, object] | None = None
+    carbon_backing: dict[str, object] | None = field(default=None, kw_only=True)
+    emulsion_integrity: dict[str, object] | None = field(default=None, kw_only=True)
+    chemical_fog_susceptibility: float = field(default=1.0, kw_only=True)
+    time_response: dict[str, object] | None = field(default=None, kw_only=True)
+    storage_history: dict[str, object] | None = field(default=None, kw_only=True)
+    reciprocity_response: dict[str, object] | None = field(default=None, kw_only=True)
     medium_family: str = "film"
     medium_process: str = "negative"
     image_polarity: str = "negative"
@@ -318,6 +346,9 @@ class DevelopRecipeConfig:
     工艺不应复用本配置。
     """
 
+    formation_history_model: str = field(default='bath_products_local_v2', kw_only=True)
+    latent_wait: dict[str, object] | None = field(default=None, kw_only=True)
+    post_process_light: dict[str, object] | None = field(default=None, kw_only=True)
     developer_name: str = "Standard Developer"
     developer_type: str = "standard"
     fixer_name: str = "Standard Fixer"
@@ -326,6 +357,9 @@ class DevelopRecipeConfig:
     process_mode: str = "normal_negative"
     program_key: str = "auto"
     process_steps: tuple[dict[str, object], ...] | None = None
+    bath_overrides: tuple[dict[str, object], ...] | None = None
+    process_events: dict[str, object] | None = None
+    effect_intent: dict[str, object] | None = None
     frame_size: str = "35mm"
     # Optional custom exposed-frame long edge. Requires the material's
     # spatial reference above; None resolves frame_size only in physical mode.
@@ -336,6 +370,7 @@ class DevelopRecipeConfig:
     agitation: float = 1.0
     # Optional total active agitation seconds per bath; None preserves historical intensity-only kinetics.
     agitation_time_s: float | None = None
+    bath_transfer_s: float = 10.0
     push_stops: float = 0.0
     developer_exhaustion: float = 0.0
     fixer_exhaustion: float = 0.0
@@ -492,6 +527,7 @@ class ScannerConfig:
     # response matrix, and color_curve_rgb after print-like mapping. None or
     # identity keeps the historical path exactly.
     color_response_model: str = "simple_channel_adjust_v1"
+    color_mixer: tuple[tuple[float, float, float], ...] | None = None
     tone_curve: tuple[tuple[float, float], ...] | None = None
     color_curve_rgb: tuple[
         tuple[tuple[float, float], ...],
@@ -512,6 +548,13 @@ class ScannerConfig:
     scan_normalize_mode: str = "luma"
     scan_black_percentile: float = 0.3
     scan_white_percentile: float = 99.7
+
+
+@dataclass(slots=True)
+class ExposureConfig:
+    """Explicit capture conditions; source RGB is already integrated dose."""
+
+    duration_seconds: float | None = None
 
 
 @dataclass(slots=True)
@@ -553,6 +596,15 @@ class OutputConfig:
     # compressed minimizes archive size; store trades disk space for faster
     # saves without changing any stored float values.
     medium_npz_compression: str = "compressed"
+    # Auto follows quality for cold density layers (7/10/15 fraction bits).
+    # Independent appearance textures keep their field-specific FP16 policy.
+    # Authoritative optics/chemistry stay FP32; full preserves all current bits.
+    material_storage_precision: str = "auto"
+    # Final image orientation only; material arrays and optical relay stay fixed.
+    rotation_quarters: int = 0
+    # Browsing companion only. The authoritative medium and scan stay native.
+    # A complete layer pack keeps its full-size rendition; zero opts out.
+    medium_preview_long_edge: int = 1600
     save_scanner_raw: bool = True
     scanner_raw_border_percent: float = 0.04
     scanner_raw_border_min_px: int = 32
@@ -584,9 +636,14 @@ class ProcessingConfig:
     execution_mode: str = "quality"
     # Independent internal detail/sampling tier.
     quality_mode: str = "standard"
+    # Native FP32 wet-front arithmetic in draft/standard; high keeps FP64.
+    # Independent of archive precision. 'float64' explicitly opts out.
+    contact_precision: str = "auto"
+    # A formation-only model choice, independent of scanner interpretation.
+    reduced_profile: str = "builtin_reduced_fast_v4"
     # Larger working frames remain enabled as best-effort support.
     comfort_zone_megapixels: float = 30.0
-    # None means use the quality-mode default (draft=1200, standard=1800,
+    # None means use the quality-mode default (draft=768, standard=1800,
     # high=native). A positive value is an explicit per-module override.
     halation_work_long_edge: int | None = None
     # Compact emulsion spread is evaluated on an explicitly bounded optical
@@ -595,10 +652,10 @@ class ProcessingConfig:
     emulsion_spread_work_long_edge: int | None = None
     grain_work_long_edge: int | None = None
     # Adjacency is an explicitly reduced global chemistry field even in high
-    # quality mode; None selects draft=1200, standard=1800, high=3200.
+    # quality mode; None selects draft=768, standard=1800, high=3200.
     adjacency_work_long_edge: int | None = None
     # DIR uses a separate layer-specific colour-development work field. None
-    # selects draft=900, standard=1400, high=1800. The tighter grid accounts
+    # selects draft=640, standard=1400, high=1800. The tighter grid accounts
     # for its private three-layer provisional material state.
     dir_work_long_edge: int | None = None
     # Exact pointwise material-pool processing switches to bounded row tiles
@@ -626,10 +683,10 @@ class ProcessingConfig:
 
 @dataclass(slots=True)
 class FilmBorderConfig:
-    """Physical film rebate, sprocket holes, and edge imprint.
+    """Film-edge layout and independently configured in-picture imprint.
 
-    Sprocket/rebate geometry remains a layout contract and is not rasterized.
-    Edge imprint styles other than ``none`` add a film-plane flash into
+    Rebates become stored optical material at formation, with absent support in holes.
+    Imprint styles other than ``none`` add an in-picture film-plane flash into
     formation. Do not reuse scanner ``include_clear_base_border`` as sprocket
     geometry, and do not treat imprint as an RGB watermark.
     """
@@ -641,8 +698,21 @@ class FilmBorderConfig:
     sprocket_count: int | None = None
     factory_marks: bool = True
     stock_label: str = ""
+    factory_layout: str = "legacy"
+    factory_batch: int = 0
+    factory_barcode: str = "legacy"
+    factory_barcode_seed: int = 0
+    loading_offset: float = 0.0
+    factory_offset_top: tuple[float, float] = (0.0, 0.0)
+    factory_offset_bottom: tuple[float, float] = (0.0, 0.0)
+    advance_marker_offset: tuple[float, float] = (0.0, 0.0)
+    advance_marker_style: str = "legacy"
+    factory_exposure_ev: float = 0.0
+    factory_exposure_variation: float = 0.0
+    frame_number: int | None = None
+    advance_direction: str = "right"
     # Empty stencils retain the existing stock text; patterns replace the stock
-    # name area, while the frame number remains automatic. Flip is 180 degrees.
+    # name area. Frame labels occupy a separate lower-edge band. Flip is 180 degrees.
     factory_pattern_top: str = ""
     factory_pattern_bottom: str = ""
     factory_pattern_linked: bool = True
@@ -654,6 +724,9 @@ class FilmBorderConfig:
     imprint_side: str = "bottom"
     imprint_text: str = ""
     imprint_time: str = ""
+    imprint_font: str = "legacy"
+    imprint_position_xy: tuple[float, float] | None = None
+    imprint_scale: float = 1.0
 
 
 @dataclass(slots=True)
@@ -661,6 +734,7 @@ class DarkroomConfig:
     """单张图像处理总配置。"""
 
     film: FilmStockConfig = field(default_factory=FilmStockConfig)
+    exposure: ExposureConfig = field(default_factory=ExposureConfig, kw_only=True)
     chemistry: ChemistryConfig = field(default_factory=ChemistryConfig)
     scanner: ScannerConfig = field(default_factory=ScannerConfig)
     look: LookAdjustConfig = field(default_factory=LookAdjustConfig)
@@ -683,6 +757,8 @@ class DarkroomConfig:
     # apply: convert a valid embedded RGB ICC into working sRGB.
     # ignore: keep encoded values as sRGB (historical decode).
     input_icc_policy: str = "apply"
+    # Independent of workflow (photo / sealed roll) and execution quality.
+    process_control_mode: str = "normal"
 
     @property
     def exposure_ev(self) -> float:
@@ -740,6 +816,33 @@ class DarkroomConfig:
         film_data = section("film")
         chemistry_data = section("chemistry")
         chemistry_data.update(section("develop"))
+        # An absent version in a saved recipe means the historical global
+        # approximation. Fresh dataclass recipes use the current bath model.
+        from film_foundry.contracts.formation_history import validate_model, LEGACY, validate_fog_susceptibility
+        chemistry_data['formation_history_model'] = validate_model(chemistry_data.get('formation_history_model', LEGACY))
+        from film_foundry.contracts.film_time import validate_history, validate_response as validate_time_response
+        for key,kind in (('latent_wait','latent'),('post_process_light','light')):
+            if key in chemistry_data:chemistry_data[key]=validate_history(chemistry_data[key],kind)
+        from film_foundry.contracts.process_events import validate_process_events,validate_process_response
+        if chemistry_data.get('process_events') is not None:chemistry_data['process_events']=validate_process_events(chemistry_data['process_events'])
+        if chemistry_data.get('effect_intent') is not None:
+            from film_foundry.contracts.effect_intent import validate_effect_intent
+            chemistry_data['effect_intent']=validate_effect_intent(chemistry_data['effect_intent'])
+        if film_data.get('process_response') is not None:film_data['process_response']=validate_process_response(film_data['process_response'])
+        from film_foundry.contracts.carbon_backing import validate_carbon_backing
+        if film_data.get('carbon_backing') is not None:film_data['carbon_backing']=validate_carbon_backing(film_data['carbon_backing'])
+        from film_foundry.contracts.emulsion_integrity import validate_emulsion_integrity
+        if 'time_response' in film_data:film_data['time_response']=validate_time_response(film_data['time_response'])
+        if 'storage_history' in film_data:film_data['storage_history']=validate_history(film_data['storage_history'],'storage')
+        from film_foundry.contracts.film_exposure import validate_response as validate_reciprocity, validate_duration
+        if 'reciprocity_response' in film_data:
+            film_data['reciprocity_response'] = validate_reciprocity(film_data['reciprocity_response'])
+        exposure_data = section('exposure')
+        if 'duration_seconds' in exposure_data:
+            exposure_data['duration_seconds'] = validate_duration(exposure_data['duration_seconds'])
+        if 'chemical_fog_susceptibility' in film_data:
+            film_data['chemical_fog_susceptibility'] = validate_fog_susceptibility(film_data['chemical_fog_susceptibility'])
+        if film_data.get('emulsion_integrity') is not None:film_data['emulsion_integrity']=validate_emulsion_integrity(film_data['emulsion_integrity'])
         scanner_data = section("scanner")
         output_data = section("output")
         processing_data = section("processing")
@@ -748,6 +851,11 @@ class DarkroomConfig:
             "execution_mode",
             "reduced_fast" if bool(data.get("fast_mode", False)) else "quality",
         )
+        if "reduced_profile" not in processing_data:
+            from film_foundry.contracts.formation_profiles import LEGACY_REDUCED_PROFILE, CURRENT_REDUCED_PROFILE
+            processing_data["reduced_profile"] = (LEGACY_REDUCED_PROFILE
+                if data.get("fast_mode", False) or processing_data["execution_mode"] == "reduced_fast"
+                else CURRENT_REDUCED_PROFILE)
         look_data = section("look")
 
         # JSON has no tuple type. Normalize typed vectors/matrices at the one
@@ -846,6 +954,9 @@ class DarkroomConfig:
         if "process_steps" in chemistry_data:
             from film_foundry.contracts.process_steps import validate_process_steps
             chemistry_data["process_steps"] = validate_process_steps(chemistry_data["process_steps"])
+        if "bath_overrides" in chemistry_data:
+            from film_foundry.contracts.bath_overrides import validate_bath_overrides
+            chemistry_data["bath_overrides"] = validate_bath_overrides(chemistry_data["bath_overrides"])
         # Phone's historical shorthand selects a program; it is not another chemistry schema.
         phone_chemistry = chemistry_data.pop("chemistry", None)
         if phone_chemistry is not None:
@@ -983,6 +1094,8 @@ class DarkroomConfig:
                 tuple(float(value) for value in row)
                 for row in scanner_data["negative_channel_matrix"]
             )
+        if "color_mixer" in scanner_data:
+            scanner_data["color_mixer"] = normalize_color_mixer(scanner_data["color_mixer"])
         if "tone_curve" in scanner_data:
             scanner_data["tone_curve"] = normalize_scanner_tone_curve(scanner_data["tone_curve"])
         if "color_curve_rgb" in scanner_data:
@@ -1021,8 +1134,12 @@ class DarkroomConfig:
                 f"got {icc_policy!r}."
             )
 
+        control_mode=str(data.get('process_control_mode','normal'))
+        if control_mode not in ('normal','expected','principle'):
+            raise ValueError('Unknown process_control_mode')
         return cls(
             film=FilmStockConfig(**film_data),
+            exposure=ExposureConfig(**exposure_data),
             chemistry=ChemistryConfig(**chemistry_data),
             scanner=ScannerConfig(**scanner_data),
             look=LookAdjustConfig(**look_data),
@@ -1042,14 +1159,17 @@ class DarkroomConfig:
             save_sidecar=bool(data.get("save_sidecar", True)),
             comparison_grid=bool(data.get("comparison_grid", False)),
             input_icc_policy=icc_policy,
+            process_control_mode=control_mode,
         )
 
     @classmethod
     def from_json(cls, path: str | Path) -> "DarkroomConfig":
-        payload = strict_json_load(path)
-        if not isinstance(payload, dict):
-            raise ValueError(f"Configuration JSON root must be an object: {path}")
-        return cls.from_dict(payload)
+        def load(target):
+            payload = strict_json_load(target)
+            if not isinstance(payload, dict):
+                raise ValueError(f"Configuration JSON root must be an object: {path}")
+            return cls.from_dict(payload)
+        return _config_file_cache.get(path, load, namespace=cls)
 
 
 FoundryConfig = DarkroomConfig
@@ -1095,6 +1215,9 @@ def merge_config_presets(
 
     if develop_config is not None:
         merged.chemistry = copy.deepcopy(develop_config.chemistry)
+        merged.process_control_mode = develop_config.process_control_mode
+        for key in ('enable_grain','enable_halation','enable_mtf'):
+            setattr(merged,key,getattr(develop_config,key))
         if str(develop_config.mode).lower() != "color_negative":
             merged.mode = str(develop_config.mode)
         if str(develop_config.medium).lower() != "film_negative":

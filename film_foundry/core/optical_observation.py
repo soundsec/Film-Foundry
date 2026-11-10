@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 
 import numpy as np
 
@@ -118,7 +119,9 @@ def _clear_base_scanner_sample(
     return capture_optical_density(
         clear_density,
         config.scanner,
-        illuminant_rgb=transmission_illuminant_rgb(config.scanner),
+        # A nominal-exposure reference removes support density, without also
+        # dividing away the user's lamp exposure change.
+        illuminant_rgb=transmission_illuminant_rgb(replace(config.scanner, transmission_light_ev=0.0)),
     ).reshape(1, 1, 3)
 
 
@@ -241,7 +244,9 @@ def _medium_optical_density_rgb(
 ) -> np.ndarray:
     """Return authoritative RGB density, falling back to the portable CMY master."""
     if scanner is not None and scanner.spectral_observation_profile is not None:
-        return spectral_observation_density(medium.spectral_medium, scanner.spectral_observation_profile, row_slice=row_slice)
+        from .observation_reuse import observe_density
+        return observe_density(medium.spectral_medium, scanner.spectral_observation_profile,
+                               row_slice, spectral_observation_density)
     if medium.optical_density_rgb is not None:
         optical = np.asarray(medium.optical_density_rgb, dtype=np.float32)
         return optical if row_slice is None else optical[row_slice]
@@ -288,6 +293,10 @@ def _align_interpreter_to_medium(config: DarkroomConfig, medium: DevelopedNegati
     config.scanner.target_medium_process = str(medium.medium_process)
     config.scanner.input_polarity = str(medium.image_polarity)
     config.scanner.output_polarity = "positive"
+    # Automatic endpoints share one luminance range. Independent RGB ranges
+    # would silently white-balance a deliberately coloured material or scan.
+    # Strength, percentiles and the user's enable switch remain explicit.
+    config.scanner.scan_normalize_mode = "luma"
     if key == "positive_transparency_scan":
         config.scanner.remove_base_mask = False
         config.scanner.invert_transmission = False
@@ -295,8 +304,7 @@ def _align_interpreter_to_medium(config: DarkroomConfig, medium: DevelopedNegati
     elif key == "negative_scan":
         config.scanner.remove_base_mask = True
         config.scanner.invert_transmission = True
-        if str(config.scanner.scan_method).lower() == "positive_transparency":
-            config.scanner.scan_method = "negative_inversion"
+        config.scanner.scan_method = "negative_inversion"
 
 
 def _validate_interpreter_compatibility(config: DarkroomConfig, medium: DevelopedNegative) -> None:

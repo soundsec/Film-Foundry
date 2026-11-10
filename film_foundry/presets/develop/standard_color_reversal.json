@@ -19,7 +19,8 @@
     "silver_bleach_completion": 1.0,
     "halide_fixing_completion": 1.0,
     "dye_coupling_efficiency": 1.0,
-    "auxiliary_removal": 1.0
+    "auxiliary_removal": 1.0,
+    "formation_history_model": "bath_products_local_v2"
   },
   "mode": "color_negative",
   "look": {

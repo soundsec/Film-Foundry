@@ -161,20 +161,20 @@ object NpyCodec {
             }
             return NpyValue.UnicodeScalar(result.toString())
         }
-        if (descr !in setOf("<f4", "|f4", "=f4", "f4", "<f8", "|f8", "=f8", "f8")) throw NpyException("unsupported NPY dtype '$descr'.")
+        val itemBytes = numericItemBytes(descr)
         if (shape.isEmpty()) throw NpyException("numeric NPY array must have a shape.")
-        val itemBytes = if (descr.endsWith("f8")) 8 else 4
         val count = shape.fold(1L) { acc, n ->
             if (n <= 0) throw NpyException("array dimensions must be positive.")
             Math.multiplyExact(acc, n.toLong())
         }
-        if(retain && Math.multiplyExact(count,itemBytes.toLong()) > maxRetainedBytes)
+        // Retained arrays are Float32 even when the archive stores FP16/uint8.
+        if(retain && Math.multiplyExact(count,maxOf(4,itemBytes).toLong()) > maxRetainedBytes)
             throw NpyException("retained NPY array is too large.")
         val need = Math.multiplyExact(count, itemBytes.toLong())
         if (need > available || count > Int.MAX_VALUE) throw NpyException("NPY numeric payload is truncated or too large.")
         val values = if (retain) FloatArray(count.toInt()) else null
-        val chunkValues = FloatArray(minOf(count.toInt(), CHUNK_BYTES / itemBytes))
-        val scratch = ByteArray(minOf(CHUNK_BYTES.toLong(), need).toInt())
+        val chunkValues = FloatArray(minOf(count.toInt(), CHUNK_BYTES / maxOf(4,itemBytes)))
+        val scratch = ByteArray(chunkValues.size * itemBytes)
         val buffer = ByteBuffer.wrap(scratch).order(ByteOrder.LITTLE_ENDIAN)
         val floats=buffer.asFloatBuffer()
         var offset = 0
@@ -182,8 +182,12 @@ object NpyCodec {
             val n = minOf(count.toInt() - offset, scratch.size / itemBytes)
             readFully(input, scratch, n * itemBytes)
             buffer.clear()
-            if(itemBytes==4) { floats.clear();floats.get(chunkValues,0,n) }
-            else for(i in 0 until n) chunkValues[i]=buffer.double.toFloat()
+            when(itemBytes) {
+                1 -> for(i in 0 until n) chunkValues[i]=(buffer.get().toInt() and 255).toFloat()
+                2 -> for(i in 0 until n) chunkValues[i]=halfToFloat(buffer.short.toInt() and 65535)
+                4 -> { floats.clear();floats.get(chunkValues,0,n) }
+                8 -> for(i in 0 until n) chunkValues[i]=buffer.double.toFloat()
+            }
             for (i in 0 until n) {
                 val v = chunkValues[i]
                 // Ordered comparisons reject NaN as well as both infinities, without
@@ -208,6 +212,28 @@ object NpyCodec {
                 bytes[offset++] = single.toByte()
             } else offset += n
         }
+    }
+
+    /** Standard archive storage types. Computation still receives Float32. */
+    fun numericItemBytes(descriptor: String): Int = when(descriptor) {
+        "<f2","|f2","=f2","f2" -> 2
+        "<f4","|f4","=f4","f4" -> 4
+        "<f8","|f8","=f8","f8" -> 8
+        "|u1","<u1",">u1","=u1","u1" -> 1
+        else -> throw NpyException("unsupported NPY dtype '$descriptor'.")
+    }
+
+    private fun halfToFloat(bits: Int): Float {
+        val sign=(bits and 0x8000) shl 16
+        val exponent=(bits ushr 10) and 31
+        val fraction=bits and 1023
+        if(exponent==0) {
+            if(fraction==0) return Float.fromBits(sign)
+            val value=fraction.toFloat()/16777216f
+            return if(sign==0) value else -value
+        }
+        val expanded=if(exponent==31) 255 else exponent+112
+        return Float.fromBits(sign or (expanded shl 23) or (fraction shl 13))
     }
 
     internal fun floatHeader(shape: IntArray): ByteArray = header("<f4", shape)

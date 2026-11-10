@@ -13,11 +13,12 @@ import shutil
 PUBLIC_DOCS = (
     "README.md", "DESKTOP_GUIDE.md", "REFERENCE.md", "SHOWCASE.md", "CHANGELOG.md",
     "MOBILE_GUIDE.md", "MOBILE_GUIDE.en.md", "MOBILE_SHOWCASE.md", "MOBILE_SHOWCASE.en.md",
+    "DEVELOPMENT_SNAPSHOT.md",
 )
 ROOT_FILES = (
     ".gitignore", ".gitattributes", "README.md", "README.en.md", "LICENSE", "COPYING",
     "THIRD_PARTY_NOTICES.md", "pyproject.toml", "requirements.txt",
-    "environment.yml", "run_film_foundry_launcher.py",
+    "environment.yml", "run_film_foundry_launcher.py", "run_material_windows.py",
 )
 PUBLIC_BUILD_FILES = (
     "README.md", "build_windows_exe.ps1", "FilmFoundry.spec",
@@ -71,7 +72,7 @@ def copy_public_docs(source: Path, target: Path, *, include_root: bool = True) -
         path=source/name
         if path.is_file():
             (target/name).write_text(public_links(path.read_text(encoding="utf-8-sig")),encoding="utf-8",newline="\n")
-    for image_folder in ("desktop-0.4.0", "mobile-0.1.0"):
+    for image_folder in ("desktop-0.4.0", "mobile-0.1.0", "desktop-dev-2026-11-10"):
         image_source=source/"docs"/"images"/image_folder
         if not image_source.is_dir():
             continue
@@ -141,13 +142,16 @@ def prepare(source: Path, target: Path, *, include_packaging: bool = True,
                 {"LICENSE", "COPYING", "NOTICE", "AUTHORS", "COPYRIGHT", "METADATA"}
             ):continue
             relative=path.relative_to(source)
-            if any(part.startswith(".") or part in {"__pycache__","build","dist"} for part in relative.parts):continue
+            if any(part.startswith(".") or part.lower().endswith('.ffworkspace') or part in {"__pycache__","build","dist"} for part in relative.parts):continue
             destination=target/relative;destination.parent.mkdir(parents=True,exist_ok=True)
             copy_source_file(path,destination);copied+=1
     if include_packaging:
         (target/"packaging").mkdir(parents=True, exist_ok=True)
         for name in PUBLIC_BUILD_FILES:
             copy_source_file(source/"packaging"/name, target/"packaging"/name)
+            if name.endswith('.md'):
+                path=target/"packaging"/name
+                path.write_text(public_links(path.read_text(encoding='utf-8')),encoding='utf-8',newline='\n')
             copied += 1
     copied+=copy_public_docs(source,target)
     if include_android:

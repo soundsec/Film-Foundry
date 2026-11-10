@@ -67,6 +67,23 @@ def payload_with_config(payload: dict[str, Any], config: dict[str, Any]) -> dict
     return result
 
 
+def mark_scanner_raw_bgr16(raw: np.ndarray, payload: dict[str, Any], *, border_width: int) -> None:
+    """Draw into private quantized export pixels, avoiding a float round trip."""
+    border = int(border_width)
+    if border <= 8:
+        return
+    height, width = raw.shape[:2]
+    text = f"Film Foundry {payload.get('id', '')}".strip()
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = max(0.35, min(0.75, border / 58.0))
+    (text_width, text_height), _ = cv2.getTextSize(text, font, scale, 1)
+    x = max(4, min(width - text_width - 4, border + 8))
+    y = max(text_height + 3, min(border - 6, text_height + 12))
+    base = raw[:border].mean(axis=(0, 1))
+    ink = np.clip(base.astype(np.float32) * 0.82, 0.0, 65535.0).astype(np.uint16)
+    cv2.putText(raw, text, (x, y), font, scale, tuple(int(v) for v in ink), 1, cv2.LINE_AA)
+
+
 def apply_scanner_raw_border_watermark(
     image: np.ndarray,
     payload: dict[str, Any],
@@ -74,7 +91,10 @@ def apply_scanner_raw_border_watermark(
     border_width: int,
 ) -> np.ndarray:
     """Add a subtle readable mark inside the scanner raw clear border."""
-    result = np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0).copy()
+    from .execution_topology import reference_execution_enabled
+    reference = reference_execution_enabled()
+    result = np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0)
+    if reference:result = result.copy()
     border = int(border_width)
     if border <= 8 or result.ndim != 3 or result.shape[-1] != 3:
         return result
@@ -87,6 +107,23 @@ def apply_scanner_raw_border_watermark(
     (text_width, text_height), _baseline = cv2.getTextSize(text, font, scale, thickness)
     x = max(4, min(width - text_width - 4, border + 8))
     y = max(text_height + 3, min(border - 6, text_height + 12))
+
+    if not reference:
+        # Quantization is part of the existing raw output, including its
+        # interior. Keep it exactly, but draw only the top strip: a full-frame
+        # BGR copy and conversion back are unnecessary for a border label.
+        mark_rows = min(height, max(border, y + _baseline + thickness + 2))
+        strip = np.round(result[:mark_rows] * 65535.0).astype(np.uint16)
+        base = strip[:border].mean(axis=(0, 1))
+        ink = np.clip(base.astype(np.float32) * 0.82, 0.0, 65535.0).astype(np.uint16)
+        bgr = strip[..., ::-1].copy()
+        cv2.putText(bgr, text, (x, y), font, scale, tuple(int(v) for v in ink[::-1]), thickness, cv2.LINE_AA)
+        result[:mark_rows] = bgr[..., ::-1].astype(np.float32) / 65535.0
+        for start in range(mark_rows, height, 128):
+            block = result[start:start + 128]
+            raw = np.round(block * 65535.0).astype(np.uint16)
+            block[:] = raw.astype(np.float32) / 65535.0
+        return result
 
     raw16 = np.round(result * 65535.0).astype(np.uint16)
     base = raw16[:border, :, :].mean(axis=(0, 1))

@@ -7,7 +7,7 @@ quantitatively calibrated chemistry.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 import numpy as np
@@ -18,6 +18,7 @@ from film_foundry.core.film_process.model import (
     FilmProcessState,
     ReducedFilmMaterial,
 )
+from film_foundry.core.film_process.formation_history import BathFormationResponse, ensure_history, add_product, retain_product
 
 
 class FilmProcessAction(str, Enum):
@@ -30,6 +31,10 @@ class FilmProcessAction(str, Enum):
     REMOVE_SILVER = "remove_silver"
     DESTROY_DYE = "destroy_dye"
     REMOVE_AUXILIARY = "remove_auxiliary"
+    REMOVE_EMULSION = "remove_emulsion"
+    SHEAR_EMULSION = "shear_emulsion"
+    AGE_LATENT = 'age_latent'
+    LIGHT_RESIDUAL_HALIDE = 'light_residual_halide'
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +57,8 @@ class CompatibilityProfile:
     mask_bleach: float = 1.0
     mask_bleach_dye_damage: float = 0.16
     layer_balance: tuple[float, ...] | None = None
+    dye_attack_l_mmol_s: float = .002
+    time_response: dict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +76,16 @@ class FilmProcessStep:
     # ``compatibility`` derives dye loss from material--process mismatch;
     # ``explicit`` uses this step's strength as a declared process accident.
     dye_destruction_basis: str = "compatibility"
+    # Explicit source row survives expansion into reaction substeps. None is
+    # the historical one-operator-per-stage convention for built-in programs.
+    bath_index: int | None = None
+    bath_entry: bool = True
+    reaction_window: tuple[float,float] | None = None
+    chemical_contact: tuple[float,float,float] | None = None
+    chemical_placement: tuple[float,float,float] | None = None
+    process_event_index: int | None = None
+    formation_response: BathFormationResponse | None = None
+    time_history: dict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,6 +328,11 @@ def provisional_developed_halide(
         FilmProcessAction.DEVELOP_COLOR,
     }:
         raise ValueError("provisional development requires a development step")
+    if step.formation_response is not None:
+        private = state.copy()
+        before = private.metallic_silver.copy()
+        _develop_with_history(private, step, compatibility, False, local_development_rate)
+        return private.metallic_silver - before
     reactive = state.developable_halide()
     rate = _development_rate_field(
         state,
@@ -319,6 +341,23 @@ def provisional_developed_halide(
         local_development_rate=local_development_rate,
     )
     return np.minimum(state.halide, reactive * rate).astype(np.float32, copy=False)
+
+
+def provisional_formed_silver_for_bath(latent_state,program,bath_index,compatibility,local_development_rate=None):
+    """Private first-bath estimate including competing same-bath reactions."""
+    state=latent_state.copy();state.validate();baseline=None
+    for index,step in enumerate(program.steps):
+        if step.action == FilmProcessAction.LIGHT_RESIDUAL_HALIDE:break
+        if step.bath_index is not None and step.bath_index>bath_index:break
+        if step.process_event_index is not None and local_development_rate is not None:
+            event=local_development_rate.events[step.process_event_index]
+            # Estimate formation within the bath, before subsequent removal.
+            if step.bath_index==bath_index and not event.get('before_bath',0):break
+        if step.bath_index==bath_index and baseline is None:baseline=state.metallic_silver.copy()
+        resolver=getattr(local_development_rate,'contact_for_step',None)
+        contact=resolver(index,step) if callable(resolver) else None
+        _apply_step(state,step,compatibility,local_development_rate=local_development_rate,bath_contact=contact)
+    return np.maximum(state.metallic_silver-baseline,0.)
 
 
 def provisional_formed_dye_for_program(
@@ -340,13 +379,16 @@ def provisional_formed_dye_for_program(
 
     state = latent_state if consume_private_state else latent_state.copy()
     state.validate()
-    for step in program.steps:
+    for index,step in enumerate(program.steps):
+        resolver=getattr(local_development_rate,'contact_for_step',None)
+        contact=resolver(index,step) if callable(resolver) else None
         if step.action != FilmProcessAction.DEVELOP_COLOR:
             _apply_step(
                 state,
                 step,
                 compatibility,
                 local_development_rate=local_development_rate,
+                bath_contact=contact,
             )
             continue
         if state.coupler is None and state.dye is None:
@@ -381,6 +423,8 @@ def _develop(
     color: bool,
     local_development_rate: object | None = None,
 ) -> float:
+    if step.formation_response is not None:
+        return _develop_with_history(state, step, compatibility, color, local_development_rate)
     # OP-DEV-01 / OP-CDEV-01: consume only the currently developable share of
     # the single halide pool; color coupling is additionally capacity-bounded.
     # The process state is mutable and has just passed validation. Apply the
@@ -452,14 +496,149 @@ def _develop(
     return reacted
 
 
+def _try_development_conversion(state, step, compatibility, local_development_rate):
+    from film_foundry.core import development_compute
+    if not development_compute.eligible(state.halide):
+        return None
+    # Only built-in frozen fields may be resolved before a fallible device
+    # call. Stateful continuation and unknown callbacks keep the CPU order.
+    from film_foundry.core.spatial_fields import (
+        StepDevelopmentRateField, GlobalRateMultiplierField, GlobalLayerRateMultiplierField,
+    )
+    from film_foundry.core.process_operations import BathContactRate
+    def frozen(field):
+        if field is None or type(field) is np.ndarray:
+            return True
+        if type(field) is StepDevelopmentRateField:
+            fields = (field.common_rate, field.first_step_rate, *(entry[2] for entry in field.step_rate_fields))
+            return all(part is None or type(part) in (
+                np.ndarray, GlobalRateMultiplierField, GlobalLayerRateMultiplierField) for part in fields)
+        if type(field) is BathContactRate:
+            return (field.surface_session is None and field.inhibitor_session is None and frozen(field.base))
+        return False
+    if not frozen(local_development_rate):
+        return None
+    local = _local_rate_for_step(local_development_rate, step)
+    if local is not None:
+        if local.shape not in {state.halide.shape, state.halide.shape[:-1], (*state.halide.shape[:-1], 1)}:
+            raise ValueError('local_development_rate must match the image plane or material-pool shape')
+        low, high = float(np.min(local)), float(np.max(local))
+        if not np.isfinite(low) or not np.isfinite(high) or low < 0.:
+            raise ValueError('local_development_rate contains invalid values')
+    resolver = getattr(local_development_rate, 'fog_rate_for_step', None)
+    fog_local = resolver(step.label, step.action.value) if callable(resolver) else local
+    gamma = float(np.clip(step.developability_gamma, .25, 3.))
+    exponent = gamma-1. if abs(gamma-1.) > 1e-6 else 0.
+    compensation = .65*float(np.clip(step.highlight_compensation, 0., .95))
+    rates = _rate_field(state, step, compatibility.silver_development, compatibility)
+    fog_rates = _rate_field(state, replace(step, strength=1.), compatibility.silver_development, compatibility)
+    return development_compute.try_conversion(
+        state.halide, state.developability, rates, fog_rates, local, fog_local,
+        exponent, compensation, -step.formation_response.fog_dose*state.chemical_fog_susceptibility)
+
+
+def _develop_with_history(state, step, compatibility, color, local_development_rate):
+    """Convert activated and chemically fogged shares into the same products."""
+    ensure_history(state)
+    response = step.formation_response
+    np.clip(state.developability, 0., 1., out=state.developability)
+    reference = reference_execution_enabled()
+    accelerated = _try_development_conversion(state, step, compatibility, local_development_rate)
+    if accelerated is None:
+        reactive = state.halide * state.developability
+        if reference:
+            inactive = np.maximum(state.halide - reactive, 0.)
+        else:
+            inactive = state.halide - reactive
+            np.maximum(inactive, 0., out=inactive)
+        rate = _development_rate_field(state, step, compatibility, local_development_rate, developability_is_bounded=True)
+        if reference:
+            signal = np.minimum(reactive * rate, reactive)
+        else:
+            signal = reactive * rate
+            np.minimum(signal, reactive, out=signal)
+        # Fog bypasses image gamma/compensation, but shares contact and stock.
+        fog_rate = _rate_field(state, replace(step, strength=1.), compatibility.silver_development, compatibility)
+        fog_resolver = getattr(local_development_rate, 'fog_rate_for_step', None)
+        local = (fog_resolver(step.label, step.action.value) if callable(fog_resolver)
+                 else _local_rate_for_step(local_development_rate, step))
+        if local is not None:
+            if local.shape == state.halide.shape[:-1]: local = local[..., None]
+            fog_rate = fog_rate * np.maximum(local, 0.)
+        fraction = -np.expm1(-response.fog_dose * state.chemical_fog_susceptibility * fog_rate)
+        if reference:
+            fog = inactive * np.clip(fraction, 0., 1.)
+        else:
+            # The inactive share and fraction are private and have no later
+            # consumer. Keep the original clip/multiply order in their buffers.
+            np.clip(fraction, 0., 1., out=fraction)
+            inactive *= fraction
+            fog = inactive
+        converted = signal + fog
+        reactive -= signal
+    else:
+        converted, reactive, fog = accelerated
+    state.halide -= converted
+    np.maximum(state.halide, 0., out=state.halide)
+    state.developability.fill(0.)
+    np.divide(reactive, state.halide, out=state.developability, where=state.halide > 1e-8)
+    np.clip(state.developability, 0., 1., out=state.developability)
+    state.metallic_silver += converted
+    add_product(state, 'silver', converted, fog, response)
+    reacted = float(np.sum(converted, dtype=np.float64))
+    if color and (state.coupler is not None or state.dye is not None):
+        if state.coupler is None or state.dye is None:
+            raise ValueError('color development requires paired coupler and dye pools')
+        layers = state.halide.shape[-1]
+        ratio = np.asarray(step.dye_coupling_ratio or (1.,)*layers, np.float32) * max(compatibility.dye_coupling, 0.)
+        if reference:
+            formed_dye = np.minimum(state.coupler, converted * ratio)
+            fog_share = np.divide(fog, converted, out=np.zeros_like(fog), where=converted > 0.)
+            formed_fog = formed_dye * fog_share
+        else:
+            # Activation and silver inventory/history have already consumed
+            # reactive/converted. Reuse those private fields for dye demand
+            # and its fog subset; no material-state array changes ownership.
+            reactive.fill(0.)
+            np.divide(fog, converted, out=reactive, where=converted > 0.)
+            converted *= ratio
+            np.minimum(state.coupler, converted, out=converted)
+            formed_dye = converted
+            np.multiply(formed_dye, reactive, out=reactive)
+            formed_fog = reactive
+        add_product(state, 'dye', formed_dye, formed_fog, response)
+        state.coupler -= formed_dye; state.dye += formed_dye
+    return reacted
+
+
 def _apply_step(
     state: FilmProcessState,
     step: FilmProcessStep,
     compatibility: CompatibilityProfile,
     local_development_rate: object | None = None,
+    bath_contact: np.ndarray | None = None,
 ) -> float:
     action = step.action
     reference_topology = reference_execution_enabled()
+    if action == FilmProcessAction.AGE_LATENT:
+        from film_foundry.core.film_process.time_history import age_latent
+        return age_latent(state,step.time_history,compatibility.time_response)
+    if action == FilmProcessAction.LIGHT_RESIDUAL_HALIDE:
+        from film_foundry.core.film_process.time_history import light_residual_halide
+        return light_residual_halide(state,step.time_history,compatibility.time_response)
+    if action == FilmProcessAction.SHEAR_EMULSION:
+        from film_foundry.core.emulsion_shear import transport_state
+        resolver=getattr(local_development_rate,'shear_for_step',None)
+        if not callable(resolver):raise ValueError('Emulsion shear requires an ordered timeline provider')
+        return transport_state(state,resolver(step))
+    if action == FilmProcessAction.REMOVE_EMULSION:
+        resolver=getattr(local_development_rate,'coverage_for_step',None)
+        if not callable(resolver):raise ValueError('Emulsion removal requires an ordered timeline provider')
+        from film_foundry.core.film_process.emulsion import remove_emulsion
+        target=resolver(step)
+        if getattr(local_development_rate,'has_shear',False):
+            target=target*(1. if state.emulsion_coverage is None else state.emulsion_coverage)
+        return remove_emulsion(state,target)
     if action == FilmProcessAction.DEVELOP_SILVER:
         return _develop(
             state,
@@ -498,6 +677,8 @@ def _apply_step(
     if action == FilmProcessAction.BLEACH_SILVER:
         # OP-BLEACH-01: preserve inventory in a distinct fixable-silver pool.
         rate = _rate_field(state, step, compatibility.silver_bleach, compatibility)
+        if bath_contact is not None:rate=rate*bath_contact[...,None]
+        retain_product(state, 'silver', 1.-rate)
         if (
             not reference_topology
             and state.bleached_halide is None
@@ -540,6 +721,7 @@ def _apply_step(
         removed_dye = 0.0
         if state.dye is not None:
             damage = float(np.clip(compatibility.mask_bleach_dye_damage, 0.0, 1.0))
+            retain_product(state, 'dye', 1.-rate*damage)
             dye_loss = state.dye * (rate * damage)
             state.dye -= dye_loss
             removed_dye = float(np.sum(dye_loss, dtype=np.float64))
@@ -547,6 +729,7 @@ def _apply_step(
     if action == FilmProcessAction.FIX_HALIDE:
         # OP-FIX-01: fixing cannot remove unbleached metallic silver or dye.
         rate = _rate_field(state, step, compatibility.halide_fixing, compatibility)
+        if bath_contact is not None:rate=rate*bath_contact[...,None]
         if not reference_topology and bool(np.all(rate == 1.0)):
             if state.bleached_halide is None:
                 reacted = float(np.sum(state.halide, dtype=np.float64))
@@ -574,6 +757,8 @@ def _apply_step(
     if action == FilmProcessAction.REMOVE_SILVER:
         # OP-RMS-01: reduced direct removal used by the B&W reversal program.
         rate = _rate_field(state, step, compatibility.silver_removal, compatibility)
+        if bath_contact is not None:rate=rate*bath_contact[...,None]
+        retain_product(state, 'silver', 1.-rate)
         if not reference_topology and bool(np.all(rate == 1.0)):
             reacted = float(np.sum(state.metallic_silver, dtype=np.float64))
             state.metallic_silver.fill(0.0)
@@ -589,9 +774,23 @@ def _apply_step(
             destruction = max(0.0, 1.0 - float(compatibility.dye_stability))
         elif basis == "explicit":
             destruction = 1.0
+        elif basis == 'chemical':
+            from film_foundry.core.bath_kinetics import dye_attack_fraction
+            if step.chemical_contact is None:raise ValueError('Chemical dye attack requires contact conditions')
+            destruction=dye_attack_fraction(compatibility.dye_attack_l_mmol_s,*step.chemical_contact)
+            if step.chemical_placement is not None:
+                if bath_contact is None:raise ValueError('Local chemical contact requires a spatial bath provider')
+                destruction=destruction*np.asarray(bath_contact,dtype=np.float32)[...,None]
+            # External dye attack is independent of the original process's
+            # cross-process layer balance; it acts only on surviving dye.
+            retain_product(state, 'dye', 1.-destruction)
+            removed=state.dye*destruction
+            state.dye-=removed
+            return float(np.sum(removed,dtype=np.float64))
         else:
             raise ValueError(f"unsupported dye destruction basis: {basis}")
         rate = _rate_field(state, step, destruction, compatibility)
+        retain_product(state, 'dye', 1.-rate)
         removed = state.dye * rate
         state.dye -= removed
         return float(np.sum(removed, dtype=np.float64))
@@ -651,18 +850,26 @@ def _finalize(
             + float(mask_density[channel]) * float(state.masking_coupler_remaining)
             for channel in range(3)
         )
+    # A missing coating cannot react in subsequent baths. Keep that actual
+    # inventory in state; derive conditional optical sources only at the end.
+    optical_state=state
+    if state.emulsion_coverage is not None:
+        from film_foundry.core.film_process.emulsion import optical_sources
+        optical_state=optical_sources(state)
+        residual=optical_state.halide
+        bleached=optical_state.bleached_halide
     return FilmFinalMedium(
         material_key=material.key,
         metallic_silver=np.array(
-            state.metallic_silver,
+            optical_state.metallic_silver,
             dtype=np.float32,
             copy=not transfer_pool_ownership,
         ),
         dye=(
             None
-            if state.dye is None
+            if optical_state.dye is None
             else np.array(
-                state.dye,
+                optical_state.dye,
                 dtype=np.float32,
                 copy=not transfer_pool_ownership,
             )
@@ -678,6 +885,7 @@ def _finalize(
         masking_coupler_remaining=float(state.masking_coupler_remaining),
         auxiliary_density_rgb=material.auxiliary_density_rgb,
         auxiliary_remaining=float(state.auxiliary_remaining),
+        emulsion_coverage=None if state.emulsion_coverage is None else state.emulsion_coverage.copy(),
         image_polarity=str(program.output_polarity),
         view_mode=str(program.view_mode),
         compatible_interpreters=tuple(str(v) for v in interpreters),
@@ -708,6 +916,7 @@ def apply_process_program(
     transfer_final_pool_ownership: bool = False,
     local_development_rate: object | None = None,
     validate_each_step: bool = True,
+    process_run=None,
 ) -> FilmProcessResult:
     """Apply a process program.
 
@@ -734,7 +943,14 @@ def apply_process_program(
         consume_latent_state = False
         transfer_final_pool_ownership = False
     compatibility = compatibility or CompatibilityProfile()
-    state = latent_state if consume_latent_state else latent_state.copy()
+    if material.time_response is not None:
+        compatibility=replace(compatibility,time_response=material.time_response)
+    validator=getattr(local_development_rate,'validate_program',None)
+    if callable(validator):validator(program)
+    binding = process_run.bind(material, program, compatibility, latent_state.halide.shape) if process_run is not None else None
+    resumed = process_run.resume if process_run is not None else None
+    state = resumed.state.copy() if resumed is not None else latent_state if consume_latent_state else latent_state.copy()
+    state.chemical_fog_susceptibility = material.chemical_fog_susceptibility
     state.validate()
     if (state.coupler is None) != (state.dye is None):
         raise ValueError("coupler and dye pools must be paired")
@@ -742,13 +958,42 @@ def apply_process_program(
             and any(value > 0.0 for value in material.coupler_capacity)
             and (state.coupler is None or state.dye is None)):
         raise ValueError("coupler-bearing material requires coupler and dye pools")
-    reports: list[FilmProcessStepReport] = []
-    for index, step in enumerate(program.steps):
+    reports: list[FilmProcessStepReport] = list(resumed.trace) if resumed is not None else []
+    first_step = resumed.next_step if resumed is not None else 0
+    surface=getattr(local_development_rate,'surface_session',None) if process_run is not None and process_run.include_surface else None
+    if process_run is not None and process_run.include_surface and surface is None:
+        raise ValueError('Surface continuation requires a film surface provider')
+    if surface is not None:
+        if resumed is not None and resumed.surface is None:raise ValueError('Missing surface checkpoint')
+        surface.bind(program,None if resumed is None else resumed.surface,first_step)
+    inhibitor=getattr(local_development_rate,'inhibitor_session',None) if process_run is not None and process_run.include_inhibitor else None
+    if process_run is not None and process_run.include_inhibitor and inhibitor is None:
+        raise ValueError('Inhibitor continuation requires a film contact provider')
+    if inhibitor is not None:
+        if resumed is not None and resumed.inhibitor is None:raise ValueError('Missing inhibitor checkpoint')
+        inhibitor.bind(program,None if resumed is None else resumed.inhibitor,first_step)
+    if process_run is not None:
+        process_run.at_boundary(state, first_step, reports, binding, validated=True,surface=surface,inhibitor=inhibitor)
+    for index in range(first_step, len(program.steps)):
+        step = program.steps[index]
+        if surface is not None:surface.before_step(index)
+        if inhibitor is not None:inhibitor.before_step(index)
+        bath_index=index if step.bath_index is None else step.bath_index
+        fixing_resolver=getattr(local_development_rate,'fixing_before_step',None)
+        premature_fix=fixing_resolver(bath_index) if callable(fixing_resolver) and step.bath_entry else None
+        if premature_fix is not None:
+            incident_step=FilmProcessStep(FilmProcessAction.FIX_HALIDE,strength=1.,label=f'fixer_contact_before_bath_{bath_index+1}')
+            removed=_apply_step(state,incident_step,compatibility,bath_contact=premature_fix)
+            reports.append(FilmProcessStepReport(label=incident_step.label,action=incident_step.action.value,
+                reacted_amount=float(removed),strength=1.,developability_gamma=1.,highlight_compensation=0.))
+        contact_resolver=getattr(local_development_rate,'contact_for_step',None)
+        contact=contact_resolver(index,step) if callable(contact_resolver) else None
         reacted = _apply_step(
             state,
             step,
             compatibility,
             local_development_rate=local_development_rate,
+            bath_contact=contact,
         )
         if validate_each_step:
             state.validate()
@@ -767,8 +1012,14 @@ def apply_process_program(
                 ),
             )
         )
+        if process_run is not None:
+            if surface is not None:surface.after_step(index)
+            if inhibitor is not None:inhibitor.after_step(index)
+            process_run.at_boundary(state, index + 1, reports, binding, validated=validate_each_step,surface=surface,inhibitor=inhibitor)
     if not validate_each_step:
         state.validate()
+    capture=getattr(local_development_rate,'capture_coverage',None)
+    if callable(capture):capture(state.emulsion_coverage)
     return FilmProcessResult(
         final_medium=_finalize(
             material,

@@ -51,5 +51,5 @@ class AboutDialog(QtWidgets.QDialog):
 
 def show_about(parent):
     dialog=AboutDialog(parent)
-    dialog.exec()
-    dialog.deleteLater()
+    from film_foundry.ui.inline_editor import present_inline_editor
+    present_inline_editor(parent,dialog)

@@ -181,6 +181,7 @@ def test_obstruction_switches_preserve_imported_values_and_preview_formal_identi
         toggle.click();assert panel._config().chemistry.exposure_occlusion_dust==0
         toggle.click();assert panel._config().chemistry.exposure_occlusion_dust==1
         preview=panel._fast_preview_config();panel._start_process()
+        panel.film_workspace._inline_editor_host.frames[-1][1].apply()
         formal=requests[-1]["args"][1]
         assert preview.chemistry.incident_identity_seed==formal.chemistry.incident_identity_seed
         assert formal.seed_strategy==panel._config().seed_strategy

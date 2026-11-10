@@ -47,8 +47,19 @@ def preview_medium(medium, long_edge):
             ], axis=-1)
         values["spectral_medium"] = replace(
             spectral, component_amounts=components,
+            emulsion_coverage=(None if spectral.emulsion_coverage is None else resize_to_long_edge(spectral.emulsion_coverage,long_edge)),
+            covered_density_rgb=(None if spectral.covered_density_rgb is None else resize_to_long_edge(spectral.covered_density_rgb,long_edge)),
             post_process_density_rgb=(None if spectral.post_process_density_rgb is None else
                                      resize_to_long_edge(spectral.post_process_density_rgb, long_edge)),
         )
     values["metadata"] = copy.deepcopy(medium.metadata)
+    from film_foundry.core.formed_film_border import image_gate_rows
+    from film_foundry.contracts.data_kernel import FORMED_FILM_REBATE_KEY
+    gate=image_gate_rows(medium)
+    resized=values.get('optical_density_rgb',values.get('density_cmy'))
+    if gate is not None and resized is not None and resized.shape[0]>=3 and resized.shape[:2]!=medium.frame_shape[:2]:
+        metadata=values['metadata']
+        record=metadata.get(FORMED_FILM_REBATE_KEY,metadata.get('developed_medium',{}).get(FORMED_FILM_REBATE_KEY))
+        height,width=resized.shape[:2];rows=max(1,min((height-1)//2,round(gate[0]*height/medium.frame_shape[0])))
+        record.update(rebate_rows=rows,image_height=height-2*rows,image_rect=[0,rows,width,height-2*rows])
     return replace(medium, **values)

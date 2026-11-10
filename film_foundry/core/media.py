@@ -40,7 +40,12 @@ def config_development_process(config: DarkroomConfig) -> str:
     """
     if getattr(config.chemistry, "process_steps", None) is not None:
         from film_foundry.core.film_process.recipe import program_from_develop_recipe
-        return "reversal" if program_from_develop_recipe(config.chemistry).output_polarity == "positive" else "negative"
+        from film_foundry.core.implementation_plan import resolve_implementation_plan
+        plan=resolve_implementation_plan(config)
+        if plan.basic_formation_only:
+            from film_foundry.core.basic_formation import basic_formation_config
+            config,_=basic_formation_config(config)
+        return "reversal" if program_from_develop_recipe(config.chemistry,coupled_intervals=plan.coupled_intervals).output_polarity == "positive" else "negative"
     program_key = normalized_process(getattr(config.chemistry, "program_key", "auto"))
     if program_key in {"bw_reversal", "color_reversal"}:
         return "reversal"
@@ -100,7 +105,8 @@ def developed_medium_contract(config: DarkroomConfig) -> dict[str, object]:
     is_mono = is_monochrome_process(config)
     material_is_mono = is_monochrome_material(config)
     native_process = config_medium_process(config)
-    clear_base_material = material_is_mono or native_process in {"slide", "reversal", "positive"}
+    chromogenic_mono = color_process == 'chromogenic_monochrome'
+    clear_base_material = material_is_mono or chromogenic_mono or native_process in {"slide", "reversal", "positive"}
     experimental_clear_mask = (
         not material_is_mono
         and float(getattr(config.chemistry, "mask_bleach_completion", 0.0)) >= 0.98
@@ -116,7 +122,7 @@ def developed_medium_contract(config: DarkroomConfig) -> dict[str, object]:
             "color_system": (
                 "silver_bw"
                 if material_is_mono
-                else ("silver_on_color_material" if is_mono else "color_negative_dye")
+                else ("silver_on_color_material" if is_mono else "monochrome_dye" if chromogenic_mono else "color_negative_dye")
             ),
             "compatible_interpreters": NEGATIVE_TRANSPARENCY_INTERPRETERS,
         }
@@ -131,7 +137,7 @@ def developed_medium_contract(config: DarkroomConfig) -> dict[str, object]:
             "color_system": (
                 "silver_bw"
                 if material_is_mono
-                else ("silver_on_color_material" if is_mono else "positive_dye")
+                else ("silver_on_color_material" if is_mono else "monochrome_dye" if chromogenic_mono else "positive_dye")
             ),
             "compatible_interpreters": POSITIVE_TRANSPARENCY_INTERPRETERS,
         }

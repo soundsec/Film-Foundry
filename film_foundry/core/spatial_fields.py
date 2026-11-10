@@ -5,6 +5,10 @@ field acts, how its global work grid maps to the frame, and whether it may own
 persistent state.  They do not make every scalar image interchangeable: stage
 and quantity remain explicit so exposure, development-rate, and density fields
 cannot silently cross pipeline boundaries.
+
+``persistent_state`` denotes evolving material state owned by an effect.
+Immutable derived inputs may separately be cached in an execution checkpoint;
+that cache does not promote rate multipliers to chemical inventories.
 """
 
 from __future__ import annotations
@@ -169,6 +173,21 @@ class GlobalRateMultiplierField:
         )
         one_minus_wx = 1.0 - wx
         output = np.empty((stop - start, full_w), dtype=np.float32)
+        from .execution_topology import reference_execution_enabled
+        if not reference_execution_enabled():
+            # Reconstruct each source row once per bounded batch, then apply
+            # the original vertical weights. No quantized remap coefficients
+            # or changed half-pixel coordinates; all arithmetic stays float32.
+            for first in range(0, stop - start, 64):
+                last = min(first + 64, stop - start)
+                lower, upper = y0[first:last], y1[first:last]
+                source_rows, inverse = np.unique(np.concatenate((lower, upper)), return_inverse=True)
+                horizontal = self.work_field[source_rows[:, None], x0] * one_minus_wx
+                horizontal += self.work_field[source_rows[:, None], x1] * wx
+                weights = wy[first:last, None]
+                np.multiply(horizontal[inverse[:last-first]], 1.0 - weights, out=output[first:last])
+                output[first:last] += horizontal[inverse[last-first:]] * weights
+            return output
         top = np.empty(full_w, dtype=np.float32)
         bottom = np.empty(full_w, dtype=np.float32)
         for local_row, (lower_y, upper_y, row_weight) in enumerate(

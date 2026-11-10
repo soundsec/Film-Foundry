@@ -22,9 +22,9 @@
     "digital_artifact_suppression": 0.16,
     "halation_gradient_suppression": 0.18,
     "hd_gamma": [
-      0.67,
-      0.66,
-      0.64
+      0.737,
+      0.726,
+      0.704
     ],
     "density_min": [
       0.07,
@@ -50,19 +50,19 @@
     "hd_shoulder_width": 0.22,
     "layer_sensitivity_matrix": [
       [
-        0.94,
-        0.045,
-        0.015
+        0.961,
+        0.02925,
+        0.00975
       ],
       [
-        0.025,
-        0.95,
-        0.025
+        0.01625,
+        0.9675,
+        0.01625
       ],
       [
-        0.015,
-        0.045,
-        0.94
+        0.00975,
+        0.02925,
+        0.961
       ]
     ],
     "dye_absorption_matrix": [
@@ -88,11 +88,11 @@
       0.76
     ],
     "granularity_sigma": [
-      0.009,
-      0.009,
-      0.01
+      0.0054,
+      0.0054,
+      0.006
     ],
-    "grain_density_correlation_radius": 0.0009,
+    "grain_density_correlation_radius": 0.00072,
     "halation_gaussian_amplitude": 0.7,
     "halation_exponential_amplitude": 0.3,
     "halation_exponential_radius": 0.01,
@@ -111,6 +111,16 @@
       0.08,
       0.07,
       0.06
+    ],
+    "grain_scales": [
+      0.0006,
+      0.0015,
+      0.004
+    ],
+    "grain_scale_weights": [
+      0.78,
+      0.18,
+      0.04
     ]
   }
 }

@@ -17,7 +17,8 @@ from film_foundry.core.scanner import (
     PreparedScannerToneCurve,
     apply_scan_normalization_range,
 )
-from film_foundry.model.config import ScannerConfig
+from film_foundry.model.config import ScannerConfig, normalize_color_mixer
+from film_foundry.core.color_mixer import apply_color_mixer
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,7 @@ class ScanOutputPlan:
     strength: float
     mode: str
     tone: PreparedScannerToneCurve
+    mixer: tuple | None = None
 
     @classmethod
     def prepare(
@@ -51,6 +53,7 @@ class ScanOutputPlan:
             float(scanner.scan_normalize_strength) if normalize else 0.0,
             str(scanner.scan_normalize_mode),
             PreparedScannerToneCurve.prepare(scanner.tone_curve),
+            normalize_color_mixer(scanner.color_mixer),
         )
 
     def apply_cpu(self, image: np.ndarray, *, consume_input: bool = False) -> np.ndarray:
@@ -71,4 +74,4 @@ class ScanOutputPlan:
             # Normalization either consumed the private block or created one.
             consume_input = True
         encoded = linear_to_srgb(image, consume_input=consume_input)
-        return self.tone.apply(encoded, consume_input=True)
+        return apply_color_mixer(self.tone.apply(encoded, consume_input=True), self.mixer)

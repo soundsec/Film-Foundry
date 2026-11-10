@@ -252,8 +252,7 @@ def test_wrapped_options_and_english_narrow_window_remain_usable():
             panel.navigation.setCurrentRow(page);QtWidgets.QApplication.processEvents()
             assert panel.stack.widget(page).horizontalScrollBar().maximum() == 0
         panel.navigation.setCurrentRow(panel.page_index["scan"]);QtWidgets.QApplication.processEvents()
-        description=panel.scan_pipeline_label.qt
-        assert description.height() >= description.heightForWidth(description.width())
+        assert panel.scan_interpretation_group.qt.toolTip() == panel.scan_pipeline_description.get()
         row=panel.fields["fast_mode"]
         panel.navigation.setCurrentRow(panel.page_index["compute"]);QtWidgets.QApplication.processEvents()
         caption=row.qt.findChild(QtWidgets.QLabel);before=panel.fast_mode.get()
@@ -334,16 +333,15 @@ def test_task_sources_and_destination_follow_mode_without_replacing_hidden_paths
         for mode in ("full","expose","scan","develop_latent","develop"):
             panel.pipeline_mode.set(mode);panel._update_mode_visibility()
             frozen=mode in ("scan","develop_latent")
-            assert panel.image_source_row[0].qt.isHidden() is frozen
-            assert panel.medium_source_row[0].qt.isHidden() is not frozen
+            assert not hasattr(panel,'image_source_row') and not hasattr(panel,'medium_source_row')
+            assert Path(medium if frozen else image).name in panel.source_summary.qt.text()
             assert (panel.input_path.get(),panel.negative_path.get(),panel.output_path.get())==(image,medium,target)
-            assert panel.source_relative_toggle.qt.isHidden() is (mode!="scan")
+            assert not hasattr(panel,'source_relative_toggle')
             assert panel.develop_identity_group.qt.isEnabled() is (mode in ("full","develop","develop_latent"))
         panel.pipeline_mode.set("scan");panel.scan_output_near_source.set(True);panel._update_mode_visibility()
-        assert not panel.output_location_row[0].qt.isEnabled()
-        assert str(default_scan_output_root(Path(medium))) in panel.destination_note.qt.text()
+        assert not hasattr(panel,'output_location_row')
         panel.scan_output_near_source.set(False)
-        assert panel.output_location_row[0].qt.isEnabled() and panel.output_path.get()==target
+        assert panel.output_path.get()==target
         panel._set_process_button_mode("cancel")
         assert panel.process_button.qt.text()==tr("button.cancel")
         panel._set_process_button_mode("process")
@@ -395,7 +393,10 @@ def test_default_launcher_and_real_workbench_preview_process(tmp_path,monkeypatc
             assert predicate(),new.status.get()
         wait(lambda:not new._preview_running)
         assert new.result_view.source is not None
-        new.process_button.qt.click();wait(lambda:not new._processing)
+        new.process_button.qt.click()
+        destination=new.film_workspace._inline_editor_host.frames[-1][1]
+        destination.path.setText(str(tmp_path/'results'));destination.apply()
+        wait(lambda:not new._processing)
         manifests=list((tmp_path/"results").rglob("*run*.json"))
         assert manifests,new.status.get()
         manifest=json.loads(manifests[0].read_text(encoding="utf-8"))

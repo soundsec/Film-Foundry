@@ -14,7 +14,8 @@
     "developer_exhaustion": 0.0,
     "fixer_exhaustion": 0.0,
     "compensation": 0.15,
-    "silver_retention": 0.0
+    "silver_retention": 0.0,
+    "formation_history_model": "bath_products_local_v2"
   },
   "mode": "bw_negative",
   "look": {
@@ -22,6 +23,6 @@
     "negative_contrast": 0.98,
     "halation_multiplier": 0.45,
     "grain_multiplier": 0.85,
-    "grain_size_multiplier": 0.90
+    "grain_size_multiplier": 0.9
   }
 }

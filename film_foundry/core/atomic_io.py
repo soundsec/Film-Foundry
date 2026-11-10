@@ -67,9 +67,11 @@ def atomic_output_path(path: str | Path) -> Iterator[Path]:
 
 
 @contextmanager
-def atomic_output_directory(path: str | Path) -> Iterator[Path]:
-    """Build a directory beside its target and switch it in only when complete."""
+def atomic_output_directory(path: str | Path, *, replace_existing: bool = True) -> Iterator[Path]:
+    """Build beside the target, then publish; new result directories never replace."""
     target = Path(path)
+    if not replace_existing and (target.exists() or target.is_symlink()):
+        raise FileExistsError(f'Result directory already exists: {target}')
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.with_name(f".ff-stage-{uuid4().hex[:10]}")
     backup = target.with_name(f".ff-backup-{uuid4().hex[:10]}")
@@ -77,11 +79,13 @@ def atomic_output_directory(path: str | Path) -> Iterator[Path]:
     moved_existing = False
     try:
         yield staging
-        if target.exists():
+        if not replace_existing and (target.exists() or target.is_symlink()):
+            raise FileExistsError(f'Result directory already exists: {target}')
+        if replace_existing and target.exists():
             os.replace(target, backup)
             moved_existing = True
         try:
-            os.replace(staging, target)
+            (os.replace if replace_existing else os.rename)(staging, target)
         except Exception:
             if moved_existing and backup.exists() and not target.exists():
                 os.replace(backup, target)
@@ -210,11 +214,40 @@ def atomic_write_json(path: str | Path, payload: Any) -> Path:
     return target
 
 
+def _write_npz_array(member, value):
+    """Standard NPY header plus borrowed contiguous bytes, without tobytes copies."""
+    from .execution_topology import reference_execution_enabled
+    if reference_execution_enabled() or value.dtype.hasobject or not value.flags.c_contiguous:
+        np.lib.format.write_array(member, value, allow_pickle=True)
+        return
+    try:
+        data = memoryview(value).cast('B') if value.nbytes else None
+    except (TypeError, ValueError):
+        # Some NumPy dtypes (e.g. datetime64) do not export a Python buffer.
+        np.lib.format.write_array(member, value, allow_pickle=True)
+        return
+    import io
+    header = io.BytesIO()
+    try:
+        np.lib.format.write_array_header_1_0(header, np.lib.format.header_data_from_array_1_0(value))
+    except (ValueError, UnicodeEncodeError):
+        # Large/Unicode structured headers retain NumPy's format selection.
+        np.lib.format.write_array(member, value, allow_pickle=True)
+        return
+    member.write(header.getvalue())
+    if value.nbytes:
+        for start in range(0, len(data), 16*1024*1024):
+            member.write(data[start:start+16*1024*1024])
+
+
 def atomic_savez(
     path: str | Path,
     *,
     compressed: bool = True,
     compression_level: int | None = None,
+    parallel_compression: bool = False,
+    compression_workers: int = 2,
+    durable: bool = False,
     **arrays: np.ndarray,
 ) -> Path:
     """Atomically write standard NPZ; an explicit level changes only ZIP transport."""
@@ -230,13 +263,25 @@ def atomic_savez(
             writer = np.savez_compressed if compressed else np.savez
             writer(temporary, **arrays)
         else:
-            with zipfile.ZipFile(
-                temporary, "w", compression=zipfile.ZIP_DEFLATED,
-                compresslevel=compression_level, allowZip64=True,
-            ) as archive:
-                for key, value in arrays.items():
-                    with archive.open(f"{key}.npy", "w", force_zip64=True) as member:
-                        np.lib.format.write_array(member, np.asanyarray(value), allow_pickle=True)
+            from .parallel_deflate import compression_pool, attach_compressor, MIN_ARRAY_BYTES, CompressionFailure
+            def write(parallel):
+                with compression_pool(parallel, compression_workers) as pool, zipfile.ZipFile(
+                    temporary, "w", compression=zipfile.ZIP_DEFLATED,
+                    compresslevel=compression_level, allowZip64=True,
+                ) as archive:
+                    for key, value in arrays.items():
+                        value = np.asanyarray(value)
+                        with archive.open(f"{key}.npy", "w", force_zip64=True) as member:
+                            if value.nbytes >= MIN_ARRAY_BYTES and not value.dtype.hasobject:
+                                attach_compressor(member, pool, compression_level, compression_workers)
+                            _write_npz_array(member, value)
+            try:
+                write(parallel_compression)
+            except CompressionFailure:
+                # Truncate the temporary only; a previous target remains intact.
+                write(False)
+        if durable:
+            with temporary.open('r+b') as handle:os.fsync(handle.fileno())
     return target
 
 

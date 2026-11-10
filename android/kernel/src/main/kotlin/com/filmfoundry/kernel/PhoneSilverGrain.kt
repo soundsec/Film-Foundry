@@ -4,7 +4,8 @@ import com.filmfoundry.interchange.PhoneMaterialPhenomena
 import kotlin.math.*
 
 /** Neutral retained-silver redistribution. Chemical pools and dye amounts are untouched. */
-internal class PhoneSilverGrain(recipe: Map<String,Any?>,metadata: Map<String,Any?>,width: Int,height: Int) {
+internal class PhoneSilverGrain(recipe: Map<String,Any?>,metadata: Map<String,Any?>,width: Int,height: Int,
+    val lightweight: Boolean=false) {
     private val film=recipe["film"] as? Map<*,*> ?: emptyMap<Any,Any>()
     private fun n(key: String,default: Float,range: ClosedFloatingPointRange<Float>): Float {
         val value=film[key] ?: return default
@@ -41,10 +42,19 @@ internal class PhoneSilverGrain(recipe: Map<String,Any?>,metadata: Map<String,An
     fun raw(silver: Float,x: Int,y: Int): Float {
         if(silver<=1e-8f || !enabled) return silver
         val fine=field(x,y,scale,1709)
+        // Symmetric bounded gain: unit expectation, not exact finite-frame normalization.
+        // This changes only the optical texture, never the consumed chemical inventory.
+        if(lightweight) return silver*(1f+(fine*amount/sqrt(silver+.05f)).coerceIn(-.7f,.7f))
         val noise=if(clump>0f) fine*sqrt(1-clump*clump)+field(x,y,scale*3.2f,3911)*clump else fine
         return max(silver*.1f,silver+noise*amount*silver/sqrt(silver+.05f))
     }
     fun normalized(silver: Float,x: Int,y: Int,normalization: Normalization)=(raw(silver,x,y)*normalization.gain).toFloat()
+    fun lightweightNormalization()=Normalization(1.0,0.0,0.0,
+        mapOf("model" to "phone_bounded_silver_cloud_v1","stage" to "retained_metallic_silver_optical_amount",
+            "scope" to "pixel","application" to "where_retained_silver_exists",
+            "strength" to strength,"effective_strength" to amount,"radius_px" to scale,
+            "coordinates" to "absolute_material_pixels_v1","normalization" to "expected_unit_gain_v1",
+            "whole_frame_conservation" to false,"chemical_pool_consumptions" to 0,"dye_grain" to "separate"))
     fun normalization(original: Double,candidate: Double)=Normalization(if(candidate>0) original/candidate else 1.0,original,candidate,
         mapOf("model" to MODEL,"stage" to "retained_metallic_silver_optical_amount","applied" to (original>1e-8),
             "reason" to if(original>1e-8) "retained_silver" else "no_retained_silver",

@@ -55,6 +55,7 @@ user_presets/*
 # Generated outputs and electronic negatives
 outputs/*
 !outputs/.gitkeep
+*.ffworkspace/
 
 # Packaged release artifacts
 *.zip

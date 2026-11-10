@@ -54,9 +54,9 @@
       1.0
     ],
     "granularity_sigma": [
-      0.035,
-      0.035,
-      0.035
+      0.0,
+      0.0,
+      0.0
     ],
     "grain_density_correlation_radius": 0.0008,
     "positive_density_contrast": 1.55,
@@ -70,7 +70,8 @@
     "positive_highlight_shoulder_width": 0.24,
     "contrast": 1.35,
     "grain_strength": 0.045,
-    "silver_grain_strength": 0.06,
-    "silver_grain_clump_mix": 0.6
+    "silver_grain_strength": 0.055,
+    "silver_grain_clump_mix": 0.28,
+    "silver_grain_radius": 0.0009
   }
 }

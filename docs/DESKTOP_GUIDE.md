@@ -2,10 +2,13 @@
 
 从安装、第一次处理到材料／药浴／扫描预设、命令行与材料母带，都在本页。字段含义和形成原理集中在[技术参考](REFERENCE.md)，效果与具体配方见[效果展示](SHOWCASE.md)。
 
+本页主要操作已跟进 **2026-11-10 开发中源码**；旧 0.4.0 安装包界面不同。新增范围和当前限制见[源码快照](DEVELOPMENT_SNAPSHOT.md)，本次没有新 EXE／APK。
+
 ## 目录
 
 - [安装与启动](#start)
 - [工作台、任务、预览与保存配置](#workbench)
+- [选择性分享与预设管理](#preset-sharing)
 - [材料、冲洗与扫描的预设目录](#presets)
 - [预设分工与风格选择](#preset-details)
 - [扫描影调参考](#scan-tones)
@@ -17,7 +20,7 @@
 
 ## 安装与启动
 
-Python 3.10 或更新版本：
+当前开发源码建议 Python 3.11 或更新版本，使用根目录依赖安装新增 DNG／Ultra HDR 解码支持：
 
 ```bash
 pip install -r requirements.txt
@@ -42,7 +45,7 @@ python run_film_foundry_launcher.py
 
 ## 工作台与日常操作
 
-从“任务与输出”选择本次任务、来源和保存位置，再设置材料、冲洗与观察。参数与独立编辑器共用同一份任务配置；切换页面或专家细调不会清空参数。
+从图库添加图片或索引文件夹，选中一张或多张，再选择材料创建工作。双击图片进入只读浏览，可评分、收藏并查看关联材料；开始处理使用图库中的创建工作操作。完整工作区与配置编辑器在同一窗口中切换，小配置使用弹窗，切换保留草稿。
 
 ### 先确定要做什么
 
@@ -50,11 +53,11 @@ python run_film_foundry_launcher.py
 | --- | --- | --- |
 | 完整流程 / Full | 图片或图片文件夹 | 冲洗介质与扫描成片 |
 | 只冲洗 / Develop | 图片或图片文件夹 | 可重复观察、扫描的介质 |
-| 只扫描 / Scan | 冲洗介质或 scanner raw | 新的扫描成片 |
+| 只扫描 / Scan | 常见图像、冲洗介质或 scanner raw | 新的扫描成片 |
 | 只曝光 / Expose | 图片或图片文件夹 | 未冲洗潜影 |
 | 冲洗潜影 / Develop latent | 已保存潜影 | 冲洗介质 |
 
-任务页只显示当前任务使用的来源栏。切换任务后，另一类来源路径仍保留。只扫描默认按来源确定保存位置，界面会显示目标位置；取消这个选项即可指定输出目录。其他任务在所选输出位置建立本次运行文件夹。
+来源由图库或打开的工作确定，不需要在正式工作页重复填写路径。已有潜影或介质只显示适用的工序。点击执行后选择输出位置，默认在工作区的 `outputs/日期/` 下建立本次目录；取消选择不会启动处理。导出窗口同时显示处理质量、尺寸与基础配置。
 
 正式冲洗和预览都保留原潜影，可更换药浴反复冲洗、分别保存结果。扫描只观察已经形成的介质，调色不会修改冲洗结果。旧版已标记“消耗”的潜影仍不能重新冲洗，需要保留的未消耗原档。
 
@@ -64,13 +67,13 @@ python run_film_foundry_launcher.py
 - **冲洗**：选择程序，调整时间、温度、浓度、摇晃与事故强度；更细的药水组合与材料反应在独立工艺编辑器中配置。
 - **观察与调色**：选择扫描／解释预设，调整成片与影调、RGB曲线。双击曲线加点，拖动调整，右键或 Delete 删除内部点。
 - **计算设置**：正式处理的尺寸、降阶、质量与随机设置。缩放、降阶和质量可以独立组合。
-- **独立配置**：材料、药水和扫描完整编辑器，以及光谱配置。编辑后可显式应用到当前任务，或另存预设。
+- **材料与预设**：统一管理材料、药水、流程、扫描；完整编辑器可打开工作副本，显式应用或保存。片边与齿孔和画面打印分开配置，前者在片基边沿，后者参与画面内曝光。
 
-常用参数优先展开：胶卷页先选材料、画幅和曝光；冲洗页先选程序、时间、温度、浓度和摇晃；观察页先选扫描风格，再调曝光、对比度和饱和度。材料、药浴步骤与完整扫描设置也可从各自页面直接打开独立编辑器。
+常用参数优先展开：材料页先选材料、画幅和曝光；冲洗页先选程序、时间、温度、浓度和搅拌；扫描页先选风格，再调曝光、对比度和饱和度。材料、药浴步骤与完整扫描设置也可从各自页面直接打开。单侧适合小屏；双侧把材料／冲洗放左侧、扫描放右侧，按所选工序显示控制。
 
-点击带箭头的分组标题展开或收起事故、曲线、灯台解释和附属输出。折叠只收起控件，不会关闭选项或清空参数；标题会提示已选项目、当前筛选或启用的曲线。影调／RGB曲线不要求开启专家细调。专家细调仅控制额外专业参数组的显示。切换界面语言保留分组展开状态、分栏宽度和当前页滚动位置。
+点击带箭头的分组标题展开或收起事故、曲线、灯台解释和附属输出。折叠只收起控件，不会关闭选项或清空参数；部分标题提示当前选项或曲线。普通模式精简控制，专家入口可切到期望／原理模式，两者保留各自草稿。影调／RGB 曲线不要求开启专家控制。切换界面语言保留分组展开状态、分栏宽度和当前页滚动位置。
 
-三类预设旁的“浏览…”可搜索当前列表，完整显示名称；点击“使用所选预设”或双击条目才应用，取消不改变当前配方。材料浏览遵循当前负片／反转片与色彩、来源筛选；需要更多材料时展开“筛选材料列表”。
+预设旁的“浏览…”可搜索当前列表，完整显示名称；点击“使用所选预设”或双击条目才应用，取消不改变当前配方。材料筛选与选择位于同一组；预设管理页另有类型、来源和名称检索。
 
 日常目录为12种材料、10种扫描／解释预设；“显示更多风格变体”展开兼容和额外变体，当前已选项与自定义项会保留。详见[预设选择](DESKTOP_GUIDE.md#presets)。
 
@@ -82,11 +85,13 @@ python run_film_foundry_launcher.py
 
 预览中滚轮缩放、拖动平移、双击适合窗口；工具栏也有缩小、适合窗口、100%和放大。100%表示预览图的实际像素，同尺寸刷新保留当前放大状态。显示倍率不改变处理尺寸；检查最终细节应打开正式输出文件。
 
+对比方式可切换原图并列、拖动界线切分或仅结果；仅结果时按住鼠标显示原图，松开回到结果。旋转与对比不重算形成。紧凑直方图位于控制栏，曲线背景是当前成片分布，不是曲线之前单独测得的分布。
+
 “清理缓存”只释放预览计算缓存；“恢复批次”读取已保存运行清单，按原参数继续未完成项。任务运行中的主按钮用于取消，取消后不会启动后续帧。
 
 ### 任务进行中与收尾
 
-开始前必须选择当前任务的来源和所需输出位置；只扫描采用来源相对保存时，不需要填写手动目录。
+先在图库或已打开工作中确定来源；点击执行后确认输出位置和导出选项。
 
 任务运行中锁定任务类型、来源、保存位置和恢复入口；参数仍可调整，但用于下一次任务。底部显示当前处理阶段，进度条表示该阶段的进度，不能当作整批完成百分比。未提供比例的阶段显示活动进度条。
 
@@ -94,24 +99,40 @@ python run_film_foundry_launcher.py
 
 滚动参数页时，未聚焦的滑条和数字框不会响应滚轮；先点击数值框或滑条后仍可滚轮调整。收起的选择框不响应滚轮，避免滚动页面时意外替换整套预设；可以点击展开选择，或聚焦后用方向键切换。
 
-### 保存配置
+<a id="preset-sharing"></a>
+
+### 保存工作、配置与预设分享
 
 会话保存当前任务设置与路径；JSON／FFC2用于复用配置，其中FFC2不包含桌面的全部运行与导出设置。保存的预设仍可在独立编辑器中继续编辑。深色与米白（英文 Light）属于界面偏好，单独保存。
+
+保存工作入口只在工作区有内容时显示；替换或关闭未保存工作会按全局设置询问或执行保存策略。胶片便携工作、电子胶卷、分阶段冲洗档和七族材料工作区用途不同：保存来源和配方不等于保存已执行到一半的药浴状态。尚无定时自动保存或崩溃恢复。
+
+桌面源码新版的 **材料与预设 → 预设管理** 统一查看材料、药水、冲洗流程、扫描配置及曝光／片边预设；支持类型、来源和名称筛选、多选分享、编辑副本与移除用户预设。内置项只能编辑副本，不会覆盖原文件。管理页与完整编辑器位于同一窗口；药浴等小配置使用弹窗。
+
+- **分享当前配置**：勾选要分享的类别。默认材料、流程、扫描；曝光与片边、独立药水可另外勾选。不会导出整个预设目录，也不包含原图、工作路径、质量档位、降阶或输出设置。
+- **分享所选**：分享管理页中选定的预设，可以包含同类的多套配置。新版 FFC2 合集需要支持合集的客户端；“兼容旧版配方码”只允许每类一个配置，不包含独立药水库条目。旧 FFC2 配方码继续可读，并拆分为可勾选的类别。兼容编码不会使手机获得尚未实现的桌面工艺。
+- **接收**：逐项决定“保留到我的预设”和“应用到当前工作”，两者互不等同。默认只保留，不自动替换当前工作。每类一次只能应用一项；同名保存自动追加编号。已有潜影或底片冻结的阶段只能保留预设供以后使用。
+- **药水与流程**：流程内嵌所用药水、逐浴条件及操作，不依赖接收者的同名文件。取消保留某个独立药水条目不会从流程中删掉它。单独收到的药水在相应处理类型的“药液能力”中载入。分享自动工艺时会固定发送时的标准流程，接收者换用材料时不会悄悄变成另一套流程。
+- **外部图像依赖**：FFC2 是参数码，不携带自定义漏光遮罩图像。引用外部遮罩的流程会明确拒绝生成分享码；可改用内置遮罩，或另行分享 JSON 和遮罩文件。其他类别仍可单独分享。
+
+“导出配方”中的旧 JSON 出口仍是完整配置文件；FFC2 配方出口是当前配方的可分享参数集合。希望只分享一个预设时，请使用上面的选择式分享入口。
+
+冲洗页可直接打开“编辑步骤与药浴”，以标准流程为起点或切为自定义步骤。逐浴检查器优先显示时间、温度、浓度和搅拌；搅拌时长、疲劳与入浴条件集中在一个折叠中。药水页保留滑条与精确数值输入，并提供恢复载入值的按钮。
 
 启动器与工作台底部角落的“关于”显示桌面版本、作者与仓库链接。材料、工艺与扫描编辑器是 Film Foundry 的独立组件，共用当前任务的数据契约。
 
 ### English quick reference
 
-Start on **Task & output**: choose an operation, its source and destination. Source fields follow the operation without discarding the other saved path. **Scan** shows the source-relative destination and can use a manually chosen folder instead. Successful **Develop latent** marks the latent as processed; previews and scans remain read-only.
+Start in the gallery: select one or more images, choose a material and create work. Double-click opens a read-only browser. Existing latent and developed media expose only applicable stages. Choose the output location when executing. Reusable source archives remain separate from processing results; scanning never rewrites the medium.
 
-Preview inspection: scroll to zoom, drag to pan, double-click to fit, or use the Fit/100% buttons. The percentage describes preview pixels, not final output dimensions. Same-size updates retain the zoom position. Formal processing uses the computation settings. Material, chemistry and scanner editors remain separate and can apply their working copies to the task.
+Preview inspection: scroll to zoom, drag to pan, double-click to fit, or use the Fit/100% buttons. Compare side by side, use a draggable split, or hold the mouse to view the original. The percentage describes preview pixels, not final output dimensions. Formal processing uses the computation settings. Full material, chemistry and scanner editors share the main window; small dialogs edit transactional copies.
 
 The preview status distinguishes current, outdated and failed updates. While a task runs, its operation, paths and resume entry are locked; parameter edits apply to the next task. The progress bar describes the current stage. Closing offers to keep processing or cancel and exit after the task finishes. **Recent output…** opens the actual result folder, including the original folder of a resumed batch.
 
 Common controls appear first. Expand arrow headings for curves, accidents, interpretation and additional exports; folding never clears values or disables a setting. **Browse…** searches the currently visible preset list and applies only on confirmation or double-click. Full material, bath/process and scanner editors are also linked from their respective pages. Preview actions are beside the image; formal processing remains at the bottom.
 
 <details>
-<summary>观察与材料编辑界面</summary>
+<summary>0.4.0 历史观察与材料编辑界面</summary>
 
 ![观察与曲线](images/desktop-0.4.0/observe-light.png)
 
@@ -408,7 +429,7 @@ The two curves are relative output tones added after the current scan. They do n
 
 - **边长缩放**：指定处理尺寸。
 - **降阶快速**：以较轻的计算模型加快处理。
-- **质量档位**：`draft`／`standard`／`high`。
+- **质量档位**：`draft`／`standard`／`high`。低档使用较粗的内部细节采样，中档平衡细节与速度，高档保留更多细节；均保留全部已开启的现象，不改变输出尺寸。
 
 三项可独立组合。默认开启1600长边缩放与降阶；需要原尺寸时关闭缩放。大图处理可按电脑内存调整尺寸与导出项。[性能策略](REFERENCE.md#performance)
 

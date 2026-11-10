@@ -98,6 +98,7 @@ def _apply_reduced_emulsion_mtf(
     artifact_strength: float,
     *,
     can_consume: bool,
+    exposure_ceiling: float | None = 4.0,
 ) -> np.ndarray:
     """Approximate the two canonical spatial responses with one matched PSF.
 
@@ -145,7 +146,7 @@ def _apply_reduced_emulsion_mtf(
             output_channel = out[..., channel]
             np.multiply(source_channel, inverse_blend, out=output_channel)
             output_channel += blurred_channel
-        np.clip(out, 0.0, 4.0, out=out)
+        np.clip(out, 0.0, exposure_ceiling, out=out)
         return out
 
     blurred = cv2.GaussianBlur(
@@ -158,7 +159,7 @@ def _apply_reduced_emulsion_mtf(
     out = image if can_consume else np.empty_like(image, dtype=np.float32)
     np.multiply(image, inverse_blend[..., None], out=out)
     out += blurred
-    np.clip(out, 0.0, 4.0, out=out)
+    np.clip(out, 0.0, exposure_ceiling, out=out)
     return out
 
 
@@ -168,6 +169,8 @@ def apply_emulsion_mtf(
     *,
     consume_input: bool = False,
     model: str = FULL_EMULSION_MTF_MODEL,
+    workers: int = 1,
+    exposure_ceiling: float | None = 4.0,
 ) -> np.ndarray:
     """模拟胶片乳剂/银盐颗粒系统的有限空间截止频率。
 
@@ -202,6 +205,7 @@ def apply_emulsion_mtf(
             strength,
             artifact_strength,
             can_consume=can_consume,
+            exposure_ceiling=exposure_ceiling,
         )
 
     if (
@@ -210,16 +214,17 @@ def apply_emulsion_mtf(
     ):
         # Gaussian filtering is channel-separable. On large frames, keeping
         # both three-channel blur results beside the source is the dominant
-        # whole-pipeline peak. Compute the same two OpenCV blurs one channel at
-        # a time and finish that channel only after both source-dependent
-        # filters have completed. The public path still writes an independent
+        # whole-pipeline peak. Compute the same two OpenCV blurs per channel,
+        # with concurrency bounded by the caller's resource policy, and finish
+        # each channel only after both source-dependent filters complete.
+        # The public path still writes an independent
         # RGB result; the engine's private input may be consumed after its
         # channel has had its final read.
-        emulsion_channel = np.empty(image.shape[:2], dtype=np.float32)
-        stronger_channel = np.empty(image.shape[:2], dtype=np.float32)
-        blend = np.empty(image.shape[:2], dtype=np.float32)
         out = image if can_consume else np.empty_like(image, dtype=np.float32)
-        for channel in range(3):
+        def process_channel(channel):
+            emulsion_channel = np.empty(image.shape[:2], dtype=np.float32)
+            stronger_channel = np.empty(image.shape[:2], dtype=np.float32)
+            blend = np.empty(image.shape[:2], dtype=np.float32)
             source_channel = image[..., channel]
             cv2.GaussianBlur(
                 source_channel,
@@ -259,7 +264,10 @@ def apply_emulsion_mtf(
             np.subtract(1.0, blend, out=blend)
             output_channel *= blend
             output_channel += stronger_channel
-        np.clip(out, 0.0, 4.0, out=out)
+        from .material_parallel import ordered_results
+        with ordered_results(range(3), process_channel, workers=min(workers,3)) as (_,results):
+            for _ in results:pass
+        np.clip(out, 0.0, exposure_ceiling, out=out)
         return out
 
     emulsion_blur = cv2.GaussianBlur(image, (0, 0), sigmaX=sigma, sigmaY=sigma)
@@ -286,5 +294,5 @@ def apply_emulsion_mtf(
     np.subtract(1.0, blend, out=blend)
     out *= blend[..., None]
     out += stronger_blur
-    np.clip(out, 0.0, 4.0, out=out)
+    np.clip(out, 0.0, exposure_ceiling, out=out)
     return out

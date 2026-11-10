@@ -44,7 +44,7 @@ def _jsonable(value: object) -> object:
     raise ValueError(f"config share cannot encode {type(value).__name__}.")
 
 
-_OBJECT_FIELDS = frozenset({"film", "develop", "scanner", "look", "film_border"})
+_OBJECT_FIELDS = frozenset({"film", "exposure", "develop", "scanner", "look", "film_border"})
 
 
 def _normalize_payload(config: object) -> dict[str, object]:
@@ -71,6 +71,11 @@ def encode_config_share(config: Mapping[str, object]) -> str:
         "version": CONFIG_SHARE_VERSION,
         "config": _normalize_payload(config),
     }
+    return encode_share_document(envelope)
+
+
+def encode_share_document(envelope: Mapping[str, object]) -> str:
+    """Common bounded FFC2 transport; document semantics belong to its codec."""
     raw = json.dumps(
         envelope,
         ensure_ascii=False,
@@ -86,6 +91,16 @@ def encode_config_share(config: Mapping[str, object]) -> str:
 
 def decode_config_share(text: object) -> dict[str, object]:
     """Decode an FFC2 share code into a recipe parameter object."""
+    envelope = decode_share_document(text)
+    if envelope.get("kind") != CONFIG_SHARE_KIND:
+        raise ValueError("This FFC2 document is a preset collection; open it in Materials & presets.")
+    if envelope.get("version") != CONFIG_SHARE_VERSION:
+        raise ValueError(f"unsupported config share version {envelope.get('version')!r}.")
+    return _normalize_payload(envelope.get("config"))
+
+
+def decode_share_document(text: object) -> dict[str, object]:
+    """Decode the bounded transport without guessing how a document is applied."""
     source = str(text or "")
     if len(source) > _MAX_INPUT_CHARS:
         raise ValueError("config share payload is too large.")
@@ -127,11 +142,4 @@ def decode_config_share(text: object) -> dict[str, object]:
         raise ValueError("config share payload is not valid JSON.") from exc
     if not isinstance(envelope, dict):
         raise ValueError("config share envelope must be an object.")
-    if envelope.get("kind") != CONFIG_SHARE_KIND:
-        raise ValueError("config share kind is not film_foundry_config_share.")
-    if envelope.get("version") != CONFIG_SHARE_VERSION:
-        raise ValueError(
-            f"unsupported config share version {envelope.get('version')!r}."
-        )
-    payload = envelope.get("config")
-    return _normalize_payload(payload)
+    return _jsonable(envelope)

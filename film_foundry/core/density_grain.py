@@ -165,13 +165,40 @@ def _normalize_unit_field(field: np.ndarray) -> np.ndarray:
     # not each create another temporary array.
     mean_value = np.mean(field)
     if _STD_ACCEPTS_PRECOMPUTED_MEAN:
-        std_value = np.std(field, mean=mean_value)
-        field -= float(mean_value)
+        if reference_execution_enabled():
+            std_value = np.std(field, mean=mean_value)
+            field -= float(mean_value)
+        else:
+            # std(mean=...) uses exactly this centered square/sum/divide/sqrt.
+            # Keep the centered values in their final buffer instead of making
+            # and discarding a full-size subtraction temporary then doing it again.
+            field -= float(mean_value)
+            std_value = np.sqrt(np.mean(np.square(field)))
     else:
         field -= float(mean_value)
         std_value = np.std(field)
     field /= max(float(std_value), 1e-6)
     return field
+
+
+def _blur_grain_field(field, sigma):
+    if not reference_execution_enabled():
+        from film_foundry.core.desktop_compute import try_grain_blur
+        result=try_grain_blur(field,sigma)
+        if result is not None:
+            np.copyto(field,result)
+            return
+    cv2.GaussianBlur(field,(0,0),sigmaX=sigma,sigmaY=sigma,dst=field)
+
+
+def _blur_local_grain(field,sigma,radius_response,prepared=None):
+    if radius_response is None:
+        _blur_grain_field(field,sigma);return
+    from film_foundry.core.film_process.local_grain import blend_radius_fields
+    def sample(radius):
+        value=field.copy();_blur_grain_field(value,sigma*radius)
+        return _normalize_unit_field(value)
+    np.copyto(field,prepared.sample(sample) if prepared is not None else blend_radius_fields(radius_response,sample))
 
 
 def _subpixel_shift(
@@ -200,21 +227,24 @@ def _blurred_multilayer_field(
     shared_mix: float = LAYER_SHARED_GRAIN_MIX,
     *,
     out: np.ndarray | None = None,
+    radius_response=None,
+    radius_plans=None,
 ) -> np.ndarray:
     blur_sigma = radius_to_sigma(float(scale), (*work_shape, 3))
+    if not reference_execution_enabled():
+        from .grain_compute import try_multilayer
+        accelerated = try_multilayer(rng, work_shape, blur_sigma, shared_mix, out, radius_response, radius_plans)
+        if accelerated is not None:
+            return accelerated
     max_shift = float(np.clip(blur_sigma * 0.42, 0.35, 2.25))
 
     # Generator.normal(0, 1) and standard_normal consume the same bit stream
     # and produce the same float64 values. The latter avoids redundant
     # location/scale handling before the required float32 storage conversion.
     shared = standard_normal_float32(rng, work_shape)
-    cv2.GaussianBlur(
-        shared,
-        (0, 0),
-        sigmaX=blur_sigma,
-        sigmaY=blur_sigma,
-        dst=shared,
-    )
+    _blur_local_grain(shared,blur_sigma,None if radius_response is None else
+                      radius_response if radius_plans is not None else np.mean(radius_response,axis=-1),
+                      radius_plans[0] if radius_plans is not None else None)
     shared = _normalize_unit_field(shared)
 
     # Compose one channel at a time.  Keeping separate work-grid-sized shared
@@ -234,9 +264,32 @@ def _blurred_multilayer_field(
                 "grain field output must be writable C-contiguous float32 "
                 f"with shape {(*work_shape, 3)}"
             )
-    shifted = np.empty(work_shape, dtype=np.float32)
     shared_mix = float(np.clip(shared_mix, 0.0, 1.0))
     layer_mix = float(np.sqrt(max(1.0 - shared_mix * shared_mix, 0.0)))
+    if radius_response is None and not reference_execution_enabled() and 1048576 <= shared.size <= 4194304:
+        # Pipeline the unchanged serial RNG stream with one convolution worker.
+        # The worker never touches RNG; independent buffers bound live memory to
+        # three scalar layers, and each worker writes a disjoint output channel.
+        from concurrent.futures import ThreadPoolExecutor
+        def finish_layer(channel, layer, shared_shift, layer_shift):
+            shifted=_subpixel_shift(shared,dx=float(shared_shift[0]),dy=float(shared_shift[1]))
+            shifted *= shared_mix
+            mixed_channel=mixed_channels[...,channel]
+            np.copyto(mixed_channel,shifted)
+            _blur_grain_field(layer,blur_sigma)
+            _subpixel_shift(_normalize_unit_field(layer),dx=float(layer_shift[0]),dy=float(layer_shift[1]),out=shifted)
+            shifted *= layer_mix
+            mixed_channel += shifted
+        with ThreadPoolExecutor(max_workers=1,thread_name_prefix='film-grain') as worker:
+            pending=[]
+            for channel in range(3):
+                shared_shift=rng.uniform(-max_shift,max_shift,2)
+                layer=standard_normal_float32(rng,work_shape)
+                layer_shift=rng.uniform(-max_shift,max_shift,2)
+                pending.append(worker.submit(finish_layer,channel,layer,shared_shift,layer_shift))
+            for future in pending:future.result()
+        return _normalize_unit_field(mixed_channels)
+    shifted = np.empty(work_shape, dtype=np.float32)
     layer: np.ndarray | None = None
     for channel in range(3):
         dx, dy = rng.uniform(-max_shift, max_shift, 2)
@@ -254,13 +307,8 @@ def _blurred_multilayer_field(
             layer = standard_normal_float32(rng, work_shape)
         else:
             fill_standard_normal_float32(rng, layer)
-        cv2.GaussianBlur(
-            layer,
-            (0, 0),
-            sigmaX=blur_sigma,
-            sigmaY=blur_sigma,
-            dst=layer,
-        )
+        _blur_local_grain(layer,blur_sigma,None if radius_response is None else radius_response[...,channel],
+                          radius_plans[channel+1] if radius_plans is not None else None)
         dx, dy = rng.uniform(-max_shift, max_shift, 2)
         _subpixel_shift(
             _normalize_unit_field(layer),
@@ -364,6 +412,8 @@ def _reduced_multilayer_field(
     cloud_scale: float | None = None,
     cloud_mix: float = 0.0,
     out: np.ndarray | None = None,
+    radius_response=None,
+    radius_plans=None,
 ) -> np.ndarray:
     """One-scale statistical layer field for explicit reduced execution.
 
@@ -377,14 +427,11 @@ def _reduced_multilayer_field(
 
     blur_sigma = radius_to_sigma(float(scale), (*work_shape, 3))
     shared = standard_normal_float32(rng, work_shape)
-    cv2.GaussianBlur(
-        shared,
-        (0, 0),
-        sigmaX=blur_sigma,
-        sigmaY=blur_sigma,
-        dst=shared,
-        borderType=cv2.BORDER_REFLECT_101,
-    )
+    if radius_response is not None:
+        _blur_local_grain(shared,blur_sigma,radius_response if radius_plans is not None else np.mean(radius_response,axis=-1),
+                          radius_plans[0] if radius_plans is not None else None)
+    else:
+        cv2.GaussianBlur(shared,(0,0),sigmaX=blur_sigma,sigmaY=blur_sigma,dst=shared,borderType=cv2.BORDER_REFLECT_101)
     _normalize_unit_field(shared)
 
     if out is None:
@@ -402,14 +449,9 @@ def _reduced_multilayer_field(
                 f"with shape {(*work_shape, 3)}"
             )
     fill_standard_normal_float32(rng, layers)
-    cv2.GaussianBlur(
-        layers,
-        (0, 0),
-        sigmaX=blur_sigma,
-        sigmaY=blur_sigma,
-        dst=layers,
-        borderType=cv2.BORDER_REFLECT_101,
-    )
+    if radius_response is not None:_blur_local_grain(layers,blur_sigma,radius_response,
+                                                    radius_plans[1] if radius_plans is not None else None)
+    else:cv2.GaussianBlur(layers,(0,0),sigmaX=blur_sigma,sigmaY=blur_sigma,dst=layers,borderType=cv2.BORDER_REFLECT_101)
     _normalize_unit_field(layers)
 
     shared_mix = float(np.clip(shared_mix, 0.0, 1.0))
@@ -418,23 +460,19 @@ def _reduced_multilayer_field(
     for channel in range(3):
         layers[..., channel] += shared * shared_mix
 
-    cloud_mix = float(np.clip(cloud_mix, 0.0, 0.95))
-    if cloud_scale is not None and cloud_mix > 0.0:
+    cloud_mix = np.clip(cloud_mix, 0.0, 0.95) if isinstance(cloud_mix,np.ndarray) else float(np.clip(cloud_mix, 0.0, 0.95))
+    if cloud_scale is not None and float(np.max(cloud_mix)) > 0.0:
         _normalize_unit_field(layers)
         fill_standard_normal_float32(rng, shared)
         cloud_sigma = radius_to_sigma(float(cloud_scale), (*work_shape, 3))
-        cv2.GaussianBlur(
-            shared,
-            (0, 0),
-            sigmaX=cloud_sigma,
-            sigmaY=cloud_sigma,
-            dst=shared,
-            borderType=cv2.BORDER_REFLECT_101,
-        )
+        if radius_response is not None:_blur_local_grain(shared,cloud_sigma,radius_response if radius_plans is not None else np.mean(radius_response,axis=-1),
+                                                        radius_plans[0] if radius_plans is not None else None)
+        else:cv2.GaussianBlur(shared,(0,0),sigmaX=cloud_sigma,sigmaY=cloud_sigma,dst=shared,borderType=cv2.BORDER_REFLECT_101)
         _normalize_unit_field(shared)
-        layers *= float(np.sqrt(max(1.0 - cloud_mix * cloud_mix, 0.0)))
+        layers *= (np.sqrt(np.maximum(1.0-cloud_mix*cloud_mix,0.)) if isinstance(cloud_mix,np.ndarray)
+                   else float(np.sqrt(max(1.0 - cloud_mix * cloud_mix, 0.0))))
         for channel in range(3):
-            layers[..., channel] += shared * cloud_mix
+            layers[..., channel] += shared * (cloud_mix[...,channel] if isinstance(cloud_mix,np.ndarray) else cloud_mix)
     del shared
     return _normalize_unit_field(layers)
 
@@ -451,6 +489,8 @@ def apply_density_grain(
     consume_input_as_effective_delta: bool = False,
     model: str = FULL_DENSITY_GRAIN_MODEL,
     spatial_scale_factor: float = 1.0,
+    development_override=None,
+    local_response=None,
 ) -> np.ndarray:
     """在密度域加入颗粒扰动，sigma_D 与 sqrt(D) 绑定。
 
@@ -498,7 +538,7 @@ def apply_density_grain(
         work_shape = (height, width)
         small_density = density_cmy
 
-    development = build_effective_development(chemistry)
+    development = development_override or build_effective_development(chemistry)
     scope = str(component_scope).strip().lower()
     if scope not in {"combined_legacy", "emulsion"}:
         raise ValueError(f"unsupported grain component_scope: {component_scope}")
@@ -511,7 +551,22 @@ def apply_density_grain(
     grain_factor = float(development.grain_factor)
     grain_radius_factor = float(development.grain_radius_factor)
     grain_clump_factor = float(development.grain_clump_factor)
-    if scope == "emulsion":
+    local_gain=radius_response=clump_response=None
+    radius_plans=None
+    if local_response is not None:
+        response=local_response.at_shape(work_shape)
+        def layers(value):
+            value=value[...,None] if value.ndim==2 else value
+            return np.broadcast_to(value,(*work_shape,3))
+        local_gain=layers(response.grain_factor)/max(grain_factor,1e-12)
+        radius_response=layers(response.grain_radius_factor)/max(grain_radius_factor,1e-12)
+        clump_response=np.clip(layers(response.grain_clump_factor),.25,2.75)
+        if not reference_execution_enabled():
+            from film_foundry.core.film_process.local_grain import prepare_radius_blend
+            radius_plans=(prepare_radius_blend(np.mean(radius_response,axis=-1)),)
+            radius_plans+=( (prepare_radius_blend(radius_response),) if reduced_model else
+                           tuple(prepare_radius_blend(radius_response[...,channel]) for channel in range(3)) )
+    if scope == "emulsion" and development_override is None:
         # These controls describe material left on top of, or alongside, the
         # already formed emulsion. They must not masquerade as dye-layer grain.
         fixer_exhaustion = float(np.clip(chemistry.fixer_exhaustion, 0.0, 1.0))
@@ -562,6 +617,23 @@ def apply_density_grain(
         grain_radius_factor,
         grain_clump_factor,
     )
+    local_weights={}
+    local_weight_basis=None
+    def local_weight(index,default):
+        nonlocal local_weight_basis
+        if clump_response is None:return float(default)
+        if index in local_weights:return local_weights[index]
+        if local_weight_basis is None:
+            base_weights=_grain_scales_for_film(film,grain_radius_factor,1.)[1]
+            if len(base_weights)==1:return 1.
+            coarse=int(np.argmax(grain_scales));coarse_energy=float(base_weights[coarse]**2)
+            denominator=np.sqrt(max(float(np.sum(base_weights*base_weights))-coarse_energy,0.)+coarse_energy*clump_response**2)
+            denominator=np.maximum(denominator,1e-6)
+            if not reference_execution_enabled():local_weight_basis=(base_weights,coarse,denominator)
+        else:base_weights,coarse,denominator=local_weight_basis
+        result=base_weights[index]*(clump_response if index==coarse else 1.)/denominator
+        if not reference_execution_enabled():local_weights[index]=result
+        return result
     reference_grain_scales = grain_scales
     if spatial_scale_factor != 1.0:
         # Project after material/process scale preparation and its historical
@@ -579,22 +651,28 @@ def apply_density_grain(
                 grain_weights,
                 effective_scale,
             )
+            if clump_response is not None:
+                cloud_mix=cloud_mix*np.sqrt(clump_response/max(grain_clump_factor,1e-12))
         unit_noise = _reduced_multilayer_field(
             rng,
             work_shape,
             effective_scale,
             cloud_scale=cloud_scale,
             cloud_mix=cloud_mix,
+            radius_response=radius_response,
+            radius_plans=radius_plans,
         )
     else:
-        for scale, weight in zip(grain_scales, grain_weights, strict=False):
+        for scale_index,(scale, weight) in enumerate(zip(grain_scales, grain_weights, strict=False)):
             field = _blurred_multilayer_field(
                 rng,
                 work_shape,
                 float(scale),
                 out=reusable_field,
+                radius_response=radius_response,
+                radius_plans=radius_plans,
             )
-            field *= float(weight)
+            field *= local_weight(scale_index,weight)
             if unit_noise is None:
                 # The first weighted field is already a private accumulator.
                 # Adding it to a newly allocated all-zero RGB field only burns one
@@ -653,6 +731,8 @@ def apply_density_grain(
                 shadow_scale,
                 shared_mix=0.46,
                 out=reusable_field,
+                radius_response=radius_response,
+                radius_plans=radius_plans,
             )
             reusable_field = None
         else:
@@ -661,15 +741,17 @@ def apply_density_grain(
                 # The coarse-cloud bound is in reference material units too.
                 coarse_scales = coarse_scales * np.float32(spatial_scale_factor)
             coarse_weights = grain_weights / max(float(np.sqrt(np.sum(grain_weights * grain_weights))), 1e-6)
-            for scale, weight in zip(coarse_scales, coarse_weights, strict=False):
+            for scale_index,(scale, weight) in enumerate(zip(coarse_scales, coarse_weights, strict=False)):
                 field = _blurred_multilayer_field(
                     rng,
                     work_shape,
                     float(scale),
                     shared_mix=0.46,
                     out=reusable_field,
+                    radius_response=radius_response,
+                    radius_plans=radius_plans,
                 )
-                field *= float(weight)
+                field *= local_weight(scale_index,weight)
                 if shadow_noise is None:
                     shadow_noise = field
                     # The former main-scale scratch now owns the shadow
@@ -697,6 +779,8 @@ def apply_density_grain(
         noise += shadow_noise
         del shadow_noise
     del reusable_field
+    del radius_plans,local_weights,local_weight_basis
+    if local_gain is not None:noise*=local_gain
 
     if scope == "combined_legacy" and development.residue_factor > 1e-6:
         residue_sigma = radius_to_sigma(

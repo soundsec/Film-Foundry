@@ -38,10 +38,10 @@ def test_pipeline_benchmark_can_explicitly_verify_determinism(tmp_path):
     assert result["scan_seconds"]["min"] >= 0.0
     assert result["runtime"]["execution_mode"] == "quality"
     assert result["runtime"]["effective_work_long_edge"] == {
-        "halation": 1200,
-        "emulsion_highlight_spread": 1400,
-        "grain_and_accidents": 1200,
-        "development_adjacency": 1200,
+        "halation": 768,
+        "emulsion_highlight_spread": 1024,
+        "grain_and_accidents": 768,
+        "development_adjacency": 768,
     }
     assert result["runtime"]["native_thread_limit"] == 4
     assert result["runtime"]["opencv_threads_effective"] <= 4

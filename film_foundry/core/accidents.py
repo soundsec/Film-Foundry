@@ -810,6 +810,7 @@ def apply_light_leak_to_exposure(
     pattern: LightLeakPatternSpec | None = None,
     secondary_pattern: LightLeakPatternSpec | None = None,
     mask: np.ndarray | None = None,
+    exposure_ceiling: float | None = 4.0,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Add light-leak exposure before H-D density formation."""
     state = build_effective_development(recipe)
@@ -931,7 +932,7 @@ def apply_light_leak_to_exposure(
     np.multiply(leak_map, 0.78 + 0.22 * color_variation, out=contribution)
     contribution *= float(leak_color[2] * 1.25)
     leaked[..., 2] += contribution
-    return np.clip(leaked, 0.0, 4.0, out=leaked).astype(np.float32, copy=False), leak_map
+    return np.clip(leaked, 0.0, exposure_ceiling, out=leaked).astype(np.float32, copy=False), leak_map
     if work_shape != (height, width):
         leak_map = cv2.resize(
             leak_map,
@@ -973,7 +974,7 @@ def apply_light_leak_to_exposure(
     np.multiply(leak_map, 0.78 + 0.22 * color_variation, out=contribution)
     contribution *= float(leak_color[2] * 1.25)
     leaked[..., 2] += contribution
-    return np.clip(leaked, 0.0, 4.0, out=leaked).astype(np.float32, copy=False), leak_map
+    return np.clip(leaked, 0.0, exposure_ceiling, out=leaked).astype(np.float32, copy=False), leak_map
 
 
 def apply_density_accident_components(

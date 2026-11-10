@@ -48,9 +48,9 @@
       1.0
     ],
     "granularity_sigma": [
-      0.012,
-      0.012,
-      0.012
+      0.0,
+      0.0,
+      0.0
     ],
     "grain_density_correlation_radius": 0.0016,
     "halation_exponential_radius": 0.012,
@@ -70,6 +70,9 @@
       0.76,
       0.19,
       0.05
-    ]
+    ],
+    "silver_grain_strength": 0.012,
+    "silver_grain_radius": 0.0006,
+    "silver_grain_clump_mix": 0.12
   }
 }

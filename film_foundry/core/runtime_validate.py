@@ -25,6 +25,7 @@ from film_foundry.core.accidents import (
     LIGHT_LEAK_SECONDARY_TEMPLATE_KEYS,
 )
 from film_foundry.core.execution import resolve_execution_mode
+from film_foundry.core.execution_topology import reference_execution_enabled
 from film_foundry.core.film_border import validate_film_border_config
 from film_foundry.core.film_process.recipe import resolve_program_key
 from film_foundry.core.light_piping import LIGHT_PIPING_EDGE_MODES
@@ -32,6 +33,7 @@ from film_foundry.core.media import config_medium_process, is_monochrome_materia
 from film_foundry.core.states import DevelopedNegative
 from film_foundry.model.config import (
     DarkroomConfig,
+    normalize_color_mixer,
     SCANNER_COLOR_RESPONSE_MODELS,
     normalize_scanner_color_curve_rgb,
 )
@@ -106,6 +108,30 @@ def _validate_developed_medium_arrays(medium: DevelopedNegative) -> None:
 
 def _validate_numeric_config_group(group: str, values: dict[str, object]) -> None:
     for key, value in values.items():
+        if group == 'develop' and key == 'formation_history_model':
+            from film_foundry.contracts.formation_history import validate_model
+            validate_model(value); continue
+        if group == 'film' and key == 'chemical_fog_susceptibility':
+            from film_foundry.contracts.formation_history import validate_fog_susceptibility
+            validate_fog_susceptibility(value); continue
+        if group=='develop' and key=='process_events':
+            from film_foundry.contracts.process_events import validate_process_events
+            validate_process_events(value);continue
+        if group=='develop' and key=='effect_intent':
+            from film_foundry.contracts.effect_intent import validate_effect_intent
+            validate_effect_intent(value);continue
+        if group=='develop' and key=='bath_overrides':
+            from film_foundry.contracts.bath_overrides import validate_bath_overrides
+            validate_bath_overrides(value);continue
+        if group=='film' and key=='emulsion_integrity':
+            from film_foundry.contracts.emulsion_integrity import validate_emulsion_integrity
+            validate_emulsion_integrity(value);continue
+        if group=='film' and key=='carbon_backing':
+            from film_foundry.contracts.carbon_backing import validate_carbon_backing
+            validate_carbon_backing(value);continue
+        if group=='film' and key=='process_response':
+            from film_foundry.contracts.process_events import validate_process_response
+            validate_process_response(value);continue
         if group == "develop" and key == "process_steps":
             from film_foundry.contracts.process_steps import validate_process_steps
             validate_process_steps(value)
@@ -128,6 +154,10 @@ def _validate_develop_runtime(
     allow_discarded_history: bool = False,
 ) -> None:
     """Reject malformed material/process settings before forming latent state."""
+    from film_foundry.contracts.film_time import validate_config as validate_time_config
+    validate_time_config(config)
+    from film_foundry.contracts.film_exposure import validate_config as validate_exposure_config
+    validate_exposure_config(config)
     from film_foundry.core.incident_identity import validate_incident_seed
     validate_incident_seed(config.chemistry.incident_identity_seed)
     if config.film.spectral_exposure_profile is not None:
@@ -513,6 +543,10 @@ def _validate_develop_runtime(
     }:
         raise ValueError("processing.quality_mode is not recognized.")
     resolve_execution_mode(config)
+    from .compute_precision import contact_precision
+    contact_precision(config.processing)
+    from film_foundry.contracts.formation_profiles import validate_reduced_profile
+    validate_reduced_profile(config.processing.reduced_profile)
     comfort_zone = float(config.processing.comfort_zone_megapixels)
     if not np.isfinite(comfort_zone) or comfort_zone <= 0.0:
         raise ValueError(
@@ -563,6 +597,8 @@ def _validate_develop_runtime(
 
 def _validate_output_runtime(config: DarkroomConfig) -> None:
     _validate_numeric_config_group("output", asdict(config.output))
+    if type(config.output.rotation_quarters) is not int or not 0<=config.output.rotation_quarters<=3:
+        raise ValueError('output.rotation_quarters must be 0..3')
     if int(config.output.bit_depth) not in {8, 16}:
         raise ValueError(f"Unsupported output bit depth {config.output.bit_depth}; expected 8 or 16.")
     if str(config.output.format).strip().lower() not in {"png", "jpg", "jpeg", "tif", "tiff", "webp"}:
@@ -573,10 +609,15 @@ def _validate_output_runtime(config: DarkroomConfig) -> None:
         raise ValueError(
             "output.medium_npz_compression must be 'compressed' or 'store'."
         )
+    from .storage_precision import precision_policy
+    precision_policy(config.output.material_storage_precision)
     for key in ("render_long_edge", "preview_long_edge"):
         edge = getattr(config.output, key)
         if edge is not None and int(edge) <= 0:
             raise ValueError(f"output.{key} must be positive or None.")
+    preview_edge = config.output.medium_preview_long_edge
+    if isinstance(preview_edge, bool) or not isinstance(preview_edge, (int, np.integer)) or preview_edge < 0:
+        raise ValueError("output.medium_preview_long_edge must be a non-negative integer.")
     if int(config.output.encode_tile_rows) < 0:
         raise ValueError("output.encode_tile_rows must be zero or positive.")
     encode_threshold = float(config.output.encode_tile_threshold_megapixels)
@@ -640,7 +681,11 @@ def _validate_developed_medium_state(medium: DevelopedNegative) -> None:
     if medium.optical_density_rgb is not None:
         arrays["optical_density_rgb"] = medium.optical_density_rgb
     validated = {
-        key: _validate_rgb_image_array(value, f"developed medium {key}")
+        # The masters were checked immediately above by the shared array
+        # boundary. Only history has not yet been checked; preserve the final
+        # cross-stage shape comparison without rescanning every master twice.
+        key: (_validate_rgb_image_array(value, f"developed medium {key}")
+              if key in history_arrays or reference_execution_enabled() else np.asarray(value))
         for key, value in arrays.items()
     }
     shapes = {array.shape for array in validated.values()}
@@ -651,6 +696,7 @@ def _validate_developed_medium_state(medium: DevelopedNegative) -> None:
 
 def _validate_scan_runtime(config: DarkroomConfig) -> None:
     """Reject malformed scan settings before they can create silent NaN output."""
+    normalize_color_mixer(config.scanner.color_mixer)
     if config.scanner.spectral_observation_profile is not None:
         SpectralObservationProfile.from_value(config.scanner.spectral_observation_profile)
     scalar_groups = {
@@ -739,10 +785,16 @@ def _validate_scan_runtime(config: DarkroomConfig) -> None:
 
 
 def _resolved_process_program_key(config: DarkroomConfig) -> str:
+    from .implementation_plan import resolve_implementation_plan
+    plan=resolve_implementation_plan(config)
+    if plan.basic_formation_only:
+        from .basic_formation import basic_formation_config
+        config,_=basic_formation_config(config)
     return resolve_program_key(
         config.chemistry,
         mode=config.mode,
         material_process=config_medium_process(config),
+        coupled_intervals=plan.coupled_intervals,
     )
 
 

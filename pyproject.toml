@@ -15,6 +15,7 @@ dependencies = [
   "numpy>=1.24",
   "opencv-python>=4.8",
   "Pillow>=10.0",
+  "tifffile>=2023.7",
   "python-lcms2>=0.1.1,<0.2",
   "PySide6-Essentials>=6.8,<7",
 ]
@@ -32,6 +33,8 @@ Issues = "https://github.com/soundsec/Film-Foundry/issues"
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
 video = ["av>=16.1,<17"]
+cuda = ["cupy-cuda12x>=14.2,<15", "nvidia-cuda-runtime-cu12", "nvidia-cuda-nvrtc-cu12"]
+opencl = ["pyopencl>=2024.3,<2027"]
 
 [project.scripts]
 film-foundry = "film_foundry.app.cli:main"

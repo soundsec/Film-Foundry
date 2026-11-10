@@ -3,6 +3,7 @@ import json
 import zlib
 from functools import lru_cache
 from film_foundry.app.paths import resource_root
+from film_foundry.core.file_cache import file_revision
 
 _MAGIC=b"FFRP\x01"
 _KEY=b"FF native finder resources / 1"
@@ -31,6 +32,11 @@ def resource_path():
     return resource_root()/"film_foundry/assets/finder_resources.bin"
 
 
-@lru_cache(maxsize=1)
 def payload() -> dict:
-    return unpack(resource_path().read_bytes())
+    return _payload_revision(file_revision(resource_path()))
+
+
+@lru_cache(maxsize=2)
+def _payload_revision(revision) -> dict:
+    from pathlib import Path
+    return unpack(Path(revision[0]).read_bytes())

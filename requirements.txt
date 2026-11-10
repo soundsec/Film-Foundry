@@ -3,3 +3,6 @@ opencv-python>=4.8
 Pillow>=10.0
 python-lcms2>=0.1.1,<0.2
 PySide6-Essentials>=6.8,<7
+rawpy>=0.25,<0.29
+imagecodecs>=2026.3.6,<2026.5
+tifffile>=2023.7

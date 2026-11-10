@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from film_foundry.core.color import luminance
+from film_foundry.core.carbon_backing import exposure_return
 from film_foundry.core.spatial_fields import (
     GlobalFieldGrid,
     SpatialFieldPlan,
@@ -296,12 +297,12 @@ def _halation_source_halo_radius(
 def _halation_global_gradient_scale_tiled(
     image: np.ndarray,
     tile_rows: int,
+    workers: int = 1,
 ) -> float:
     """Measure the same full-frame gradient percentile using bounded stripes."""
     height, width = image.shape[:2]
     gradient = np.empty((height, width), dtype=np.float32)
-    for start in range(0, height, tile_rows):
-        stop = min(start + tile_rows, height)
+    def gradient_rows(start, stop):
         read_start = max(0, start - 1)
         read_stop = min(height, stop + 1)
         y = luminance(image[read_start:read_stop])
@@ -311,6 +312,8 @@ def _halation_global_gradient_scale_tiled(
             crop_start : crop_start + (stop - start)
         ]
         del y, tile_gradient
+    from .material_parallel import run_rows
+    run_rows(height, width, gradient_rows, chunk_pixels=tile_rows*width, workers=workers)
     scale = float(np.percentile(gradient, 96.0))
     del gradient
     return scale
@@ -322,6 +325,7 @@ def halation_source_energy_tiled(
     *,
     tile_rows: int,
     model: str = FULL_HALATION_SOURCE_MODEL,
+    workers: int = 1,
 ) -> np.ndarray:
     """Build one global source with frozen statistics and finite row halos.
 
@@ -340,15 +344,14 @@ def halation_source_energy_tiled(
     rows = min(rows, height)
     model = str(model).strip().lower()
     if model == FULL_HALATION_SOURCE_MODEL:
-        gradient_scale = _halation_global_gradient_scale_tiled(image, rows)
+        gradient_scale = _halation_global_gradient_scale_tiled(image, rows, workers)
     elif model == REDUCED_HALATION_SOURCE_MODEL:
         gradient_scale = None
     else:
         raise ValueError(f"unsupported halation source model: {model}")
     source = np.empty((height, width), dtype=np.float32)
     halo = _halation_source_halo_radius(film, image.shape, model=model)
-    for start in range(0, height, rows):
-        stop = min(start + rows, height)
+    def source_rows(start, stop):
         read_start = max(0, start - halo)
         read_stop = min(height, stop + halo)
         tile_source = _halation_source_energy(
@@ -363,6 +366,8 @@ def halation_source_energy_tiled(
             crop_start : crop_start + (stop - start)
         ]
         del tile_source
+    from .material_parallel import run_rows
+    run_rows(height, width, source_rows, chunk_pixels=rows*width, workers=workers)
     return source
 
 
@@ -549,6 +554,7 @@ def apply_parameterized_warm_return(
     image: np.ndarray,
     spread: np.ndarray,
     film: FilmStockConfig,
+    *, exposure_ceiling: float | None = 4.0,
 ) -> np.ndarray:
     """Apply the legacy RGB exposure return without a full RGB halo buffer.
 
@@ -579,7 +585,7 @@ def apply_parameterized_warm_return(
         np.multiply(spread, halo_color[channel], out=channel_delta)
         np.multiply(channel_delta, strength, out=channel_delta)
         np.add(output[..., channel], channel_delta, out=output[..., channel])
-    np.clip(output, 0.0, 4.0, out=output)
+    np.clip(output, 0.0, exposure_ceiling, out=output)
     return output
 
 
@@ -591,11 +597,17 @@ def halation_return_field(
     spread_scale_weights: tuple[float, float, float] | np.ndarray | None = None,
     allow_empty_none: bool = False,
     source_model: str = FULL_HALATION_SOURCE_MODEL,
+    source_workers: int = 1,
 ) -> np.ndarray | None:
     """Build one scalar material-return field before choosing its coupling."""
     image = np.asarray(image, dtype=np.float32)
     if image.ndim != 3 or image.shape[-1] != 3 or image.size == 0:
         raise ValueError("halation image must be a non-empty HxWx3 array")
+
+    backing = exposure_return(film.carbon_backing)
+    return_fraction = 1.0 if backing is None else backing['return_fraction']
+    if return_fraction == 0.0:
+        return None if allow_empty_none else np.zeros(image.shape[:2], dtype=np.float32)
 
     if work_long_edge is None and fast:
         work_long_edge = 1600
@@ -611,6 +623,7 @@ def halation_return_field(
             film,
             tile_rows=source_tile_rows,
             model=source_model,
+            workers=source_workers,
         )
     )
     if not np.any(source):
@@ -631,6 +644,8 @@ def halation_return_field(
         )
     )
     del work_source
+    if return_fraction != 1.0:
+        spread *= return_fraction
     return spread
 
 
@@ -640,6 +655,8 @@ def apply_halation(
     fast: bool = False,
     work_long_edge: int | None = None,
     source_model: str = FULL_HALATION_SOURCE_MODEL,
+    source_workers: int = 1,
+    exposure_ceiling: float | None = 4.0,
 ) -> np.ndarray:
     """用 PSF 对高光泄漏能量做卷积，再以暖色散射能量加回线性图像。"""
     image = np.asarray(image, dtype=np.float32)
@@ -652,5 +669,6 @@ def apply_halation(
         fast=fast,
         work_long_edge=work_long_edge,
         source_model=source_model,
+        source_workers=source_workers,
     )
-    return apply_parameterized_warm_return(image, spread, film)
+    return apply_parameterized_warm_return(image, spread, film, exposure_ceiling=exposure_ceiling)

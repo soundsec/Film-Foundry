@@ -12,16 +12,17 @@
     "agitation": 0.45,
     "push_stops": 0.0,
     "developer_exhaustion": 0.45,
-    "fixer_exhaustion": 0.70,
+    "fixer_exhaustion": 0.7,
     "compensation": 0.35,
     "silver_retention": 0.0,
-    "silver_plating": 0.55
+    "silver_plating": 0.55,
+    "formation_history_model": "bath_products_local_v2"
   },
   "mode": "bw_negative",
   "look": {
     "exposure_ev": -0.15,
     "negative_contrast": 0.92,
-    "halation_multiplier": 0.40,
+    "halation_multiplier": 0.4,
     "grain_multiplier": 1.05,
     "grain_size_multiplier": 1.12
   }

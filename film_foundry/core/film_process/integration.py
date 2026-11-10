@@ -10,7 +10,8 @@ from film_foundry.contracts.spectral_exposure import SpectralExposureProfile
 from film_foundry.contracts.spectral_optics import SpectralMaterialProfile
 from film_foundry.contracts.material_snapshot import MaterialSnapshot
 
-from film_foundry.core.development import EffectiveDevelopmentState, build_effective_development
+from film_foundry.core.development import EffectiveDevelopmentState
+from film_foundry.core.film_process.formation_history import material_development
 from film_foundry.core.derived_cache import pseudoinverse_3x3
 from film_foundry.core.execution_topology import reference_execution_enabled
 from film_foundry.core.film_process.model import (
@@ -71,6 +72,8 @@ def _compact_consumed_process_state(
     result.state.developability = np.empty((0, 0, layer_count), dtype=np.float32)
     result.state.coupler = None
     result.state.original_developability = None
+    result.state.formation_history = None
+    result.state.formation_created = None
     return totals
 
 
@@ -192,6 +195,8 @@ def _material_latent_curve_kwargs(
     )
     return {
         "latent_gamma": _material_curve_vector(film.hd_gamma, layer_count),
+        "chemical_fog_susceptibility": film.chemical_fog_susceptibility,
+        "time_response": film.time_response,
         "latent_density_range": _material_curve_vector(
             tuple(float(value) for value in density_range),
             layer_count,
@@ -268,6 +273,10 @@ def _compatibility_for_program(
     program=None,
 ) -> CompatibilityProfile:
     native_positive = str(film.image_polarity).strip().lower() == "positive"
+    from film_foundry.contracts.film_time import validate_response as validate_time_response
+    time_response=validate_time_response(film.time_response)
+    from film_foundry.contracts.process_events import validate_process_response
+    dye_attack=validate_process_response(film.process_response).get('dye_attack_l_mmol_s',.002)
     program_positive = "reversal" in str(program_key).strip().lower()
     native_mono = _is_monochrome_material(film)
     program_mono = str(program_key).strip().lower().startswith("bw_")
@@ -282,6 +291,8 @@ def _compatibility_for_program(
     )
     if native_positive == program_positive and native_mono == program_mono:
         return CompatibilityProfile(
+            time_response=time_response,
+            dye_attack_l_mmol_s=dye_attack,
             mask_bleach=mask_bleach,
             mask_bleach_dye_damage=mask_damage,
         )
@@ -294,6 +305,8 @@ def _compatibility_for_program(
         else configured_balance
     )
     return CompatibilityProfile(
+        time_response=time_response,
+        dye_attack_l_mmol_s=dye_attack,
         silver_development=float(np.clip(film.cross_process_silver_development, 0.0, 1.0)),
         dye_coupling=float(np.clip(film.cross_process_dye_coupling, 0.0, 2.0)),
         activation=float(np.clip(film.cross_process_activation, 0.0, 1.0)),
@@ -314,6 +327,7 @@ def _material_latent_state(
     material: ReducedFilmMaterial,
     *,
     latent_layer_exposure_addition: np.ndarray | LayerExposureAdditionField | None = None,
+    exposure_duration_seconds: float | None = None,
 ) -> FilmProcessState:
     """Freeze material-only latent activation before any process operator.
 
@@ -373,12 +387,22 @@ def _material_latent_state(
             # experiences the same stock ageing/speed response before the
             # material-only latent curve.
             layer_exposure += addition * material_scale.reshape(1, 1, -1)
+    from film_foundry.core.film_process.reciprocity import layer_efficiency
+    efficiency = layer_efficiency(film.reciprocity_response, exposure_duration_seconds, material.layer_count)
+    if efficiency is not None:
+        layer_exposure *= efficiency
+    from film_foundry.core.film_process.time_history import storage_response
+    stored=storage_response(film,material.layer_count)
+    if stored is not None:layer_exposure*=stored[0]
     state = material.expose(
         layer_exposure,
         preserve_original_developability=False,
         consume_layer_exposure=True,
     )
+    state.exposure_duration_seconds = exposure_duration_seconds
     state.auxiliary_remaining = float(np.clip(film.auxiliary_layer_amount, 0.0, 1.0))
+    if stored is not None:
+        state.developability+=(1.-state.developability)*stored[1]
     if film.spectral_exposure_profile is not None:
         state.spectral_exposure_profile = SpectralExposureProfile.from_value(film.spectral_exposure_profile)
     if film.spectral_material_profile is not None:
@@ -386,10 +410,10 @@ def _material_latent_state(
     return state
 
 
-def freeze_material_latent_state(image_linear, film, material, *, latent_layer_exposure_addition=None):
+def freeze_material_latent_state(image_linear, film, material, *, latent_layer_exposure_addition=None, exposure_duration_seconds=None):
     """Public freeze boundary; private work-grid estimates do not need a snapshot."""
     state = _material_latent_state(image_linear, film, material,
-        latent_layer_exposure_addition=latent_layer_exposure_addition)
+        latent_layer_exposure_addition=latent_layer_exposure_addition, exposure_duration_seconds=exposure_duration_seconds)
     state.material_snapshot = MaterialSnapshot(asdict(film))
     return state
 
@@ -401,6 +425,7 @@ def _resolve_latent_state(
     *,
     exposed_latent: FilmProcessState | None = None,
     latent_layer_exposure_addition: np.ndarray | LayerExposureAdditionField | None = None,
+    exposure_duration_seconds: float | None = None,
 ) -> FilmProcessState:
     """Return a frozen exposed state; do not re-expose when one is supplied."""
     if exposed_latent is not None:
@@ -425,6 +450,7 @@ def _resolve_latent_state(
         film,
         material,
         latent_layer_exposure_addition=latent_layer_exposure_addition,
+        exposure_duration_seconds=exposure_duration_seconds,
     )
 
 
@@ -530,9 +556,15 @@ def develop_bw_negative_reduced(
     *,
     local_development_rate: object | None = None,
     latent_layer_exposure_addition: np.ndarray | LayerExposureAdditionField | None = None,
+    exposure_duration_seconds: float | None = None,
     retain_latent_fraction: bool = True,
     retain_process_state: bool = True,
     exposed_latent: FilmProcessState | None = None,
+    process_run=None,
+    grain_response_output=None,
+    grain_response_row_offset=0,
+    coupled_intervals: int = 8,
+    retain_grain_moments: bool = True,
 ) -> ReducedBwDevelopment:
     """Run a silver-only negative program without changing material identity.
 
@@ -540,7 +572,7 @@ def develop_bw_negative_reduced(
     chemistry keeps its three sensitivity layers and colored base, but forms no
     dye; their retained silver is observed as neutral broadband density.
     """
-    effective = build_effective_development(recipe)
+    effective = material_development(recipe)
     material_is_mono = _is_monochrome_material(film)
     layer_count = _material_layer_count(film, exposed_latent)
     material = _silver_material(film, layer_count)
@@ -550,6 +582,7 @@ def develop_bw_negative_reduced(
         material,
         exposed_latent=exposed_latent,
         latent_layer_exposure_addition=latent_layer_exposure_addition,
+        exposure_duration_seconds=exposure_duration_seconds,
     )
     latent_fraction = (
         # The mutable process state may reuse its activation buffer after the
@@ -565,7 +598,11 @@ def develop_bw_negative_reduced(
         mode="bw_negative",
         material_process="negative",
         layer_count=layer_count,
+        coupled_intervals=coupled_intervals,
     )
+    if not retain_grain_moments:
+        from .formation_history import prepare_fog_only_history
+        prepare_fog_only_history(latent_state, recipe)
     compatibility = _compatibility_for_program(film, program.key, layer_count, program=program)
     result = apply_process_program(
         material,
@@ -576,7 +613,10 @@ def develop_bw_negative_reduced(
         transfer_final_pool_ownership=True,
         local_development_rate=local_development_rate,
         validate_each_step=False,
+        process_run=process_run,
     )
+    if grain_response_output is not None:
+        grain_response_output.capture(result.state,row_offset=grain_response_row_offset)
     process_totals = (
         None if retain_process_state else _compact_consumed_process_state(result)
     )
@@ -786,12 +826,18 @@ def develop_bw_reversal_reduced(
     *,
     local_development_rate: object | None = None,
     latent_layer_exposure_addition: np.ndarray | LayerExposureAdditionField | None = None,
+    exposure_duration_seconds: float | None = None,
     retain_latent_fraction: bool = True,
     retain_process_state: bool = True,
     exposed_latent: FilmProcessState | None = None,
+    process_run=None,
+    grain_response_output=None,
+    grain_response_row_offset=0,
+    coupled_intervals: int = 8,
+    retain_grain_moments: bool = True,
 ) -> ReducedBwDevelopment:
     """Form a silver positive by developing the halide left by first development."""
-    effective = build_effective_development(recipe)
+    effective = material_development(recipe)
     material_is_mono = _is_monochrome_material(film)
     layer_count = _material_layer_count(film, exposed_latent)
     material = _silver_material(film, layer_count)
@@ -801,6 +847,7 @@ def develop_bw_reversal_reduced(
         material,
         exposed_latent=exposed_latent,
         latent_layer_exposure_addition=latent_layer_exposure_addition,
+        exposure_duration_seconds=exposure_duration_seconds,
     )
     latent_fraction = (
         np.array(state.developability, dtype=np.float32, copy=True)
@@ -812,7 +859,11 @@ def develop_bw_reversal_reduced(
         mode="bw_reversal",
         material_process="reversal",
         layer_count=layer_count,
+        coupled_intervals=coupled_intervals,
     )
+    if not retain_grain_moments:
+        from .formation_history import prepare_fog_only_history
+        prepare_fog_only_history(state, recipe)
     compatibility = _compatibility_for_program(film, program.key, layer_count, program=program)
     result = apply_process_program(
         material,
@@ -823,7 +874,10 @@ def develop_bw_reversal_reduced(
         transfer_final_pool_ownership=True,
         local_development_rate=local_development_rate,
         validate_each_step=False,
+        process_run=process_run,
     )
+    if grain_response_output is not None:
+        grain_response_output.capture(result.state,row_offset=grain_response_row_offset)
     process_totals = (
         None if retain_process_state else _compact_consumed_process_state(result)
     )
@@ -955,16 +1009,22 @@ def develop_color_negative_reduced(
     *,
     local_development_rate: object | None = None,
     latent_layer_exposure_addition: np.ndarray | LayerExposureAdditionField | None = None,
+    exposure_duration_seconds: float | None = None,
     retain_latent_fraction: bool = True,
     retain_process_state: bool = True,
     exposed_latent: FilmProcessState | None = None,
+    process_run=None,
+    grain_response_output=None,
+    grain_response_row_offset=0,
+    coupled_intervals: int = 8,
+    retain_grain_moments: bool = True,
 ) -> ReducedColorDevelopment:
     """Run color coupling, bleach, and fixing before producing a density master.
 
     Monochrome stocks keep a zero coupler pool. Colour developer still reduces
     silver, but no dye can form; standard bleach then clears that silver.
     """
-    effective = build_effective_development(recipe)
+    effective = material_development(recipe)
     layer_count = _material_layer_count(film, exposed_latent)
     material = _color_material(film, layer_count)
     latent_state = _resolve_latent_state(
@@ -973,6 +1033,7 @@ def develop_color_negative_reduced(
         material,
         exposed_latent=exposed_latent,
         latent_layer_exposure_addition=latent_layer_exposure_addition,
+        exposure_duration_seconds=exposure_duration_seconds,
     )
     latent_fraction = (
         np.array(latent_state.developability, dtype=np.float32, copy=True)
@@ -984,7 +1045,11 @@ def develop_color_negative_reduced(
         mode="color_negative",
         material_process="negative",
         layer_count=layer_count,
+        coupled_intervals=coupled_intervals,
     )
+    if not retain_grain_moments:
+        from .formation_history import prepare_fog_only_history
+        prepare_fog_only_history(latent_state, recipe)
     compatibility = _compatibility_for_program(film, program.key, layer_count, program=program)
     result = apply_process_program(
         material,
@@ -995,7 +1060,10 @@ def develop_color_negative_reduced(
         transfer_final_pool_ownership=True,
         local_development_rate=local_development_rate,
         validate_each_step=False,
+        process_run=process_run,
     )
+    if grain_response_output is not None:
+        grain_response_output.capture(result.state,row_offset=grain_response_row_offset)
     process_totals = (
         None if retain_process_state else _compact_consumed_process_state(result)
     )
@@ -1162,12 +1230,18 @@ def develop_color_reversal_reduced(
     *,
     local_development_rate: object | None = None,
     latent_layer_exposure_addition: np.ndarray | LayerExposureAdditionField | None = None,
+    exposure_duration_seconds: float | None = None,
     retain_latent_fraction: bool = True,
     retain_process_state: bool = True,
     exposed_latent: FilmProcessState | None = None,
+    process_run=None,
+    grain_response_output=None,
+    grain_response_row_offset=0,
+    coupled_intervals: int = 8,
+    retain_grain_moments: bool = True,
 ) -> ReducedColorDevelopment:
     """Form a dye positive from the halide remaining after first development."""
-    effective = build_effective_development(recipe)
+    effective = material_development(recipe)
     layer_count = _material_layer_count(film, exposed_latent)
     material = _color_material(film, layer_count)
     state = _resolve_latent_state(
@@ -1176,6 +1250,7 @@ def develop_color_reversal_reduced(
         material,
         exposed_latent=exposed_latent,
         latent_layer_exposure_addition=latent_layer_exposure_addition,
+        exposure_duration_seconds=exposure_duration_seconds,
     )
     latent_fraction = (
         np.array(state.developability, dtype=np.float32, copy=True)
@@ -1187,7 +1262,11 @@ def develop_color_reversal_reduced(
         mode="color_reversal",
         material_process="reversal",
         layer_count=layer_count,
+        coupled_intervals=coupled_intervals,
     )
+    if not retain_grain_moments:
+        from .formation_history import prepare_fog_only_history
+        prepare_fog_only_history(state, recipe)
     compatibility = _compatibility_for_program(film, program.key, layer_count, program=program)
     result = apply_process_program(
         material,
@@ -1198,7 +1277,10 @@ def develop_color_reversal_reduced(
         transfer_final_pool_ownership=True,
         local_development_rate=local_development_rate,
         validate_each_step=False,
+        process_run=process_run,
     )
+    if grain_response_output is not None:
+        grain_response_output.capture(result.state,row_offset=grain_response_row_offset)
     process_totals = (
         None if retain_process_state else _compact_consumed_process_state(result)
     )

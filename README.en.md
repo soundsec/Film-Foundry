@@ -8,6 +8,8 @@ Film Foundry is an image-creation tool built around materials and processes. Exp
 
 **Desktop 0.4.0 Alpha** · [中文](README.md) · [Release notes](docs/CHANGELOG.md)
 
+The current tree is a **2026-11-10 development source checkpoint**, including gallery workflows, experimental media, processing/performance work and selective preset sharing. Display versions are unchanged; no new EXE or APK was built. Previously distributed binaries differ from this source. See the [source snapshot notes](docs/DEVELOPMENT_SNAPSHOT.md).
+
 ## Mobile
 
 Load a roll, shoot, develop and view. Currently an **Android 0.1.0 test version**, requiring Android 8.0 or later, with testing focused on **ARM64 phones**. There is no iOS version. See [Android source and build instructions](android/README.md).
@@ -26,9 +28,11 @@ Actual phone UI with synthetic rolls in a separate demo installation. See the [i
 
 ## Desktop
 
-For individual images, batches and recipe experiments. Includes separate material, bath and scanner editors, tone / RGB curves, Chinese / English and Dark / Light themes.
+For individual images, batches and recipe experiments. The current source starts from the gallery and keeps workspaces and full editors in one window, with single/dual sidebars, preset management, tone / RGB curves, HSL, Chinese / English and Dark / Light themes.
 
 ![Desktop workbench](docs/images/desktop-0.4.0/workbench-dark.png)
+
+This is the historical 0.4.0 interface. Current preset management and selective import appear in the [snapshot notes](docs/DEVELOPMENT_SNAPSHOT.md).
 
 ## Features
 
@@ -47,7 +51,7 @@ The same latent image is developed as a standard color negative, a reversal posi
 
 ## Quick start
 
-Python 3.10 or newer:
+Python 3.11 or newer is recommended for this development snapshot:
 
 ```bash
 pip install -r requirements.txt
@@ -60,6 +64,7 @@ Desktop inputs: JPEG, PNG, TIFF, BMP and WebP. For the Windows portable build, k
 
 | Document | Contents |
 | --- | --- |
+| [Development snapshot](docs/DEVELOPMENT_SNAPSHOT.md) | Current source changes, compatibility and remaining limits |
 | [Mobile overview](docs/MOBILE_SHOWCASE.en.md) / [Guide](docs/MOBILE_GUIDE.en.md) | Mobile workflow, interface and synthetic examples, installation, operation and resource handling |
 | [Desktop guide](docs/DESKTOP_GUIDE.md) | Tasks, presets, development, scanning, export, CLI and material masters |
 | [Technical reference](docs/REFERENCE.md) | Material / process model, parameter dictionary, spectra and performance |

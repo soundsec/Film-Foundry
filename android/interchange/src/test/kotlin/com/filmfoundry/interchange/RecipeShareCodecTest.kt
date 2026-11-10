@@ -7,6 +7,13 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class RecipeShareCodecTest {
+    @Test fun desktopExposureTransportIsPreservedWithoutClaimingExecution() {
+        val code=javaClass.getResource("/ffc2_desktop_exposure_sample.txt")!!.readText().trim()
+        val decoded=RecipeShareCodec.decode(code)
+        assertEquals(12.5,((decoded["exposure"] as Map<*,*>)["duration_seconds"] as Number).toDouble())
+        assertEquals(decoded,RecipeShareCodec.decode(RecipeShareCodec.encode(decoded)))
+        assertThrows(ConfigShareException::class.java) { RecipeShareCodec.encode(mapOf("exposure" to 3)) }
+    }
     private val sample = mapOf(
         "film" to mapOf(
             "name" to "Pocket Custom",

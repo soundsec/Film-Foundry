@@ -42,6 +42,32 @@ LATENT_OPTIONAL_ARRAY_KEYS = (
 )
 
 
+def unexposed_latent_like(state: FilmProcessState, *, validate_only=False):
+    """Create an unexposed slot with the same unprocessed material pools.
+
+    A black scene still passes through a photographic toe; an unused slot has
+    no image exposure. An explicit pre-exposure storage fog remains. Processing may subsequently produce fog,
+    residual salts or reversal density. No already-formed pool can be erased.
+    """
+    state.validate()
+    for key in ('metallic_silver', 'dye', 'bleached_halide'):
+        pool = getattr(state,key)
+        if pool is not None and np.any(pool != 0):
+            raise ValueError('Unexposed slots require an unprocessed latent template')
+    if validate_only: return None
+    blank=state.copy()
+    blank.exposure_duration_seconds = None
+    blank.developability.fill(0)
+    if blank.material_snapshot is not None:
+        from film_foundry.model.config import DarkroomConfig
+        from film_foundry.core.film_process.time_history import storage_response
+        film=DarkroomConfig.from_dict({'film':blank.material_snapshot.parameters()}).film
+        stored=storage_response(film,blank.halide.shape[-1])
+        if stored is not None:blank.developability[:]=stored[1]
+    if blank.original_developability is not None:blank.original_developability[:]=blank.developability
+    return blank
+
+
 def latent_identity_from_film(film: FilmStockConfig) -> dict[str, Any]:
     """Portable identity copied from an existing film stock, not a new schema."""
     polarity = str(film.image_polarity).strip().lower() or "negative"
@@ -106,6 +132,19 @@ def latent_medium_metadata(
         "consumed": False,
     }
     payload.update(identity)
+    from film_foundry.core.formed_film_border import validate_border_snapshot
+    payload.pop('film_border_snapshot', None)
+    if state.film_border_snapshot is not None:
+        payload['film_border_snapshot'] = validate_border_snapshot(state.film_border_snapshot)
+    from film_foundry.contracts.film_exposure import conditions_record
+    exposure = conditions_record(state.exposure_duration_seconds)
+    if exposure is not None:
+        payload['exposure_conditions'] = exposure
+    elif 'exposure_conditions' in payload:
+        raise ValueError('exposure_conditions belongs to the latent state, not its identity')
+    from film_foundry.contracts.optical_cascade import CASCADE_KEY, validate_cascade
+    if CASCADE_KEY in payload:
+        payload[CASCADE_KEY] = validate_cascade(payload[CASCADE_KEY])
     if state.material_snapshot is not None:
         source = state.material_snapshot.parameters()
         native = FilmStockConfig(**{key: source[key] for key in (
@@ -159,6 +198,36 @@ def save_exposed_latent(
     return atomic_savez(path, compressed=True, compression_level=1, **arrays)
 
 
+def inspect_latent_material(path: Path):
+    """Read immutable material, geometry and image size without loading pools.
+
+    This is an editor inspection, not validation of a complete latent state;
+    the processing loader still validates all arrays when executing the task.
+    """
+    with np.load(Path(path),allow_pickle=False) as data:
+        if LATENT_JSON_KEY not in data.files:raise ValueError('Not a latent archive')
+        raw=data[LATENT_JSON_KEY]
+        if raw.shape!=():raise ValueError('Invalid latent metadata')
+        metadata=strict_json_loads(str(raw.item()))
+    if not isinstance(metadata,dict) or metadata.get('kind')!=LATENT_KIND or metadata.get('stage')!=LATENT_STAGE:
+        raise ValueError('Not an exposed latent state')
+    if MATERIAL_SNAPSHOT_KEY not in metadata:raise ValueError('Latent material snapshot is missing')
+    material=MaterialSnapshot.from_value(metadata[MATERIAL_SNAPSHOT_KEY])
+    geometry=MaterialGeometry.from_dict(metadata['material_geometry']) if metadata.get('material_geometry') else None
+    # The legacy physical-geometry field is optional. Read only the NPY header
+    # for its pixel dimensions; inspecting a large latent must not inflate pools.
+    try:
+        with zipfile.ZipFile(path) as archive,archive.open('developability.npy') as stream:
+            version=np.lib.format.read_magic(stream)
+            if version==(1,0):shape,_,_=np.lib.format.read_array_header_1_0(stream)
+            elif version==(2,0):shape,_,_=np.lib.format.read_array_header_2_0(stream)
+            else:raise ValueError('Unsupported latent pool header')
+    except (KeyError,zipfile.BadZipFile) as exc:raise ValueError('Latent pool header is missing or invalid') from exc
+    if len(shape)!=3 or any(v<=0 for v in shape):raise ValueError('Invalid latent pool dimensions')
+    if geometry is not None and geometry.full_shape!=shape[:2]:raise ValueError('Latent geometry differs from pool dimensions')
+    return material,geometry,shape[:2]
+
+
 def load_exposed_latent(
     path: Path,
     *,
@@ -202,6 +271,9 @@ def load_exposed_latent(
                     metadata.pop(FRAME_IDENTITY_KEY, None)
                 else:
                     metadata[FRAME_IDENTITY_KEY] = normalized
+            from film_foundry.contracts.optical_cascade import CASCADE_KEY, validate_cascade
+            if CASCADE_KEY in metadata:
+                metadata[CASCADE_KEY] = validate_cascade(metadata[CASCADE_KEY])
             layer_count = int(metadata.get("layer_count") or 0)
             if layer_count <= 0:
                 raise ValueError(f"{path} layer_count 必须是正整数。")
@@ -221,7 +293,10 @@ def load_exposed_latent(
     except (OSError, EOFError, zipfile.BadZipFile) as exc:
         raise ValueError(f"无法读取潜影归档；NPZ 可能已截断或损坏：{path}") from exc
 
+    from film_foundry.contracts.film_exposure import duration_from_record
     state = FilmProcessState(
+        film_border_snapshot=metadata.get('film_border_snapshot'),
+        exposure_duration_seconds=duration_from_record(metadata.get('exposure_conditions')),
         halide=pools["halide"],
         developability=pools["developability"],
         metallic_silver=pools["metallic_silver"],
@@ -271,6 +346,7 @@ def mark_exposed_latent_consumed(path: Path) -> Path:
             "color_system",
             "compatible_interpreters",
             FRAME_IDENTITY_KEY,
+            'optical_cascade',
         )
         if key in metadata
     }

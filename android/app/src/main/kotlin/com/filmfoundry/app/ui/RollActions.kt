@@ -524,7 +524,8 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
                 val base=readRecipe()+("film" to (roll?.filmRecipe ?: section(readRecipe(),"film")))
                 val process=stages.development(base,roll?.developRecipe.orEmpty())
                 val scan=stages.observation(base,roll?.scannerRecipe.orEmpty())
-                val entries=PhoneRecipeCapabilities.inspect(process,PhoneRecipeCapabilities.Stage.DEVELOP).entries+
+                val profile=if(roll==null) defaultFormationProfile() else roll.captureSettings[PhoneFormationProfile.ROLL_SETTING]
+                val entries=PhoneRecipeCapabilities.inspect(process,PhoneRecipeCapabilities.Stage.DEVELOP,profile).entries+
                     PhoneRecipeCapabilities.inspect(scan,PhoneRecipeCapabilities.Stage.SCAN).entries
                 AlertDialog.Builder(activity).setTitle(copy("手机版配方能力","Phone recipe capabilities"))
                     .setMessage(capabilityText(shell,PhoneRecipeCapabilities.Report(entries.distinct()))+"\n\n"+
@@ -533,6 +534,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
                             PhoneRecipeCapabilities.Status.REDUCED -> copy("手机轻量模型","phone reduced model")
                             PhoneRecipeCapabilities.Status.PRESERVED -> copy("保留但未执行","retained, not executed")
                             PhoneRecipeCapabilities.Status.UNSUPPORTED -> copy("不支持","unsupported")
+                            PhoneRecipeCapabilities.Status.OMITTED -> copy("轻量形成中省略","omitted in lightweight formation")
                         } })
                     .setPositiveButton(copy("知道了","Got it"),null).show()
             }.onFailure { status(it.message.orEmpty()) }
@@ -830,6 +832,12 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         informationDialogs.show(copy("胶卷信息","Roll information")) {
             LibraryInfoDialog.Content(information.roll(roll),listOf(
                 LibraryInfoDialog.Section(copy("材料","Material"),roll.filmRecipe),
+                LibraryInfoDialog.Section(copy("形成方式","Formation"),description=
+                    if(roll.captureSettings[PhoneFormationProfile.ROLL_SETTING]==PhoneFormationProfile.LIGHTWEIGHT)
+                        copy("轻量形成：保留颗粒的明暗响应、材料与药浴差异；简化分层颗粒，省略邻接效应和 DIR 抑制。药痕、网纹采用参数触发的密度附加。像素尺寸与扫描流程不变。",
+                            "Lightweight formation: preserves density-dependent grain, stock and bath differences. Simplifies layered grain and omits adjacency and DIR inhibition. Stains and reticulation use parameter-triggered density overlays. Pixel dimensions and scanning are unchanged.")
+                    else copy("沿用原有手机形成：包含分层颗粒，以及配方开启的邻接效应和 DIR 抑制。装卷后形成方式固定。",
+                        "Original phone formation, including layered grain and recipe-enabled adjacency and DIR inhibition. The choice is fixed when loading.")),
                 LibraryInfoDialog.Section(copy("拍摄","Capture"),roll.captureSettings),
                 LibraryInfoDialog.Section(copy("冲洗默认","Develop defaults"),roll.developRecipe),
                 LibraryInfoDialog.Section(copy("扫描默认","Scan defaults"),roll.scannerRecipe)),material=true,
@@ -1247,7 +1255,8 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             val base=readRecipe()+value
             val film=section(value,"film").ifEmpty { active?.filmRecipe ?: section(base,"film").ifEmpty { section(builtin.materials.first().recipe,"film") } }
             val settings=active?.captureSettings ?: mapOf("format" to "135","spatial_effects_revision" to PhoneMaterialDefaults.REVISION,PhoneGrainModels.ROLL_SETTING to PhoneGrainModels.LAYERED,
-                "material_model" to PhoneProcessModels.CURRENT,PhoneMaterialPhenomena.ROLL_SETTING to PhoneMaterialPhenomena.CURRENT)
+                "material_model" to PhoneProcessModels.CURRENT,PhoneMaterialPhenomena.ROLL_SETTING to PhoneMaterialPhenomena.CURRENT,
+                PhoneFormationProfile.ROLL_SETTING to defaultFormationProfile())
             CameraEffectsDialog(activity,shell,sampleWorker,sampleCache).open(cameraSettings(),film,settings,selected=frozenRecipe(base),previewOnly=true) { }
         }.onFailure { Toast.makeText(activity,it.message,Toast.LENGTH_LONG).show() }
     }
@@ -1260,7 +1269,8 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             val fallback=section(readRecipe(),"film")
             val film=roll?.filmRecipe ?: (fallback+("spatial_reference_short_edge_mm" to (fallback["spatial_reference_short_edge_mm"] ?: 24.0)))
             val settings=roll?.captureSettings ?: mapOf("format" to "135","spatial_effects_revision" to PhoneMaterialDefaults.REVISION,PhoneGrainModels.ROLL_SETTING to PhoneGrainModels.LAYERED,
-                "material_model" to PhoneProcessModels.CURRENT,PhoneMaterialPhenomena.ROLL_SETTING to PhoneMaterialPhenomena.CURRENT)
+                "material_model" to PhoneProcessModels.CURRENT,PhoneMaterialPhenomena.ROLL_SETTING to PhoneMaterialPhenomena.CURRENT,
+                PhoneFormationProfile.ROLL_SETTING to defaultFormationProfile())
             CameraEffectsDialog(activity,shell,sampleWorker,sampleCache).open(cameraSettings(),film,settings,imprintOnly=imprintOnly,
                 initialAutoAdvance=if(imprintOnly) null else autoAdvance.isChecked,
                 saveAutoAdvance={ autoAdvance.isChecked=it }) { camera ->
@@ -1378,6 +1388,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             } else newRollDialog(animateLoading=!preferences.getBoolean("skip_loading",false))
         }.show()
     }
+    private fun defaultFormationProfile()=if(preferences.getBoolean("load_lightweight_formation",true)) PhoneFormationProfile.LIGHTWEIGHT else PhoneFormationProfile.DETAILED
     private fun newRollDialog(animateLoading: Boolean=false) {
         val pairings=this.pairings
         val catalog=runCatching { RecipeCatalog(PrivateRecipeCatalogStore(storage)).films() }.getOrElse { status(it.message.orEmpty());return }
@@ -1391,6 +1402,16 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         }
         val material=MaterialPicker(activity,shell,builtin,catalog,runCatching { RecipeDrafts.filmFromRecipe(readRecipe()) }.getOrDefault(emptyMap()))
         panel.addView(material)
+        val lightweight=CheckBox(activity).apply {
+            text=copy("轻量形成（推荐）","Lightweight formation (recommended)")
+            isChecked=defaultFormationProfile()==PhoneFormationProfile.LIGHTWEIGHT
+            val explanation=copy("简化分层颗粒，省略邻接效应与 DIR 抑制。保留颗粒的明暗响应及基础事故，尺寸与扫描不变；装卷后固定。",
+                "Simplifies layered grain and omits adjacency and DIR inhibition. Keeps density-dependent grain and basic incidents; dimensions and scanning stay unchanged. Fixed when loading.")
+            tooltipText=explanation
+            setOnLongClickListener { Toast.makeText(activity,explanation,Toast.LENGTH_LONG).show();true }
+        }
+        panel.addView(lightweight)
+        fun selectedFormationProfile()=if(lightweight.isChecked) PhoneFormationProfile.LIGHTWEIGHT else PhoneFormationProfile.DETAILED
         val pairing=choice(copy("材料／冲洗／扫描搭配","Material / process / scan pairing"),listOf(copy("自行选择","Choose independently"))+pairings.map { copy(it.labelZh,it.labelEn) },details)
         val pairingInfo=TextView(activity);details.addView(pairingInfo)
         pairing.onItemSelectedListener=object: AdapterView.OnItemSelectedListener {
@@ -1451,10 +1472,11 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             return film
         }
         fun materialCaption() {
-            runCatching { val base=readRecipe();PhoneRecipeCapabilities.inspect(base+("film" to selectedStock(base)),PhoneRecipeCapabilities.Stage.CAPTURE) }
+            runCatching { val base=readRecipe();PhoneRecipeCapabilities.inspect(base+("film" to selectedStock(base)),PhoneRecipeCapabilities.Stage.CAPTURE,selectedFormationProfile()) }
                 .onSuccess { report->materialInfo.text=capabilityText(shell,report);materialInfo.visibility=if(report.warnings.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE }
                 .onFailure { materialInfo.text=it.message;materialInfo.visibility=android.view.View.VISIBLE }
         }
+        lightweight.setOnCheckedChangeListener { _,_->materialCaption() }
         material.onChanged={ item ->
             pairings.getOrNull(pairing.selectedItemPosition-1)?.let { selected -> if(item?.id!="builtin:"+selected.materialId) pairing.setSelection(0) }
             if(item?.id?.startsWith("builtin:season_")==true) {
@@ -1468,7 +1490,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
                 val base=readRecipe();val selected=pairings.getOrNull(pairing.selectedItemPosition-1)?.recipe ?: base
                 val f=formats[format.selectedItemPosition]
                 val capture=mapOf("format" to f,"spatial_effects_revision" to PhoneMaterialDefaults.REVISION,PhoneGrainModels.ROLL_SETTING to PhoneGrainModels.LAYERED,"material_model" to PhoneProcessModels.CURRENT,
-                    PhoneMaterialPhenomena.ROLL_SETTING to PhoneMaterialPhenomena.CURRENT)
+                    PhoneMaterialPhenomena.ROLL_SETTING to PhoneMaterialPhenomena.CURRENT,PhoneFormationProfile.ROLL_SETTING to selectedFormationProfile())
                 val border=newFilmBorder(f,material.selected?.let { it.id.removePrefix("builtin:") } ?: "FILM FOUNDRY")
                 CameraEffectsDialog(activity,shell,sampleWorker,sampleCache).open(cameraSettings(),configuredStock(base),capture,selected=selected+("film_border" to border),previewOnly=true) { }
             }.onFailure { Toast.makeText(activity,it.message,Toast.LENGTH_LONG).show() }
@@ -1545,6 +1567,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             settings["material_preset_id"]=selectedMaterial.id
             settings["spatial_effects_revision"]=PhoneMaterialDefaults.REVISION
             settings[PhoneGrainModels.ROLL_SETTING]=PhoneGrainModels.LAYERED
+            settings[PhoneFormationProfile.ROLL_SETTING]=selectedFormationProfile()
             settings["gate_revision"]=StillFrameFormat.MODEL
             settings["film_border"]=newFilmBorder(f,selectedMaterial.id.takeIf { it.startsWith("builtin:") }?.removePrefix("builtin:") ?: selectedMaterial.name)
             settings["material_model"]=com.filmfoundry.interchange.PhoneProcessModels.CURRENT
@@ -1571,6 +1594,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             preferences.edit().putString("rewind",settings["rewind"] as String).apply()
             preferences.edit().putString("load_format",f).putInt("load_length",listOf(12,24,36)[length.selectedItemPosition]).apply()
             preferences.edit().putBoolean("time_roll_names",timeName.isChecked).apply()
+            preferences.edit().putBoolean("load_lightweight_formation",lightweight.isChecked).apply()
             val draft=RollLoadingSession(library,UUID.randomUUID().toString(),capacity,film,label,
                 section(chosenPairing?.recipe ?: frozen,"develop"),section(chosenPairing?.recipe ?: frozen,"scanner"),settings)
             val loaded={ if(chosenPairing!=null) stages.useLoadedPairing() }
@@ -2666,7 +2690,8 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         val roll = current?.let(library::roll)
         if(::stages.isInitialized) {
             val processing=(developmentRoll ?: current)?.let(library::roll)
-            stages.bindDevelopment(processing?.developRecipe.orEmpty(),processing?.filmRecipe.orEmpty(),processing?.let(::materialLabel),processing?.rollId)
+            stages.bindDevelopment(processing?.developRecipe.orEmpty(),processing?.filmRecipe.orEmpty(),processing?.let(::materialLabel),processing?.rollId,
+                if(processing==null) defaultFormationProfile() else processing.captureSettings[PhoneFormationProfile.ROLL_SETTING])
         }
         val pace=roll?.captureSettings?.get("pace")?.toString() ?: "still"
         val actualCapture=(camera() as? StoredStillCamera)?.plannedDimensions()

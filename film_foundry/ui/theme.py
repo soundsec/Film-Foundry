@@ -63,6 +63,18 @@ def stylesheet(t: Theme) -> str:
         QPushButton:hover {{background:{t.hover};}}
         QPushButton:pressed, QPushButton:focus {{border-color:{t.accent};}}
         QPushButton:disabled {{background:{t.surface}; color:{t.disabled};}}
+        QToolButton {{background:{t.button}; border:1px solid {t.border}; border-radius:5px; padding:6px 9px;}}
+        QToolButton:hover {{background:{t.hover};}}
+        QToolButton:checked, QPushButton:checked {{background:{t.selected}; border-color:{t.accent};}}
+        QToolButton:disabled {{background:{t.surface}; color:{t.disabled};}}
+        QToolButton::menu-indicator {{subcontrol-position:right bottom;}}
+        QTreeWidget {{background:{t.surface}; border:1px solid {t.border}; border-radius:5px;}}
+        QTreeWidget::item {{padding:5px;}}
+        QTreeWidget::item:selected {{background:{t.selected};}}
+        QHeaderView::section {{background:{t.surface}; color:{t.muted}; border:0; padding:6px;}}
+        QMenu {{background:{t.surface}; border:1px solid {t.border}; padding:4px;}}
+        QMenu::item {{padding:7px 22px;}}
+        QMenu::item:selected {{background:{t.selected};}}
         QGroupBox {{font-weight:600; border:1px solid {t.border}; border-radius:6px; margin-top:1.5em; padding-top:0.6em;}}
         QGroupBox::title {{subcontrol-origin:margin; left:12px; padding:0 4px;}}
         QFrame#parameterSection {{border:1px solid {t.border}; border-radius:6px;}}
@@ -98,6 +110,18 @@ def stylesheet(t: Theme) -> str:
         QTabBar::tab {{background:{t.surface}; padding:6px 10px; border:1px solid {t.border};}}
         QTabBar::tab:selected {{background:{t.button};}}
         QScrollArea {{border:0;}}
+        QSlider::groove:horizontal {{height:4px; border-radius:2px; background:{t.border};}}
+        QSlider::sub-page:horizontal {{background:{t.accent}; border-radius:2px;}}
+        QSlider::handle:horizontal {{background:{t.text}; border:2px solid {t.surface}; width:12px; margin:-6px 0; border-radius:7px;}}
+        QSlider::handle:horizontal:hover {{background:{t.accent};}}
+        QSlider::sub-page:horizontal:disabled {{background:{t.disabled};}}
+        QToolButton#editorTab {{border:1px solid {t.border}; background:{t.surface}; padding:7px 14px; border-radius:5px;}}
+        QToolButton#editorTab:checked {{background:{t.selected}; border-color:{t.accent};}}
+        QLabel#editorHeading {{background:{t.surface}; padding:8px 10px; border-radius:4px;}}
+        QTableWidget#bathSequence {{background:{t.surface}; border:1px solid {t.border}; border-radius:6px; gridline-color:{t.border};}}
+        QTableWidget#bathSequence::item {{padding:7px;}}
+        QTableWidget#bathSequence::item:selected {{background:{t.selected};}}
+        QHeaderView::section {{background:{t.surface}; color:{t.muted}; padding:7px; border:0; border-bottom:1px solid {t.border};}}
         QProgressBar {{background:{t.surface}; border:1px solid {t.border}; border-radius:6px;}}
         QProgressBar::chunk {{background:{t.accent}; border-radius:5px;}}
         QScrollBar {{background:{t.surface};}}

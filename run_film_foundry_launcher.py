@@ -321,8 +321,10 @@ def main() -> None:
             os._exit(0)
     elif len(sys.argv) >= 3 and sys.argv[1] == "--tool":
         run_tool(sys.argv[2])
-    else:
+    elif len(sys.argv) >= 2 and sys.argv[1] == "--launcher":
         FoundryLauncher().run()
+    else:
+        run_tool("main")
 
 
 if __name__ == "__main__":

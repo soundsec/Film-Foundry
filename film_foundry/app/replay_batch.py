@@ -25,6 +25,7 @@ from film_foundry.core.media import developed_medium_contract
 from film_foundry.core.sidecar import final_positive_sidecar
 from film_foundry.model.config import DarkroomConfig
 from film_foundry.model.session import load_session, save_session
+from film_foundry.app.source_seed import normalize_offsets, offset_for
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,7 @@ class ResumeResult:
 def load_resume_plan(path) -> ResumePlan:
     manifest = Path(path)
     payload = load_session(manifest)
+    payload['path_seed_offsets'] = normalize_offsets(payload.get('path_seed_offsets'))
     run = payload.get("run")
     if not isinstance(run, dict) or not run.get("actual_output"):
         raise ValueError("Select a batch run record, not a recipe or saved session")
@@ -86,7 +88,11 @@ def load_resume_plan(path) -> ResumePlan:
         inputs += [item for item in iterator(Path(source)) if str(item) not in recorded]
     if not inputs:
         raise ValueError("No batch inputs were found")
-    assert_unique_output_stems(inputs, command)
+    if run.get('selection_layout')=='numbered':
+        destinations=[recorded.get(str(path)) for path in inputs]
+        if not all(destinations) or len(set(str(Path(p).resolve()) for p in destinations))!=len(destinations):
+            raise ValueError('Selected-image batch requires distinct recorded output paths')
+    else:assert_unique_output_stems(inputs, command)
     if command in {"develop", "expose", "develop_latent"}:
         frame_identity_for_item(payload, 0, len(inputs))
     polarity = developed_medium_contract(config)["image_polarity"] if command in {"develop", "develop_latent"} else None
@@ -119,7 +125,7 @@ def _complete_output(plan, item):
     return None
 
 
-def run_resume_batch(plan: ResumePlan, *, control=None) -> ResumeResult:
+def run_resume_batch(plan: ResumePlan, *, control=None,on_result=None) -> ResumeResult:
     if control is not None:
         control.check_cancel()
     payload = copy.deepcopy(plan.settings)
@@ -145,9 +151,15 @@ def run_resume_batch(plan: ResumePlan, *, control=None) -> ResumeResult:
                 reused += 1
                 continue
             identity = frame_identity_for_item(payload, index, len(plan.items)) if plan.command in {"expose", "develop", "develop_latent"} else None
-            request_output = plan.output_root if plan.command in {"develop", "develop_latent"} else destination
+            request_output = (plan.output_root if plan.command in {"develop", "develop_latent"}
+                              and payload.get("run",{}).get("selection_layout") != "numbered" else destination)
+            item_config=plan.config
+            if plan.command in {'full','develop','expose'} and payload.get('run',{}).get('selection_layout')=='numbered':
+                from film_foundry.app.workspace_jobs import numbered_photo_config
+                item_config=numbered_photo_config(plan.config,index+1)
             result = run_request(WorkflowRequest(plan.command, item.input_path, request_output,
-                plan.config, scaled_override=plan.scaled, frame_identity=identity, control=control))
+                item_config, scaled_override=plan.scaled, frame_identity=identity, control=control,
+                path_seed_offset=offset_for(item.input_path, payload.get('path_seed_offsets'))))
             destination = result.output_path or destination
             if plan.command == "scan":
                 scanned = result.extra["scanned"]
@@ -159,6 +171,9 @@ def run_resume_batch(plan: ResumePlan, *, control=None) -> ResumeResult:
                     control.check_cancel()
                 save_image_bundle(scanned.output_srgb, destination, plan.config.output,
                     sidecar, protected_paths=(item.input_path, source))
+            if on_result:
+                from film_foundry.app.workspace_jobs import workflow_result_record
+                on_result(workflow_result_record(item.input_path,result,output_path=destination))
             completed += 1
         except Exception as exc:
             failures.append((item.input_path, exc))
@@ -170,6 +185,14 @@ def run_resume_batch(plan: ResumePlan, *, control=None) -> ResumeResult:
             records.append(batch_item_record(item.input_path, destination, perf_counter()-item_started))
     finalize_batch_run(payload, operation=plan.command, started_at=started_at,
         elapsed_seconds=perf_counter()-started, items=records)
+    # Cancellation leaves the rest unstarted. Keep every planned destination,
+    # especially numbered selections which cannot infer missing paths by stem.
+    # Summary counts above describe attempts, not the untouched pending items.
+    recorded = {str(record['input']): record for record in records}
+    payload['batch']['items'] = [recorded.get(str(item.input_path), {
+        'input': str(item.input_path), 'output': str(item.output_path),
+        'status': 'pending', 'elapsed_seconds': 0.,
+    }) for item in plan.items]
     payload["batch"]["reused"] = reused
     if cancelled:
         payload["run"]["status"] = payload["batch"]["status"] = "cancelled"

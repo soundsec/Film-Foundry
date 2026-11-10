@@ -9,17 +9,18 @@
     "time_min": 8.0,
     "temperature_c": 20.0,
     "concentration": 1.0,
-    "agitation": 0.90,
+    "agitation": 0.9,
     "push_stops": 0.0,
     "developer_exhaustion": 0.05,
     "fixer_exhaustion": 0.12,
-    "compensation": 0.20,
+    "compensation": 0.2,
     "silver_retention": 0.0,
-    "silver_plating": 0.0
+    "silver_plating": 0.0,
+    "formation_history_model": "bath_products_local_v2"
   },
   "mode": "bw_negative",
   "look": {
-    "exposure_ev": -0.10,
+    "exposure_ev": -0.1,
     "negative_contrast": 0.98,
     "halation_multiplier": 0.45,
     "grain_multiplier": 1.0,

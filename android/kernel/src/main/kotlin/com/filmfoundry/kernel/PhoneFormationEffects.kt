@@ -4,7 +4,7 @@ import kotlin.math.*
 
 /** Independent phone creative models. Bounded row scratch, absolute material coordinates. */
 internal class PhoneFormationEffects(recipe: Map<String,Any?>, source: Map<String,Any?>,
-    private val width: Int, private val height: Int) {
+    private val width: Int, private val height: Int, private val lightweight: Boolean=false) {
     private val film=recipe["film"] as? Map<*,*> ?: emptyMap<Any,Any>()
     private val develop=recipe["develop"] as? Map<*,*> ?: emptyMap<Any,Any>()
     private val identity=source["frame_identity"] as? Map<*,*> ?: emptyMap<Any,Any>()
@@ -19,7 +19,7 @@ internal class PhoneFormationEffects(recipe: Map<String,Any?>, source: Map<Strin
     private val baseGrain=if(profile != null) (profile["grain_strength"] as Number).toFloat().also { require(it.isFinite() && it in 0f..1f) }
         else if(recipe["enable_grain"] == false) 0f else amount(film,"grain_strength",.25f)
     val grain=(baseGrain*((bathGrain?.get("strength") as? Number)?.toFloat() ?: 1f)).coerceIn(0f,1f)
-    val grainModel=profile?.get("model")?.toString() ?: "phone_density_cloud_v1"
+    val grainModel=if(lightweight) "phone_shared_density_cloud_v1" else profile?.get("model")?.toString() ?: "phone_density_cloud_v1"
     private val uneven=amount(develop,"uneven_development")
     private val stain=amount(develop,"chemical_stain")
     private val reticulation=amount(develop,"reticulation_strength")
@@ -46,6 +46,17 @@ internal class PhoneFormationEffects(recipe: Map<String,Any?>, source: Map<Strin
     }
     private val layered=if(grain>0f && grainModel==com.filmfoundry.interchange.PhoneGrainModels.LAYERED)
         PhoneLayerDyeCloud(width,referencePixels,grainSize,scales!!,weights!!,frame,grainMu,grainSigma) else null
+    private val fineRadius=max(.75f,(scales?.first() ?: .0012f)*referencePixels*grainSize*.45f)
+    private val coarseRadius=max(fineRadius,(scales?.last() ?: .010f)*referencePixels*grainSize)
+    // Fold omitted intermediate scales into fine energy, not into oversized clumps.
+    private val coarseMix=((weights?.let {
+        if(it.size==1) 0f else it.last()/(sqrt(it.dropLast(1).sumOf { v->(v*v).toDouble() }).toFloat()+it.last())
+    } ?: .1f)*
+        ((bathGrain?.get("clump") as? Number)?.toFloat() ?: 1f)).coerceIn(0f,.6f)
+    private val cloudNorm=sqrt((1f-coarseMix)*(1f-coarseMix)+coarseMix*coarseMix)
+    private val densityResponse=if(lightweight && grain>0f) FloatArray(1025) { i ->
+        val t=(i/1024f-grainMu)/grainSigma;.06f+.94f*exp(-.5f*t*t)
+    } else null
     private fun value(x: Int,y: Int,seed: Long): Float {
         // Coordinate PRNG, independently expressed; no image/file checksum.
         var state=seed+x.toLong()*104729L+y.toLong()*130363L
@@ -67,6 +78,10 @@ internal class PhoneFormationEffects(recipe: Map<String,Any?>, source: Map<Strin
     /** Signed |x|^1.5: fog collapses, clump bodies stay, and the mean stays near zero. */
     private fun clump(noise: Float): Float { val x=noise.coerceIn(-1f,1f);val mag=abs(x);return sign(x)*mag*sqrt(mag) }
     private fun envelope(amount: Float): Float {
+        densityResponse?.let {
+            val v=amount.coerceIn(0f,1f)*1024f;val i=v.toInt().coerceAtMost(1023);val t=v-i
+            return it[i]*(1-t)+it[i+1]*t
+        }
         val t=(amount.coerceIn(0f,1f)-grainMu)/grainSigma
         return .06f+.94f*exp(-.5f*t*t)
     }
@@ -88,6 +103,12 @@ internal class PhoneFormationEffects(recipe: Map<String,Any?>, source: Map<Strin
     }
     fun grainFactor(x: Int,y: Int,layer: Int,amount: Float,cache: GrainSamples?=null): Float {
         if(grain == 0f) return 1f
+        if(lightweight) {
+            val fine=shared(x,y,0,fineRadius,frame+11,true,true,cache)
+            val coarse=if(coarseMix>0f) shared(x,y,1,coarseRadius,frame+712,true,true,cache) else 0f
+            val cloud=(fine*(1f-coarseMix)+coarse*coarseMix)/cloudNorm
+            return 1f+(grain*7f*cloud*envelope(amount)).coerceIn(-.42f,.42f)
+        }
         layered?.let { model ->
             val samples=if(cache==null) model.samples(false) else {
                 if(cache.layeredOwner!==model) { cache.layeredOwner=model;cache.layered=model.samples() }
@@ -153,6 +174,9 @@ internal class PhoneFormationEffects(recipe: Map<String,Any?>, source: Map<Strin
         "incident_scope" to "roll","incident_identity" to batch,
         "coordinates" to "absolute_material_pixels_v1") + (if(profile != null) mapOf("grain_profile" to profile) else emptyMap()) +
         (if(bathGrain!=null) mapOf("bath_grain_character" to bathGrain) else emptyMap()) +
+        (if(lightweight && grain>0f) mapOf("density_response" to "material_midtone_envelope_v1",
+            "shared_grain_radii_px" to listOf(fineRadius,coarseRadius),"coarse_mix" to coarseMix,
+            "independent_layer_noise" to false) else emptyMap()) +
         (if(layered!=null) mapOf("dye_cloud" to if(singleLayer) "omitted_v0" else "layer_density_coarse_cloud_v1",
             "layer_shared_mix" to .32f,"grain_layer_count" to if(singleLayer) 1 else 3) else emptyMap())
 }

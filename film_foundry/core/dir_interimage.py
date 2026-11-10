@@ -91,6 +91,7 @@ def build_dir_material_response_field(
     work_long_edge: int = 1800,
     exposed_latent=None,
     material_source: MaterialLatentSource | None = None,
+    process_contact=None,
 ) -> tuple[GlobalLayerRateMultiplierField | None, dict[str, object]]:
     """Build a colour-step-only layer inhibitor field without live pool use."""
 
@@ -153,6 +154,7 @@ def build_dir_material_response_field(
         state,
         program,
         compatibility,
+        local_development_rate=process_contact.at_shape(grid.work_shape) if process_contact is not None else None,
         consume_private_state=True,
     )
     capacity = np.asarray(material.coupler_capacity, dtype=np.float32).reshape(1, 1, 3)

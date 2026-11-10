@@ -121,3 +121,21 @@ def make_smits_exposure_profile(layers: int = 3) -> SpectralExposureProfile:
                         for i in range(len(wave)-1)) for row in sensitivity)
     return SpectralExposureProfile("ff_smits7_analytic_light_v1", CAPTURE_WORKING_SPACE,
         wave, basis, sensitivity, gain, SMITS_EXPOSURE_MODEL_ID)
+
+
+def make_historical_exposure_profile(response: str) -> SpectralExposureProfile:
+    """Analytic creative mono sensitivities, not measured commercial emulsions.
+
+    Ortho follows the blue/green-sensitive category (see ILFORD ORTHO PLUS
+    technical data). RGB-to-spectrum reconstruction cannot recover actual
+    scene spectra, UV or IR that the source image did not record.
+    """
+    if response not in ('panchromatic','orthochromatic','blue_sensitive','red_weighted_visible'):
+        raise ValueError('Unknown monochrome sensitivity family')
+    base=make_smits_exposure_profile(1);wave=base.wavelengths_nm
+    if response=='blue_sensitive':values=tuple(exp(-.5*((n-450)/35)**2) if n<=530 else 0. for n in wave)
+    elif response=='orthochromatic':values=tuple((.7*exp(-.5*((n-450)/40)**2)+exp(-.5*((n-535)/36)**2)) if n<600 else 0. for n in wave)
+    elif response=='red_weighted_visible':values=tuple(.3*exp(-.5*((n-450)/45)**2)+.6*exp(-.5*((n-540)/50)**2)+1.5*exp(-.5*((n-660)/40)**2) for n in wave)
+    else:values=tuple(.6*exp(-.5*((n-450)/45)**2)+exp(-.5*((n-540)/50)**2)+.7*exp(-.5*((n-620)/45)**2) for n in wave)
+    integral=sum((values[i]+values[i+1])*(wave[i+1]-wave[i])*.5 for i in range(len(wave)-1))
+    return SpectralExposureProfile('ff_analytic_'+response+'_v1',CAPTURE_WORKING_SPACE,wave,base.rgb_basis,(values,),(1/integral,),SMITS_EXPOSURE_MODEL_ID)

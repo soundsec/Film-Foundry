@@ -49,6 +49,19 @@ class CurveCanvas(QtWidgets.QWidget):
         theme=colors()
         p.fillRect(self.rect(), QtGui.QColor(theme.canvas))
         rect = self.plot_rect()
+        bins=self.editor.histogram_bins
+        if bins is not None:
+            from film_foundry.ui.histogram import histogram_plot
+            selected=self.editor.channel.currentIndex()
+            channels=([0] if not self.editor.rgb else [1,2,3] if selected==0 else [selected])
+            heights,_,_=histogram_plot(bins,channels,rect.width())
+            p.setPen(QtCore.Qt.PenStyle.NoPen)
+            for channel,values in zip(channels,heights):
+                p.setBrush(QtGui.QColor(['#777777','#844747','#478447','#474784'][channel]))
+                path=QtGui.QPainterPath(QtCore.QPointF(rect.left(),rect.bottom()))
+                for index,value in enumerate(values):
+                    path.lineTo(rect.left()+(index+.5)/len(values)*rect.width(),rect.bottom()-float(value)*rect.height())
+                path.lineTo(rect.right(),rect.bottom());path.closeSubpath();p.drawPath(path)
         p.setPen(QtGui.QPen(QtGui.QColor(theme.grid), 1))
         for i in range(5):
             f=i/4
@@ -127,6 +140,7 @@ class CurveEditor(QtWidgets.QWidget):
         self.points=[list(IDENTITY) for _ in range(3 if self.rgb else 1)]
         self.selected=0
         self._loading=False
+        self.histogram_bins=None
         layout=QtWidgets.QVBoxLayout(self);layout.setContentsMargins(8, 8, 8, 8)
         bar=QtWidgets.QHBoxLayout();layout.addLayout(bar)
         titles={"tone_curve":text("影调曲线 · 亮度", "Tone curve · brightness"), "color_curve_rgb":text("成片 RGB 曲线", "Output RGB curves"), "device_response_rgb":text("设备采集响应", "Device capture response")}
@@ -155,13 +169,17 @@ class CurveEditor(QtWidgets.QWidget):
         for index,(label, callback) in enumerate([(text("恒等", "Identity"), self.reset_curve), (text("导入", "Import"), self.import_curve), (text("导出", "Export"), self.export_curve), (text("加点", "Add"), lambda: self.add_point()), (text("删点", "Remove"), self.remove_point)]):
             button=QtWidgets.QPushButton(label);button.clicked.connect(callback);actions.addWidget(button,index//3,index%3);self.buttons[label]=button
             button.setStyleSheet("padding:5px 7px;")
-        self.note=QtWidgets.QLabel(text("双击曲线加点，拖动调整；右键点或 Delete 删点。关闭保留编辑值。", "Double-click to add; drag to adjust. Right-click a point or Delete to remove. Disabling retains edits."));self.note.setWordWrap(True);layout.addWidget(self.note)
+        self.canvas.setToolTip(text("双击曲线加点，拖动调整；右键点或 Delete 删点。关闭保留编辑值。", "Double-click to add; drag to adjust. Right-click a point or Delete to remove. Disabling retains edits."))
         self.enabled.toggled.connect(self._enable)
         self.channel.currentIndexChanged.connect(lambda _: self.select_point(0))
         self.point.currentIndexChanged.connect(self.select_point)
         self.x.valueChanged.connect(lambda _: self.move_point(self.x.value(), self.y.value()))
         self.y.valueChanged.connect(lambda _: self.move_point(self.x.value(), self.y.value()))
         self.refresh()
+
+    def set_histogram(self,bins):
+        self.histogram_bins=bins
+        self.canvas.update()
 
     def active_channel(self):
         return max(0, self.channel.currentIndex()-1) if self.rgb else 0

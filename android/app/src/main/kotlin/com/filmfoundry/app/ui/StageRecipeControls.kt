@@ -88,9 +88,11 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
     private val scannerCapability=TextView(activity)
     private var fallbackProcess: Map<String,Any?> = emptyMap()
     private var processMaterial: Map<String,Any?> = emptyMap()
+    private var processFormationProfile: Any?=null
     private var developmentContext: String?=null
-    fun bindDevelopment(recipe: Map<String,Any?>,material: Map<String,Any?> = emptyMap(),label: String?=null,contextId: String?=null) {
+    fun bindDevelopment(recipe: Map<String,Any?>,material: Map<String,Any?> = emptyMap(),label: String?=null,contextId: String?=null,formationProfile: Any?=null) {
         val changed=contextId!=developmentContext;developmentContext=contextId
+        processFormationProfile=formationProfile
         fallbackProcess=recipe;processMaterial=material;processMaterialLabel=label;updateProcessSummary()
         if(changed) selectDevelopment(0)
     }
@@ -385,22 +387,28 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
         shell.resetSection(base,copy("片基与极性","Base & polarity")) { resetScan(setOf("remove_base_mask","invert_transmission"),polarity=true) }
         shell.resetSection(levels,copy("预设影调","Preset tone")) { resetScan(setOf("scan_normalize","scan_normalize_strength","scan_black_percentile","scan_white_percentile")) }
         shell.resetSection(advanced,copy("设备响应","Device response")) { resetScan(setOf("scanner_response_matrix","device_response_rgb","scanner_light_color")) }
-        finish.adapter=ArrayAdapter(activity,android.R.layout.simple_spinner_dropdown_item,listOf(copy("推荐成片","Recommended"),copy("柔和","Soft"),copy("浓郁","Rich"),copy("原配方","Original recipe")))
+        finish.adapter=ArrayAdapter(activity,android.R.layout.simple_spinner_dropdown_item,listOf(copy("经典成片","Classic finish"),copy("柔和","Soft"),copy("浓郁","Rich"),copy("原配方","Original recipe"),copy("自动成片","Automatic finish")))
         val preserve=prefs.getBoolean("manual",false) || scannerOverlay.isNotEmpty() || prefs.getInt("scanner",0)>0 || runCatching { current().containsKey("scanner") }.getOrDefault(false)
-        finish.setSelection(PhoneFinishRecipes.styles.indexOf(prefs.getString("finish_style",if(preserve) "custom" else "ready")).coerceAtLeast(0));activeFinishSelection=finish.selectedItemPosition;finish.visibility=android.view.View.GONE;advanced.addView(finish)
+        finish.setSelection(PhoneFinishRecipes.styles.indexOf(prefs.getString("finish_style",if(preserve) "custom" else PhoneFinishRecipes.AUTO)).coerceAtLeast(0));activeFinishSelection=finish.selectedItemPosition;finish.visibility=android.view.View.GONE;advanced.addView(finish)
         shell.styleButton(scannerStyle)
         scannerStyle.maxLines=2;scannerStyle.ellipsize=android.text.TextUtils.TruncateAt.END
         shell.scanPresetBar.addView(scannerStyle,0,LinearLayout.LayoutParams(0,-2,1f).apply { marginEnd=shell.dp(6) })
         scannerStyle.setOnClickListener {
             if(scanBusy) return@setOnClickListener
             val keys=listOf("current")+visibleScanners.map { "builtin:"+it.id }+userScanners.map { "saved:"+it.id }
-            val options=(0..2).map { VisualPresetPicker.Choice("finish:"+PhoneFinishRecipes.styles[it],finish.adapter.getItem(it).toString()) }+
+            val finishIndices=listOf(PhoneFinishRecipes.styles.indexOf(PhoneFinishRecipes.AUTO),0,1,2)
+            val options=finishIndices.map { VisualPresetPicker.Choice("finish:"+PhoneFinishRecipes.styles[it],finish.adapter.getItem(it).toString()) }+
                 keys.mapIndexed { i,key->VisualPresetPicker.Choice("scanner:$key",scanner.adapter.getItem(i).toString()) }
-            val selected=if(finish.selectedItemPosition in 0..2) "finish:"+PhoneFinishRecipes.styles[finish.selectedItemPosition] else "scanner:"+scannerKey()
+            val selected=if(finish.selectedItemPosition in finishIndices) "finish:"+PhoneFinishRecipes.styles[finish.selectedItemPosition] else "scanner:"+scannerKey()
             val before=scanDraft();beginScanEdit()
             fun candidate(id: String): ScanEditorDraft {
-                val index=options.indexOfFirst { it.id==id }
-                return before.copy(style=if(index<3) index else 3,scannerKey=if(index<3) "current" else keys[index-3],
+                if(id=="finish:"+PhoneFinishRecipes.AUTO) {
+                    val effective=observation(scanBase ?: current(),fallbackScanner,editor=true,draftOverride=before)
+                    return before.withAutomaticFinish(section(effective,"scanner"))
+                }
+                val style=if(id.startsWith("finish:")) PhoneFinishRecipes.styles.indexOf(id.removePrefix("finish:")) else 3
+                require(style>=0)
+                return before.copy(style=style,scannerKey=if(id.startsWith("finish:")) "current" else id.removePrefix("scanner:"),
                     overlay=emptyMap(),gain=null,manual=false,numbers=emptyMap(),curveDraft=null)
             }
             VisualPresetPicker(activity,shell).show(copy("扫描风格","Scan style"),"scanner",options,selected,
@@ -434,6 +442,20 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
         for(edge in listOf(1280,1920,3840)) shell.action(edges,"$edge","$edge") { grid.setText(edge.toString()) }.layoutParams=LinearLayout.LayoutParams(0,-2,1f)
         shell.action(scanDetails,"按底片尺寸","Use film size") { grid.setText("") }
         scanner.visibility=android.view.View.GONE;advanced.addView(scanner)
+        shell.action(colors,"分色 HSL…","Color Mixer · HSL…") {
+            if(!scanBusy) {
+                val value=section(editingObservation(scanBase ?: current(),fallbackScanner),"scanner")["color_mixer"]
+                com.filmfoundry.interchange.ColorMixerSettings.normalize(value)
+                val before=scanDraft();beginScanEdit()
+                showColorMixer(shell,colors,value,changed={ rows ->
+                    scannerOverlay=scannerOverlay+("color_mixer" to rows);onObservationChanged()
+                },closed={ accepted ->
+                    if(accepted) finishScanEdit() else {
+                        restoreScanDraft(scanHistory?.cancel() ?: before);scanHistory?.synchronize(scanDraft());onObservationChanged();save()
+                    }
+                })
+            }
+        }
         colorCaption.visibility=android.view.View.GONE;colors.addView(colorCaption)
         colorStrength.visibility=android.view.View.GONE;colorStrength.max=300;colorStrength.progress=100;colors.addView(colorStrength)
         colorStrength.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
@@ -445,10 +467,10 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
             override fun onStartTrackingTouch(bar: SeekBar?) { beginScanEdit() }
             override fun onStopTrackingTouch(bar: SeekBar?) { finishScanEdit() }
         })
-        shell.action(advanced,"恢复推荐成片","Reset to recommended") {
-            android.app.AlertDialog.Builder(activity).setTitle(copy("恢复推荐成片？","Reset to recommended?"))
-                .setMessage(copy("恢复推荐的风格参数；去片基、反相与输出设置保留。","Restores recommended style parameters; base correction, inversion and output settings are retained."))
-                .setNegativeButton(copy("取消","Cancel"),null).setPositiveButton(copy("恢复推荐","Reset")) { _,_->scanEdit {
+        shell.action(advanced,"恢复经典成片","Reset classic finish") {
+            android.app.AlertDialog.Builder(activity).setTitle(copy("恢复经典成片？","Reset classic finish?"))
+                .setMessage(copy("恢复旧版的饱和度与曲线；去片基、反相与输出设置保留。","Restores the original saturation and curve; base correction, inversion and output settings are retained."))
+                .setNegativeButton(copy("取消","Cancel"),null).setPositiveButton(copy("恢复","Reset")) { _,_->scanEdit {
             scannerOverlay=emptyMap();manual.isChecked=false;scanner.setSelection(0);activeScannerKey=scannerKey();finish.setSelection(0);brightnessOverride=false
             refreshSimple();save();onObservationChanged()
                 } }.show()
@@ -699,7 +721,7 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
             visibility=if(noImage) android.view.View.VISIBLE else android.view.View.GONE
             text=if(alternativeId=="phone_silver_bypass") copy("改用彩色负片工艺 · 留银","Use color negative · retain silver") else copy("改用胶卷推荐工艺","Use the recommended process")
         }
-        runCatching { PhoneRecipeCapabilities.inspect(mapOf("film" to processMaterial.ifEmpty { section(current(),"film") },"develop" to values),PhoneRecipeCapabilities.Stage.DEVELOP) }
+        runCatching { PhoneRecipeCapabilities.inspect(mapOf("film" to processMaterial.ifEmpty { section(current(),"film") },"develop" to values),PhoneRecipeCapabilities.Stage.DEVELOP,processFormationProfile) }
             .onSuccess { report ->
                 processCapability.text=capabilityText(shell,report)
                 processCapability.visibility=if(report.warnings.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
@@ -717,7 +739,7 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
             else -> userScanners[position-visibleScanners.size-1].recipe
         }
         val style=PhoneFinishRecipes.styles.getOrElse(draft.style) { "ready" }
-        val value=((if(style == "custom") custom else PhoneFinishRecipes.observation(if(inherited) base-"scanner" else base,custom,style))+(if(includeAdjustments) draft.overlay else emptyMap())).toMutableMap()
+        val value=((if(style == "custom") custom else PhoneFinishRecipes.observation(if(inherited || style==PhoneFinishRecipes.AUTO) base-"scanner" else base,custom,style))+(if(includeAdjustments) draft.overlay else emptyMap())).toMutableMap()
         if(includeAdjustments && draft.manual) {
             for((key,pair) in numbers) {
                 pair.first.error=null

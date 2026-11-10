@@ -8,6 +8,8 @@ Film Foundry 是围绕成像材料与处理过程组织的影像创作工具。�
 
 **桌面 0.4.0 Alpha** · [English](README.en.md) · [更新记录](docs/CHANGELOG.md)
 
+当前源码为 **2026-11-10 开发中间留档**，包含图库工作流、实验材料、工艺与性能扩展及选择性预设分享。显示版本暂不变，未重新构建 EXE／APK；旧安装包不等同于此源码。详见[源码快照说明](docs/DEVELOPMENT_SNAPSHOT.md)。
+
 ## 手机版
 
 围绕装卷、拍摄、冲洗和观片，打造完整的手机摄影体验。目前提供 **Android 0.1.0 测试版**，要求 Android 8.0 及以上，现阶段以 **ARM64 手机**为测试范围。暂无 iOS 版本。
@@ -26,9 +28,11 @@ Film Foundry 是围绕成像材料与处理过程组织的影像创作工具。�
 
 ## 桌面版
 
-适合单张创作、批量处理和配方实验。提供独立材料、药浴与扫描编辑器，影调／RGB 曲线，以及中文、英文和深色／Light 外观。
+适合单张创作、批量处理和配方实验。当前源码从图库选择图像进入同窗工作区，提供单／双侧布局、材料／药浴／扫描编辑器、预设管理、影调／RGB 曲线和分色 HSL，以及中文、英文和深色／Light 外观。
 
 ![桌面工作台](docs/images/desktop-0.4.0/workbench-dark.png)
+
+上图为 0.4.0 历史界面；当前预设管理与选择接收见[开发快照](docs/DEVELOPMENT_SNAPSHOT.md)。
 
 ## 主要功能
 
@@ -47,7 +51,7 @@ Film Foundry 是围绕成像材料与处理过程组织的影像创作工具。�
 
 ## 快速开始
 
-Python 3.10 或更新版本：
+当前开发源码建议 Python 3.11 或更新版本：
 
 ```bash
 pip install -r requirements.txt
@@ -60,6 +64,7 @@ python run_film_foundry_launcher.py
 
 | 文档 | 查什么 |
 | --- | --- |
+| [开发中源码快照](docs/DEVELOPMENT_SNAPSHOT.md) | 本次中间留档的新增内容、兼容范围与未完成项 |
 | [手机图文介绍](docs/MOBILE_SHOWCASE.md) / [操作指南](docs/MOBILE_GUIDE.md) | 手机体验、界面与合成效果、安装架构、操作与资源保留 |
 | [桌面指南](docs/DESKTOP_GUIDE.md) | 任务、预设、冲洗与扫描、导出、CLI 和材料母带 |
 | [技术参考](docs/REFERENCE.md) | 材料与工艺、参数字典、光谱与性能策略 |

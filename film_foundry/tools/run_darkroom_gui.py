@@ -74,6 +74,7 @@ from film_foundry.tools.paths import app_root, resource_root
 from film_foundry.app.workflow import *  # noqa: F401,F403
 from film_foundry.app import workflow as _workflow
 from film_foundry.app.api import WorkflowRequest, run_request
+from film_foundry.app.source_seed import normalize_offsets, offset_for
 from film_foundry.app.control import CancelFlag, WorkflowCancelled, WorkflowControl
 from film_foundry.app.config_assets import PROFILE_TYPES, load_profile_file, load_recipe_file
 from film_foundry.app.material_batch import run_material_batch
@@ -157,6 +158,7 @@ class PreviewRequest:
     source_path: Path
     long_edge: int = PREVIEW_PROCESS_LONG_EDGE
     reduced_inputs: bool = False
+    path_seed_offset: int | None = None
 
 
 def labeled_preview_tile(title: str, image: np.ndarray, tile_size: int) -> Image.Image:
@@ -214,6 +216,7 @@ class DarkroomPanel:
         self._recipe_base = None
         self._editor_windows = {}
         self._frame_identity = None
+        self._path_seed_offsets = {}
         self._profiles = {key: None for key in PROFILE_TYPES}
         self._profile_labels = {key: ui.TextValue(value=tr("profile.disabled")) for key in PROFILE_TYPES}
         self.spatial_reference_mm = ui.TextValue(value="")
@@ -943,19 +946,9 @@ class DarkroomPanel:
     def _apply_editor_bank(self, bank, edited):
         scaled = bool(self.run_as_preview.get())
         config = self._config()
-        if bank == "film":
-            config.film = copy.deepcopy(edited.film)
-            config.mode, config.medium = edited.mode, edited.medium
-        elif bank == "develop":
-            config.chemistry = copy.deepcopy(edited.chemistry)
-            config.mode, config.medium = edited.mode, edited.medium
-            for key in DEVELOP_LOOK_FIELDS:
-                setattr(config.look, key, copy.deepcopy(getattr(edited.look, key)))
-        elif bank in {"scanner", "positive_scanner"}:
-            config.scanner = copy.deepcopy(edited.scanner)
-            config.enable_subtractive = edited.enable_subtractive
-            for key in SCAN_LOOK_FIELDS:
-                setattr(config.look, key, getattr(edited.look, key))
+        if bank in {"film", "develop", "scanner", "positive_scanner"}:
+            from film_foundry.app.config_assets import apply_recipe_bank
+            config = apply_recipe_bank(config, edited, bank)
         elif bank == "runtime":
             from film_foundry.ui.runtime_settings import SETTINGS
             for section, key, *_ in SETTINGS:
@@ -1192,6 +1185,10 @@ class DarkroomPanel:
     def _sync_film_preset_controls(self) -> None:
         self._set_material_ui_from_key(self.film_preset.get())
         path = film_preset_path(self.film_preset.get())
+        from film_foundry.app.seasonal_collection import localized_description
+        from film_foundry.ui.i18n import current_language
+        if hasattr(self, 'film_preset_combo'):
+            self.film_preset_combo.set_tooltip(localized_description('film',self.film_preset.get(),current_language()) if path.parent != USER_FILM_PRESET_DIR else '')
         if not path.exists():
             self.film_preset_source.set(preset_source_text(self.film_preset.get(), USER_FILM_PRESET_DIR, FILM_PRESET_DIR))
             return
@@ -1205,7 +1202,7 @@ class DarkroomPanel:
         for key in ("spectral_exposure_profile", "spectral_material_profile"):
             self._set_profile(key, getattr(config.film, key))
         self.material_degradation.set(float(config.film.material_degradation))
-        if self.develop_preset.get() in {
+        if (not hasattr(self,'auto_develop') or self.auto_develop.get()) and self.develop_preset.get() in {
             "standard_color_negative",
             "standard_bw_negative",
             "standard_color_reversal",
@@ -1441,6 +1438,7 @@ class DarkroomPanel:
             "run_as_preview": bool(self.run_as_preview.get()),
         }
         payload["frame_identity"] = copy.deepcopy(self._frame_identity)
+        payload["path_seed_offsets"] = copy.deepcopy(self._path_seed_offsets)
         return payload
 
     def _session_payload_for_config(self, config: DarkroomConfig) -> dict:
@@ -1457,6 +1455,7 @@ class DarkroomPanel:
             "run_as_preview": bool(self.run_as_preview.get()),
         }
         payload["frame_identity"] = copy.deepcopy(self._frame_identity)
+        payload["path_seed_offsets"] = copy.deepcopy(self._path_seed_offsets)
         return payload
 
     def _save_session(self) -> None:
@@ -1648,48 +1647,46 @@ class DarkroomPanel:
             return
         try:
             payload = load_session(path)
-            self._frame_identity = normalize_frame_identity(payload.get("frame_identity"))
-            paths = payload.get("paths", {})
-            if isinstance(paths, dict):
-                self.input_path.set(str(paths.get("input", self.input_path.get())))
-                self.negative_path.set(
-                    str(paths.get("developed_medium", paths.get("negative", self.negative_path.get())))
-                )
-                self.output_path.set(str(paths.get("output", self.output_path.get())))
-            presets = payload.get("presets", {})
-            if isinstance(presets, dict):
-                if isinstance(presets.get("film"), dict):
-                    self.film_preset.set(preset_value_from_reference(presets["film"]))
-                if isinstance(presets.get("develop"), dict):
-                    self.develop_preset.set(preset_value_from_reference(presets["develop"]))
-                if isinstance(presets.get("scanner"), dict):
-                    self.scanner_preset.set(preset_value_from_reference(presets["scanner"]))
-            config_data = payload.get("config")
-            if isinstance(config_data, dict):
-                self._apply_loaded_config(DarkroomConfig.from_dict(config_data))
-            ui_options = payload.get("ui_options")
-            if isinstance(ui_options, dict):
-                self.scan_output_near_source.set(
-                    bool(ui_options.get("scan_output_near_source", True))
-                )
-                self.run_as_preview.set(
-                    bool(ui_options.get("run_as_preview", self.run_as_preview.get()))
-                )
-            self.pipeline_mode.set(str(payload.get("pipeline_mode", self.pipeline_mode.get())))
-            self._update_mode_visibility()
+            self._apply_session_payload(payload)
             self.status.set(f"{tr('status.session_loaded')}: {path}")
         except Exception as exc:
             self.status.set(f"{tr('status.session_load_failed')}: {exc}")
+
+    def _apply_session_payload(self, payload):
+        config_data = payload.get('config')
+        config = DarkroomConfig.from_dict(config_data) if isinstance(config_data, dict) else None
+        identity = normalize_frame_identity(payload.get('frame_identity'))
+        offsets = normalize_offsets(payload.get('path_seed_offsets'))
+        self._frame_identity = identity
+        self._path_seed_offsets = offsets
+        self.pipeline_mode.set(str(payload.get('pipeline_mode', self.pipeline_mode.get())))
+        paths = payload.get('paths', {})
+        if isinstance(paths, dict):
+            self.input_path.set(str(paths.get('input', self.input_path.get())))
+            self.negative_path.set(str(paths.get('developed_medium', paths.get('negative', self.negative_path.get()))))
+            self.output_path.set(str(paths.get('output', self.output_path.get())))
+        presets = payload.get('presets', {})
+        if isinstance(presets, dict):
+            for key in ('film', 'develop', 'scanner'):
+                if isinstance(presets.get(key), dict):
+                    getattr(self, key + '_preset').set(preset_value_from_reference(presets[key]))
+        if config is not None:
+            self._apply_loaded_config(config)
+        options = payload.get('ui_options')
+        if isinstance(options, dict):
+            self.scan_output_near_source.set(bool(options.get('scan_output_near_source', True)))
+            self.run_as_preview.set(bool(options.get('run_as_preview', self.run_as_preview.get())))
+        self._update_mode_visibility()
 
     def _config(self) -> DarkroomConfig:
         mode = self.pipeline_mode.get()
         film_config = None
         develop_config = None
         scanner_config = None
-        if mode in ("full", "develop", "expose", "develop_latent"):
+        if self._recipe_base is None and mode in ("full", "develop", "expose", "develop_latent"):
             film_config = DarkroomConfig.from_json(film_preset_path(self.film_preset.get()))
             develop_config = DarkroomConfig.from_json(develop_preset_path(self.develop_preset.get()))
-        if mode in ("full", "scan"):
+        if self._recipe_base is None and mode in ("full", "scan"):
             scanner_config = DarkroomConfig.from_json(scanner_preset_path(self.scanner_preset.get()))
         config = (merge_config_presets(film_config, scanner_config, develop_config=develop_config)
                   if self._recipe_base is None else copy.deepcopy(self._recipe_base))
@@ -1937,6 +1934,7 @@ class DarkroomPanel:
             mode=mode,
             config=config,
             source_path=source_path,
+            path_seed_offset=offset_for(source_path, self._path_seed_offsets),
         )
         self._preview_running = True
         if self.preview_button is not None:
@@ -1976,7 +1974,8 @@ class DarkroomPanel:
             mode = request.mode
             config = request.config
             if mode == "full":
-                original, result, _hit = self._preview_session.render(request.source_path, config, long_edge=request.long_edge)
+                original, result, _hit = self._preview_session.render(request.source_path, config, long_edge=request.long_edge,
+                    path_seed_offset=request.path_seed_offset)
                 self._post_preview(request.token, lambda: self._show_preview(request.source_path.name, original, result, tr("preview.input_image"), tr("preview.final_positive")))
                 return
             if mode == "develop_latent":
@@ -1985,23 +1984,25 @@ class DarkroomPanel:
                     from film_foundry.app.preview_inputs import preview_latent
                     latent = preview_latent(latent, request.long_edge)
                 left = gray_to_rgb(np.mean(latent.developability, axis=-1))
-                medium = develop_negative_from_latent(latent, config, rng=rng_for_develop(request.source_path, config))
+                medium = develop_negative_from_latent(latent, config, rng=rng_for_develop(request.source_path, config, path_seed_offset=request.path_seed_offset))
                 right = optical_density_visual_preview(medium.optical_density_rgb)
                 self._post_preview(request.token, lambda: self._show_preview(request.source_path.name, left, right, tr("preview.latent"), tr("preview.stage.transmitted_medium")))
                 return
             if mode in ("develop", "expose"):
+                from film_foundry.core.source_image import load_formation_image, exposure_preview
+                from film_foundry.core.engine import expose_linear_to_latent
                 input_path = request.source_path
-                original = resize_to_long_edge(
-                    load_image(input_path, input_icc_policy=config.input_icc_policy),
-                    request.long_edge,
-                )
+                source, color = load_formation_image(input_path, input_icc_policy=config.input_icc_policy)
+                source = resize_to_long_edge(source, request.long_edge)
+                original = exposure_preview(source, color["encoding"])
                 if mode == "expose":
-                    latent = expose_image_to_latent(original, config, rng=rng_for_develop(input_path, config))
+                    expose = expose_linear_to_latent if color["encoding"] == "linear_rgb" else expose_image_to_latent
+                    latent = expose(source, config, rng=rng_for_develop(input_path, config, path_seed_offset=request.path_seed_offset))
                     right = gray_to_rgb(np.mean(latent.developability, axis=-1))
                     self._post_preview(request.token, lambda: self._show_preview(input_path.name, original, right, tr("preview.input_image"), tr("preview.latent")))
                     return
                 if mode == "develop":
-                    negative = develop_negative(original, config, rng=rng_for_develop(input_path, config))
+                    negative = develop_negative(source, config, input_encoding=color["encoding"], rng=rng_for_develop(input_path, config, path_seed_offset=request.path_seed_offset))
                     preview = negative_visual_preview(negative.density_grain, config.film)
                     density = density_preview(negative.density_grain, config)
                     halo_preview = gray_to_rgb(halation_alpha(negative.after_mtf, negative.after_halation))
@@ -2190,6 +2191,9 @@ class DarkroomPanel:
         code = getattr(exc, "code", None)
         return code == "cancelled"
 
+    def _record_generated_result(self,record):
+        """Frontend notification after an application result has been saved."""
+
     def _workflow_control(self, cancel_flag: CancelFlag | None) -> WorkflowControl | None:
         if cancel_flag is None:
             return None
@@ -2224,7 +2228,8 @@ class DarkroomPanel:
             control = self._workflow_control(cancel_flag)
             if mode in {"expose", "develop_latent"}:
                 batch = run_material_batch(mode, input_root if mode == "expose" else negative_root,
-                    output_root, config, scaled_override=bool(preview), settings=settings_snapshot, control=control)
+                    output_root, config, scaled_override=bool(preview), settings=settings_snapshot, control=control,
+                    on_result=self._record_generated_result)
                 self.root.after(0, lambda value=str(batch.medium_root): self._set_generated_medium_root(value))
                 message = self._batch_status(mode, batch.completed, batch.failures, batch.run_root)
                 if batch.record_error is not None:
@@ -2267,16 +2272,19 @@ class DarkroomPanel:
                     try:
                         if control is not None:
                             control.check_cancel()
-                        _run_request(
+                        result = _run_request(
                             WorkflowRequest(
                                 command="full",
                                 input_path=input_path,
+                                path_seed_offset=offset_for(input_path, settings_snapshot.get('path_seed_offsets')),
                                 output_path=output_path,
                                 config=config,
                                 scaled_override=bool(preview),
                                 control=control,
                             )
                         )
+                        from film_foundry.app.workspace_jobs import workflow_result_record
+                        self._record_generated_result(workflow_result_record(input_path,result))
                         completed += 1
                     except Exception as exc:
                         failures.append((input_path, exc))
@@ -2360,6 +2368,7 @@ class DarkroomPanel:
                             WorkflowRequest(
                                 command="develop",
                                 input_path=input_path,
+                                path_seed_offset=offset_for(input_path, settings_snapshot.get('path_seed_offsets')),
                                 output_path=developed_root,
                                 config=config,
                                 scaled_override=bool(preview),
@@ -2368,6 +2377,8 @@ class DarkroomPanel:
                             )
                         )
                         developed_path = result.output_path
+                        from film_foundry.app.workspace_jobs import workflow_result_record
+                        self._record_generated_result(workflow_result_record(input_path,result))
                         completed += 1
                     except Exception as exc:
                         failures.append((input_path, exc))
@@ -2461,6 +2472,7 @@ class DarkroomPanel:
                         WorkflowRequest(
                             command="scan",
                             input_path=negative_path,
+                            path_seed_offset=offset_for(negative_path, settings_snapshot.get('path_seed_offsets')),
                             output_path=output_path,
                             config=config,
                             control=control,
@@ -2490,6 +2502,8 @@ class DarkroomPanel:
                         sidecar,
                         protected_paths=(negative_path, scan_source_path),
                     )
+                    from film_foundry.app.workspace_jobs import workflow_result_record
+                    self._record_generated_result(workflow_result_record(negative_path,result,output_path=output_path))
                     completed += 1
                 except Exception as exc:
                     failures.append((negative_path, exc))

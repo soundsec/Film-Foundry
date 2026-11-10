@@ -61,7 +61,7 @@ class GlesSrgbRowCompute: SrgbRowCompute {
     override fun transmitSpectral(amounts: FloatArray,post: FloatArray?,plan: com.filmfoundry.kernel.SpectralTransmissionPlan): FloatArray =
         execute(amounts,2,post,plan)
     override fun encodeOutput(linear: FloatArray,plan: com.filmfoundry.kernel.ScanOutputPlan): FloatArray =
-        execute(linear,3,outputPlan=plan)
+        execute(linear,3,outputPlan=plan).also { plan.encoding.mixer?.apply(it) }
     private fun outputParameters(plan: com.filmfoundry.kernel.ScanOutputPlan): FloatArray {
         val n=plan.normalization;val e=plan.encoding
         val parameters=MutableList(24) { 0f }

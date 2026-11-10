@@ -216,11 +216,12 @@ class SlideLightTableTester:
         return config
 
     def _render_path(self, input_path: Path) -> tuple[Path, np.ndarray, np.ndarray, np.ndarray, object, DarkroomConfig]:
-        image = load_image(input_path)
-        preview_input = resize_to_long_edge(image, 900)
+        from film_foundry.core.source_image import load_formation_image, exposure_preview
+        image, color = load_formation_image(input_path)
+        preview_input = exposure_preview(resize_to_long_edge(image, 900), color["encoding"])
         config = self._config()
         work = resize_to_long_edge(image, 1600)
-        slide = develop_negative(work, config)
+        slide = develop_negative(work, config, input_encoding=color["encoding"])
         scanned = scan_negative(slide, config)
         return input_path, preview_input, scanned.scanner_raw, scanned.output_srgb, slide, config
 

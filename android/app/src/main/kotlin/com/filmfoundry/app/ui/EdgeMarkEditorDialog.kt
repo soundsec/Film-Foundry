@@ -85,6 +85,14 @@ fun showEdgeMarkEditor(activity: ComponentActivity,shell: MobileShell,initial: M
     linked.setOnCheckedChangeListener { _,value -> settings["factory_pattern_linked"]=value;syncSide() }
     shell.action(panel,"清空图案","Clear stencil") { grid.cells.fill(false);settings[active]=grid.pattern().encode();grid.invalidate();code.setText(settings[active].toString()) }
     shell.action(panel,"恢复材料文字","Use stock text") { settings[active]="";reload() }
+    val templateText=EditText(activity).apply { setSingleLine(true);hint=c("厂标文字：最多14位英文/数字","Factory label: up to 14 letters/digits") };panel.addView(templateText)
+    val templateBatch=EditText(activity).apply { setSingleLine(true);inputType=android.text.InputType.TYPE_CLASS_NUMBER;hint=c("批号 0–4095","Batch 0–4095");setText("0") };panel.addView(templateBatch)
+    shell.action(panel,"生成细字与识别条纹","Create lettering and ID bars") {
+        runCatching { com.filmfoundry.interchange.FactoryLabelPattern.create(templateText.text.toString(),templateBatch.text.toString().toInt()).encode() }
+            .onSuccess { settings[active]=it;reload();templateText.error=null;templateBatch.error=null }
+            .onFailure { templateText.error=c("1–14位英文/数字/空格/连字符；批号0–4095","1–14 letters/digits/spaces/hyphens; batch 0–4095") }
+    }
+    shell.note(panel,"条纹仅为批次装饰标记，不是DX或可扫描条码。格号在图案之外自动保留。","Bars are decorative batch marks, not DX or scanner barcodes. Frame numbering remains outside the stencil.")
     shell.field(panel,code,c("图案编码","Stencil code"),c("粘贴后点导入。编码只保存方格，不是可读条码标准。","Paste and tap Import. This code stores cells, not a barcode standard."))
     shell.action(panel,"导入编码","Import code") {
         runCatching { EdgeMarkPattern.decode(code.text.toString()).encode() }.onSuccess { settings[active]=it;reload() }

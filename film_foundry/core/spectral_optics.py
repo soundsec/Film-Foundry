@@ -1,9 +1,10 @@
 """Final-pool optics and read-only, bounded-memory spectral transmission."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 import numpy as np
+from film_foundry.contracts.emulsion_integrity import SPECTRAL_MODEL as EMULSION_MODEL, SPECTRAL_COVERAGE_KEY, SPECTRAL_COVERED_KEY, EMULSION_COMPONENTS
 
 from film_foundry.contracts.spectral_optics import (
     SpectralMaterialProfile, SpectralObservationProfile,
@@ -18,6 +19,8 @@ class SpectralMedium:
     component_amounts: np.ndarray
     base_component_amounts: tuple[float, ...]
     post_process_density_rgb: np.ndarray | None = None
+    emulsion_coverage: np.ndarray | None = field(default=None, kw_only=True)
+    covered_density_rgb: np.ndarray | None = field(default=None, kw_only=True)
 
     def __post_init__(self):
         profile = SpectralMaterialProfile.from_value(self.profile)
@@ -39,11 +42,31 @@ class SpectralMedium:
                 raise ValueError("spectral post-process density requires finite signed HxWx3 matching components")
             overlay.setflags(write=False)
             object.__setattr__(self, "post_process_density_rgb", overlay)
+        if self.emulsion_coverage is not None:
+            coverage=np.asarray(self.emulsion_coverage,dtype=np.float32)
+            if coverage.shape!=values.shape[:2] or not np.isfinite(coverage).all() or np.any(coverage<0) or np.any(coverage>1):
+                raise ValueError('Spectral emulsion coverage must be HxW in [0,1]')
+            coverage.setflags(write=False);object.__setattr__(self,'emulsion_coverage',coverage)
+        if self.covered_density_rgb is not None:
+            covered=np.asarray(self.covered_density_rgb,dtype=np.float32)
+            if self.emulsion_coverage is None or covered.shape!=values.shape[:2]+(3,) or not np.isfinite(covered).all():
+                raise ValueError('Covered spectral density requires matching emulsion coverage')
+            covered.setflags(write=False);object.__setattr__(self,'covered_density_rgb',covered)
+
+    def retained_component_rows(self, row_slice):
+        """Actual retained material; archived source arrays remain immutable."""
+        values=self.component_amounts[row_slice]
+        if self.emulsion_coverage is None:return values
+        result=values.copy();coverage=self.emulsion_coverage[row_slice]
+        for index in EMULSION_COMPONENTS:result[...,index]*=coverage
+        return result
 
     def metadata(self):
         payload = {"profile": self.profile.as_dict(), "base_component_amounts": list(self.base_component_amounts)}
         if self.post_process_density_rgb is not None:
             payload["post_process_model"] = SPECTRAL_POST_PROCESS_MODEL
+        if self.emulsion_coverage is not None:payload['emulsion_model']=EMULSION_MODEL
+        if self.covered_density_rgb is not None:payload['covered_density_model']=SPECTRAL_POST_PROCESS_MODEL
         return payload
 
 
@@ -109,6 +132,29 @@ def capture_spectral_medium(medium, observer, *, row_slice=None, clear_base=Fals
     overlay = None if clear_base else medium.post_process_density_rgb
     if overlay is not None and row_slice is not None:
         overlay = overlay[row_slice]
+    if not clear_base and medium.emulsion_coverage is not None:
+        from film_foundry.core.emulsion_spectral import capture_coverage
+        coverage=medium.emulsion_coverage if row_slice is None else medium.emulsion_coverage[row_slice]
+        covered=medium.covered_density_rgb
+        if covered is not None and row_slice is not None:covered=covered[row_slice]
+        return capture_coverage(values,coverage,covered,overlay,weights,absorbance,observer.wavelengths_nm)
+    if not reference_execution_enabled() and not clear_base:
+        from .desktop_compute import try_spectral, reject
+        from .execution_topology import execution_topology
+        basis = np.asarray([post_process_rgb_weights(w) for w in observer.wavelengths_nm], dtype=np.float64)
+        accelerated = try_spectral(values, absorbance, weights, overlay, basis)
+        if accelerated is not None:
+            # Sample without flattening/copying a full noncontiguous medium.
+            ys = np.linspace(0, values.shape[0]-1, min(values.shape[0], 32), dtype=int)
+            xs = np.linspace(0, values.shape[1]-1, min(values.shape[1], 32), dtype=int)
+            indices = np.ix_(ys, xs)
+            sample = SpectralMedium(medium.profile, values[indices], medium.base_component_amounts,
+                                    None if overlay is None else overlay[indices])
+            with execution_topology('reference'):
+                expected = capture_spectral_medium(sample, observer)
+            if np.allclose(accelerated[indices], expected, rtol=2e-7, atol=1e-35):
+                return accelerated
+            reject('Spectral kernel exceeded CPU tolerance')
     result = np.zeros(values.shape[:2] + (3,), dtype=np.float32)
     for start in range(0, values.shape[0], 128):
         stop = min(start + 128, values.shape[0])
@@ -163,17 +209,25 @@ def load_spectral_medium(data, payload, frame_shape):
     definition = payload.get("spectral_medium")
     present = "spectral_component_amounts" in data.files
     overlay_present = SPECTRAL_POST_PROCESS_ARRAY_KEY in data.files
-    if definition is None and not present and not overlay_present:
+    coverage_present = SPECTRAL_COVERAGE_KEY in data.files
+    covered_present = SPECTRAL_COVERED_KEY in data.files
+    if definition is None and not present and not overlay_present and not coverage_present and not covered_present:
         return None
     required = {"profile", "base_component_amounts"}
-    if not isinstance(definition, dict) or set(definition) not in (required, required | {"post_process_model"}) or not present:
+    if not isinstance(definition, dict) or not required<=set(definition) or set(definition)-required-{'post_process_model','emulsion_model','covered_density_model'} or not present:
         raise ValueError("spectral medium requires paired definition and component array")
     declared = "post_process_model" in definition
     if declared != overlay_present or (declared and definition["post_process_model"] != SPECTRAL_POST_PROCESS_MODEL):
         raise ValueError("spectral post-process model and density array must be paired and supported")
+    if ('emulsion_model' in definition)!=coverage_present or coverage_present and definition['emulsion_model']!=EMULSION_MODEL:
+        raise ValueError('Spectral emulsion model and coverage must be paired')
+    if ('covered_density_model' in definition)!=covered_present or covered_present and (not coverage_present or definition['covered_density_model']!=SPECTRAL_POST_PROCESS_MODEL):
+        raise ValueError('Covered spectral density requires its declared model and coverage')
     medium = SpectralMedium(SpectralMaterialProfile.from_value(definition["profile"]),
                             data["spectral_component_amounts"], definition["base_component_amounts"],
-                            data[SPECTRAL_POST_PROCESS_ARRAY_KEY] if overlay_present else None)
+                            data[SPECTRAL_POST_PROCESS_ARRAY_KEY] if overlay_present else None,
+                            emulsion_coverage=data[SPECTRAL_COVERAGE_KEY] if coverage_present else None,
+                            covered_density_rgb=data[SPECTRAL_COVERED_KEY] if covered_present else None)
     if medium.component_amounts.shape[:2] != tuple(frame_shape[:2]):
         raise ValueError("spectral components must match optical master geometry")
     return medium

@@ -34,6 +34,10 @@ New-Item -ItemType Directory -Force -Path $AlgorithmRoot | Out-Null
 foreach ($AlgorithmNotice in (Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "third_party_licenses") -File -Filter "*.txt")) {
     Copy-Item -LiteralPath $AlgorithmNotice.FullName -Destination $AlgorithmRoot -Force
 }
+$InputCodecNotices = Join-Path $ProjectRoot "third_party_licenses/input-codecs"
+if (Test-Path -LiteralPath $InputCodecNotices -PathType Container) {
+    Copy-Item -LiteralPath $InputCodecNotices -Destination $AlgorithmRoot -Recurse -Force
+}
 Copy-Item -LiteralPath $BootloaderLicense -Destination (Join-Path $LicenseRoot "PYINSTALLER_COPYING.txt") -Force
 
 $NoticesPath = Join-Path $LicenseRoot "THIRD_PARTY_NOTICES.md"

@@ -162,8 +162,15 @@ def _save_optical(path,medium,config):
         payload['clear_base_optical_density_rgb'] = np.asarray(medium.clear_base_optical_density_rgb,dtype=np.float32)
     if medium.spectral_medium is not None:
         payload['spectral_component_amounts'] = medium.spectral_medium.component_amounts
+        if medium.spectral_medium.emulsion_coverage is not None:payload['spectral_emulsion_coverage']=medium.spectral_medium.emulsion_coverage
+        if medium.spectral_medium.covered_density_rgb is not None:payload['spectral_covered_density_rgb']=medium.spectral_medium.covered_density_rgb
         if medium.spectral_medium.post_process_density_rgb is not None:
             payload['spectral_post_process_density_rgb'] = medium.spectral_medium.post_process_density_rgb
+    from film_foundry.core.storage_precision import pack_film_fields,film_precision_record
+    payload,stored_fields=pack_film_fields(payload,config.output.material_storage_precision,quality=config.processing.quality_mode)
+    metadata['storage_precision']=film_precision_record(stored_fields,config.processing.quality_mode,
+        config.output.material_storage_precision,metadata.get('storage_precision'))
+    payload['developed_medium_metadata']=np.asarray(json.dumps(metadata,ensure_ascii=False,allow_nan=False))
     atomic_savez(path,compressed=str(config.output.medium_npz_compression).strip().lower() == 'compressed',compression_level=1,**payload)
 
 

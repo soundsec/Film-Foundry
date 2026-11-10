@@ -6,6 +6,8 @@ same three-stage workflow without asking users to edit Python variables:
     full      image -> developed negative/reversal-positive -> observed image
     develop   image -> .npz density master + transmissive medium materials
     expose    image -> undeveloped .darkroom_latent.npz
+    reexpose  finished medium -> new independent .darkroom_latent.npz
+    route     selectable image/latent/state/medium -> state/medium/image
     develop_latent  latent archive -> developed .npz medium
     scan      .npz/scanner raw/light-table raw -> observed image
     share-config  encode or decode a portable recipe-parameter share code
@@ -53,6 +55,7 @@ from film_foundry.model.config import (
     normalize_scanner_tone_curve,
 )
 from film_foundry.model.session import config_from_session
+from film_foundry.app.source_seed import normalize_offsets, offset_for
 from film_foundry.app import workflow as _workflow
 from film_foundry.app.api import WorkflowError, WorkflowRequest, run_request
 from film_foundry.app.control import CancelFlag, WorkflowCancelled, WorkflowControl
@@ -419,6 +422,7 @@ def _add_develop_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--material-degradation", type=float, help="Film ageing / poor-storage severity in [0, 1].")
     parser.add_argument("--develop-preset", help="Darkroom process preset name or JSON path.")
     parser.add_argument("--exposure-ev", type=float, help="Input exposure proxy EV before negative formation.")
+    parser.add_argument("--exposure-seconds", type=float, help="Explicit film exposure duration for material reciprocity; input dose is not multiplied again.")
     parser.add_argument("--negative-contrast", type=float, help="H-D gamma multiplier.")
     parser.add_argument("--dye-selectivity", type=float, help="Film dye absorption selectivity multiplier.")
     parser.add_argument("--halation", type=float, help="Halation multiplier.")
@@ -514,6 +518,8 @@ def _add_scan_config_args(parser: argparse.ArgumentParser) -> None:
 
 def _apply_common_config(args: argparse.Namespace) -> DarkroomConfig:
     session_path = getattr(args, "session", None)
+    from film_foundry.model.session import load_session
+    args.path_seed_offsets = normalize_offsets(load_session(session_path).get('path_seed_offsets')) if session_path else {}
     preset = _preset_path(getattr(args, "preset", None))
     share_text = getattr(args, "config_share", None)
     film_value = getattr(args, "film_preset", None)
@@ -612,6 +618,8 @@ def _apply_common_config(args: argparse.Namespace) -> DarkroomConfig:
         config.output.preview_long_edge = args.preview_long_edge
     if getattr(args, "exposure_ev", None) is not None:
         config.look.exposure_ev = args.exposure_ev
+    if getattr(args, "exposure_seconds", None) is not None:
+        config.exposure.duration_seconds = args.exposure_seconds
     if getattr(args, "material_degradation", None) is not None:
         config.film.material_degradation = args.material_degradation
     if getattr(args, "negative_contrast", None) is not None:
@@ -734,6 +742,12 @@ def build_parser() -> argparse.ArgumentParser:
         description=f"{APP_DISPLAY_NAME} command-line workflow.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    from film_foundry.app.film_workspace_cli import add_parser as add_film_work_parser
+    add_film_work_parser(subparsers)
+    from film_foundry.app.material_batch_cli import add_parser as add_material_batch_parser
+    add_material_batch_parser(subparsers)
+    from film_foundry.app.film_process_cli import add_parser as add_film_process_parser
+    add_film_process_parser(subparsers)
 
     for name,help_text in (
         ('movie-expose','Import video into a timestamped latent material master.'),
@@ -784,6 +798,58 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_config_args(expose)
     _add_develop_config_args(expose)
     _add_frame_identity_args(expose)
+
+    info = subparsers.add_parser('material-info', help='Describe material operations, parameters, products and current limits as JSON.')
+    from film_foundry.app.material_families import registered_families
+    info.add_argument('family',choices=registered_families())
+    info_source=info.add_mutually_exclusive_group()
+    info_source.add_argument('--state',type=Path,help='Query an existing process state without advancing it.')
+    info_source.add_argument('--material',type=Path,help='Material definition JSON for a new workflow.')
+    info.add_argument('--exposure-available',action='store_true',help='Declare that an exposure image is available to the caller.')
+
+    replay = subparsers.add_parser('material-replay', help='Replay a saved independent-material recipe on an image.')
+    replay.add_argument('input',type=Path)
+    replay.add_argument('recipe',type=Path)
+    replay.add_argument('output',type=Path)
+    replay.add_argument('--stop',choices=('state','medium','image'),default='medium')
+    replay.add_argument('--work-long-edge',type=int,default=0,help='Formation size; 0 keeps original dimensions.')
+    replay.add_argument('--bit-depth',type=int,choices=(8,16),default=8)
+    replay.add_argument('--body-role',help='Required for a multi-body image output, e.g. receiver.')
+    replay.add_argument('--progress',action='store_true')
+
+    route = subparsers.add_parser('route', help='Select a material route start, receiver and endpoint.')
+    route.add_argument('input',type=Path)
+    route.add_argument('output',type=Path)
+    route.add_argument('--start',required=True,choices=('image','latent','state','medium'))
+    route.add_argument('--stop',required=True,choices=('state','medium','image'))
+    from film_foundry.app.material_families import registered_families
+    route.add_argument('--receiver',choices=('film',*registered_families()),help='New receiver for image/medium starts; omit to continue a frozen state or observe a medium.')
+    route.add_argument('--material',type=Path,help='New family material parameters JSON.')
+    route.add_argument('--operations',type=Path,help='Ordered family operations JSON array; film baths use the develop config.')
+    route.add_argument('--relay',type=Path,help='OpticalRelay JSON for medium-to-material exposure.')
+    route.add_argument('--source-body-id')
+    route.add_argument('--result-body-id')
+    route.add_argument('--result-body-role',help='Select e.g. receiver or donor_residue before a new group has body IDs.')
+    _add_common_config_args(route)
+    _add_develop_config_args(route)
+    for runtime_parser in (replay,route):
+        runtime_parser.add_argument('--compute',choices=('cpu','cuda','opencl','auto'))
+        runtime_parser.add_argument('--material-threads',type=int,help='Independent-material CPU row workers; 0 selects automatically.')
+
+    reexpose = subparsers.add_parser('reexpose', help='Finished medium -> independent optical re-exposure latent.')
+    reexpose.add_argument('input', type=Path, help='Developed film NPZ or saved .ffmaterial.npz products.')
+    reexpose.add_argument('output', type=Path, help='New .darkroom_latent.npz file.')
+    reexpose.add_argument('--relay', type=Path, help='OpticalRelay JSON; relative linear RGB dose, no scanner processing.')
+    reexpose.add_argument('--body-id', help='Required selection for a product group with multiple bodies.')
+    reexpose.add_argument('--relay-mode', choices=('transmission', 'reflection'))
+    reexpose.add_argument('--seconds', type=float, help='Relative exposure time; not calibrated lux seconds.')
+    reexpose.add_argument('--relay-ev', type=float)
+    reexpose.add_argument('--light-rgb', nargs=3, type=float)
+    reexpose.add_argument('--filter-density-rgb', nargs=3, type=float)
+    reexpose.add_argument('--output-size', nargs=2, type=int, metavar=('WIDTH', 'HEIGHT'), help='Same field extent, new sample grid; no magnification loss simulation.')
+    _add_common_config_args(reexpose)
+    _add_develop_config_args(reexpose)
+    _add_frame_identity_args(reexpose)
 
     develop_latent = subparsers.add_parser(
         "develop_latent",
@@ -889,6 +955,7 @@ def _run_full(args: argparse.Namespace, config: DarkroomConfig) -> int:
                 WorkflowRequest(
                     command="full",
                     input_path=input_path,
+                    path_seed_offset=offset_for(input_path, getattr(args, 'path_seed_offsets', None)),
                     output_path=output_path,
                     config=config,
                     scaled_override=bool(args.preview),
@@ -978,6 +1045,7 @@ def _run_develop(args: argparse.Namespace, config: DarkroomConfig) -> int:
                 WorkflowRequest(
                     command="develop",
                     input_path=input_path,
+                    path_seed_offset=offset_for(input_path, getattr(args, 'path_seed_offsets', None)),
                     output_path=args.negative_output,
                     config=config,
                     scaled_override=bool(args.preview),
@@ -1038,6 +1106,7 @@ def _run_expose(args: argparse.Namespace, config: DarkroomConfig) -> int:
                 WorkflowRequest(
                     command="expose",
                     input_path=input_path,
+                    path_seed_offset=offset_for(input_path, getattr(args, 'path_seed_offsets', None)),
                     output_path=args.latent_output,
                     config=config,
                     scaled_override=bool(args.preview),
@@ -1108,6 +1177,7 @@ def _run_develop_latent(args: argparse.Namespace, config: DarkroomConfig) -> int
                 WorkflowRequest(
                     command="develop_latent",
                     input_path=input_path,
+                    path_seed_offset=offset_for(input_path, getattr(args, 'path_seed_offsets', None)),
                     output_path=args.negative_output,
                     config=config,
                     scaled_override=bool(args.preview),
@@ -1233,6 +1303,13 @@ def main(argv: list[str] | None = None) -> int:
         "full",
         "develop",
         "expose",
+        "reexpose",
+        "route",
+        "material-replay",
+        "material-info",
+        "film-work",
+        "material-batch",
+        "film-process",
         "develop_latent",
         "scan",
         "share-config",
@@ -1242,21 +1319,95 @@ def main(argv: list[str] | None = None) -> int:
     }:
         argv = ["full", *argv]
     args = parser.parse_args(argv)
+    if args.command == 'film-process':
+        from film_foundry.app.film_process_cli import execute
+        try:return execute(args)
+        except (OSError,ValueError,RuntimeError) as exc:
+            print(f'Error: {exc}',file=sys.stderr);return 1
+    if args.command == 'material-batch':
+        from film_foundry.app.material_batch_cli import execute
+        try:return execute(args)
+        except (OSError,ValueError,RuntimeError) as exc:
+            print(f'Error: {exc}',file=sys.stderr);return 1
+    if args.command == 'film-work':
+        from film_foundry.app.film_workspace_cli import execute
+        try: return execute(args)
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f'Error: {exc}', file=sys.stderr)
+            return 1
+    if args.command=='material-info':
+        from film_foundry.app.material_capabilities import describe_family
+        from film_foundry.app.material_families import load
+        try:
+            result=describe_family(args.family,state=load(args.state) if args.state else None,
+                material=strict_json_load(args.material) if args.material else None,
+                exposure_available=args.exposure_available)
+            print(json.dumps(result,ensure_ascii=False,indent=2))
+            return 0
+        except (OSError,ValueError,TypeError) as exc:
+            print(f'Error: {exc}',file=sys.stderr)
+            return 1
+    if args.command in ('material-replay','route'):
+        from film_foundry.core.material_parallel import configure
+        try:configure(backend=args.compute,threads=args.material_threads)
+        except ValueError as exc:parser.error(str(exc))
     if args.command == "share-config":
         try:
             return _run_share_config(args)
         except (OSError, ValueError, RuntimeError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
-    config = _apply_common_config(args)
-    if args.command != "scan" and not args.command.startswith('movie-'):
+    config = None if args.command=='material-replay' else _apply_common_config(args)
+    if args.command not in ('scan','material-replay') and not args.command.startswith('movie-'):
         from film_foundry.app.incident_batch import prepare_incident_config
         config=prepare_incident_config(config,roll_id=getattr(args,"roll_id",None),source=args.input)
     _cli_cancel_flag(args)
     restore_sigint = _install_sigint_cancel(args.cancel_flag)
 
     try:
-        if args.command.startswith('movie-'):
+        if args.command == 'material-replay':
+            from film_foundry.app.material_recipes import run_recipe_file
+            _,control=_cli_control(args)
+            paths=run_recipe_file(args.input,args.recipe,args.output,stop=args.stop,long_edge=args.work_long_edge,
+                                  bit_depth=args.bit_depth,body_role=args.body_role,control=control)
+            print('[material-replay] '+paths['output_path'])
+            if paths['medium_path']:print('[material-replay:medium] '+paths['medium_path'])
+            count=1
+        elif args.command == 'route':
+            if args.resume:
+                raise ValueError('Resume a route from its saved state using --start latent/state, not --resume.')
+            from film_foundry.app.material_route import run_material_route_file
+            _,control=_cli_control(args)
+            _,route_seed=_rng_and_resolved_seed_for_develop(args.input,config)
+            paths=run_material_route_file(args.input,args.output,start=args.start,stop=args.stop,receiver=args.receiver,
+                config=config,material_parameters=strict_json_load(args.material) if args.material else None,
+                operations=strict_json_load(args.operations) if args.operations else (),
+                relay=strict_json_load(args.relay) if args.relay else None,
+                source_body_id=args.source_body_id,result_body_id=args.result_body_id,result_body_role=args.result_body_role,
+                seed=route_seed,control=control)
+            print('[route] '+str(paths['output_path']))
+            if paths['medium_path']:print('[route:medium] '+str(paths['medium_path']))
+            count=1
+        elif args.command == 'reexpose':
+            if args.resume:
+                raise ValueError('Re-exposure is a new independent exposure; --resume is not supported.')
+            from film_foundry.contracts.optical_cascade import OpticalRelay
+            relay = strict_json_load(args.relay) if args.relay else {}
+            relay = OpticalRelay.from_value(relay).as_dict()
+            for argument, key in (('relay_mode', 'mode'), ('seconds', 'exposure_seconds'), ('relay_ev', 'exposure_ev'),
+                                  ('light_rgb', 'illuminant_rgb'), ('filter_density_rgb', 'filter_density_rgb')):
+                if getattr(args, argument) is not None:
+                    relay[key] = getattr(args, argument)
+            if args.output_size:
+                relay['output_shape'] = list(reversed(args.output_size))
+            _, control = _cli_control(args)
+            _validate_cli_frame_identity(args, 1)
+            result = _run_request(WorkflowRequest('reexpose', args.input, args.output, config,
+                optical_relay=OpticalRelay.from_value(relay).as_dict(), source_body_id=args.body_id,
+                frame_identity=_frame_identity_for_cli_item(args, item_index=0, item_count=1), control=control))
+            print(f'[reexpose] {args.input} -> {result.output_path}')
+            count = 1
+        elif args.command.startswith('movie-'):
             if args.resume:
                 raise ValueError('Material masters currently commit as complete new directories; --resume is not supported.')
             from film_foundry.app.movie_master import import_video_master, develop_movie_master, observe_master_frame
@@ -1273,7 +1424,7 @@ def main(argv: list[str] | None = None) -> int:
                 control.check_cancel()
                 scanned = observe_master_frame(args.input,args.frame,config)
                 control.check_cancel()
-                written = save_image(scanned.output_srgb,args.output,config.output)
+                written = save_image(scanned.output_srgb,args.output,config.output,apply_orientation=True)
             print(f'Material master: {written}')
             count = 1
         elif args.command == "full":

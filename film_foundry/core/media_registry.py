@@ -34,6 +34,7 @@ class MediaPipeline:
     default_interpreter: str = "negative_scan"
     compatible_interpreters: tuple[str, ...] = ("negative_scan",)
     description: str = ""
+    accepts_linear_input: bool = False
 
 
 def unsupported_develop(
@@ -241,6 +242,7 @@ def install_default_media_pipelines(
                 input_polarity="positive",
                 output_polarity="negative",
                 develop=negative_develop,
+                accepts_linear_input=True,
                 scan=negative_scan,
                 status="stable",
                 medium_family="film",
@@ -259,6 +261,7 @@ def install_default_media_pipelines(
                     input_polarity="positive",
                     output_polarity="positive",
                     develop=positive_transparency_develop,
+                    accepts_linear_input=True,
                     scan=positive_transparency_scan,
                     status="experimental",
                     medium_family="film",

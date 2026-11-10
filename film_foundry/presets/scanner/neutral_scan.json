@@ -4,27 +4,63 @@
     "target_medium_process": "negative",
     "input_polarity": "negative",
     "output_polarity": "positive",
-    "scanner_light_color": [1.0, 1.0, 1.0],
-    "scanner_response_matrix": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    "scanner_light_color": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "scanner_response_matrix": [
+      [
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
     "scan_method": "negative_inversion",
     "scan_base_percentile": 99.5,
-    "print_reference_density": [1.52, 1.56, 1.50],
-    "print_gamma": 0.92,
+    "print_reference_density": [
+      1.54,
+      1.54,
+      1.54
+    ],
+    "print_gamma": 1.0,
     "print_mapping_mode": "printlike",
-    "print_color_bias": [1.0, 1.0, 1.0],
-    "print_color_shift": [0.0, 0.0, -0.004],
-    "highlight_color_bias": [1.0, 1.006, 0.996],
+    "print_color_bias": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "print_color_shift": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "highlight_color_bias": [
+      1.0,
+      1.0,
+      1.0
+    ],
     "highlight_bias_threshold": 0.76,
     "highlight_bias_softness": 0.18,
-    "scan_saturation": 1.10,
+    "scan_saturation": 1.0,
     "scan_normalize": true,
-    "scan_normalize_strength": 0.45,
+    "scan_normalize_strength": 0.65,
     "scan_normalize_mode": "luma",
     "scan_black_percentile": 0.25,
     "scan_white_percentile": 99.7
   },
   "look": {
-    "print_contrast": 1.04,
+    "print_contrast": 1.0,
     "print_exposure_ev": 0.0
   }
 }

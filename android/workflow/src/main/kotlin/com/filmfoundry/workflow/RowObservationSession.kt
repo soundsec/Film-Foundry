@@ -29,8 +29,8 @@ object RowObservationSession {
             require(outputBytesPerPixel>=0)
             val needed=pixels.toLong()*outputBytesPerPixel+16L*1024*1024+maxOf(width,source.width)*15L*4*4
             if(memoryBudgetBytes!=null && needed>memoryBudgetBytes) throw WorkflowException("invalid_request","Output ${width}×${height} needs about ${needed/1048576} MiB; original film retained")
-            require(io.scratchRoot.usableSpace>=(if(mode=="scanner") pixels.toLong()*12 else 0)+16L*1024*1024) { "Insufficient scan scratch storage" }
             val step=maxOf(1,16384/width);val math=PhoneRowObservation(frozen,transmissionCompute)
+            require(io.scratchRoot.usableSpace>=(if(math.requiresNormalization) pixels.toLong()*12 else 0)+16L*1024*1024) { "Insufficient scan scratch storage" }
             fun readBlock(start: Int,count: Int): OpticalMaster = control.measured("scan","optical_read") {
                 if(width==source.width && height==source.height) {
                     val block=source.opticalRows(start,count)
@@ -46,16 +46,18 @@ object RowObservationSession {
                     OpticalMaster(row.opticalDensityRgb,row.metadata,row.clearBaseOpticalDensityRgb,row.spectralComponentAmounts,row.spectralPostProcessDensityRgb)
                 }
             }
-            if(mode!="scanner") {
-                // Viewers have no whole-image normalization. Stream directly into the display/PNG
-                // instead of writing and reading an additional full RGB scratch file.
+            if(!math.requiresNormalization) {
+                // Viewers and scans without normalization can stream without RGB disk scratch.
                 output.begin(width,height)
                 var metadata: Map<String,Any?> = emptyMap()
+                var plan: ScanOutputPlan?=null
                 for(start in 0 until height step step) {
                     control.checkCancel();val count=minOf(step,height-start)
                     val block=readBlock(start,count)
-                    val linear=math.linear(block);metadata=linear.metadata;math.encode(linear.outputRgb.values)
-                    output.rows(start,count,linear.outputRgb.values)
+                    val linear=control.measured("scan","linear_compute") { math.linear(block) };metadata=linear.metadata
+                    if(plan==null) plan=math.outputPlan(pixels) { error("No normalization should read scratch rows") }
+                    control.measured("scan","tone_encode") { math.output(linear.outputRgb.values,plan!!) }
+                    control.measured("scan","image_rows") { output.rows(start,count,linear.outputRgb.values) }
                 }
                 control.checkCancel()
                 return@use metadata+if(width==source.width && height==source.height) emptyMap() else mapOf("observation_grid" to mapOf(
@@ -68,10 +70,14 @@ object RowObservationSession {
                 val bytes=ByteArray(maxOf(width,16384)*3*4);val buffer=ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
                 val floats=buffer.asFloatBuffer()
                 var metadata: Map<String,Any?> = emptyMap()
+                val imageRows=FilmRebateGeometry.gateRows(source.opticalRows(0,1).metadata,height)
+                val measurement=math.outputMeasurement(width*imageRows.count())
                 for(start in 0 until height step step) {
                     control.checkCancel();val count=minOf(step,height-start)
                     val block=readBlock(start,count)
                     val linear=control.measured("scan","linear_compute") { math.linear(block) };metadata=linear.metadata
+                    val a=maxOf(start,imageRows.first);val b=minOf(start+count,imageRows.last+1)
+                    if(b>a) control.measured("scan","normalization_collect") { measurement.collect(linear.outputRgb.values,(a-start)*width,(b-a)*width) }
                     floats.clear();floats.put(linear.outputRgb.values)
                     raw.write(bytes,0,linear.outputRgb.values.size*4)
                 }
@@ -82,8 +88,7 @@ object RowObservationSession {
                         raw.readFully(bytes,0,n*4);floats.clear();val values=FloatArray(n);floats.get(values);consume(start,count,values)
                     }
                 }
-                val imageRows=FilmRebateGeometry.gateRows(source.opticalRows(0,1).metadata,height)
-                val outputPlan=control.measured("scan","normalization") { math.outputPlan(width*imageRows.count()) { consume -> eachBlock { start,count,values ->
+                val outputPlan=control.measured("scan","normalization") { measurement.finish { consume -> eachBlock { start,count,values ->
                     val a=maxOf(start,imageRows.first);val b=minOf(start+count,imageRows.last+1)
                     if(b>a) consume(if(a==start && b==start+count) values else values.copyOfRange((a-start)*width*3,(b-start)*width*3))
                 } } }

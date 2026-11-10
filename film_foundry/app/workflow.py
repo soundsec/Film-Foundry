@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 
+from film_foundry.core.source_image import load_formation_image
+from film_foundry.core.engine import expose_linear_to_latent
 import numpy as np
 
 from film_foundry.app.control import WorkflowControl
@@ -389,7 +391,7 @@ def is_scanner_raw_tiff(path: Path) -> bool:
 
 
 def iter_developed_medium_files(path: Path) -> list[Path]:
-    if path.is_file() and (path.suffix.lower() == ".npz" or is_scanner_raw_tiff(path)):
+    if path.is_file() and (path.suffix.lower() == ".npz" or path.suffix.lower() in SUPPORTED_EXTENSIONS):
         return [path]
     if path.is_dir():
         npz_paths = sorted(path.glob(f"*{NEGATIVE_SUFFIX}"))
@@ -425,7 +427,11 @@ def gray_to_rgb(values: np.ndarray) -> np.ndarray:
     return np.repeat(values[..., None], 3, axis=-1)
 
 
-def resolved_seed_for(path: Path, config: DarkroomConfig) -> int | None:
+def resolved_seed_for(path: Path, config: DarkroomConfig, *, path_seed_offset=None) -> int | None:
+    from film_foundry.app.source_seed import source_seed_override
+    override = source_seed_override(config, path_seed_offset)
+    if override is not None:
+        return override
     strategy = str(config.seed_strategy).lower()
     if strategy == "fixed":
         return 0 if config.random_seed is None else int(config.random_seed)
@@ -437,15 +443,16 @@ def resolved_seed_for(path: Path, config: DarkroomConfig) -> int | None:
 def rng_and_resolved_seed_for_develop(
     path: Path,
     config: DarkroomConfig,
+    *, path_seed_offset=None,
 ) -> tuple[np.random.Generator, int]:
-    seed = resolved_seed_for(path, config)
+    seed = resolved_seed_for(path, config, path_seed_offset=path_seed_offset)
     if seed is None:
         seed = int(np.random.SeedSequence().generate_state(1, dtype=np.uint32)[0])
     return np.random.default_rng(seed), seed
 
 
-def rng_for_develop(path: Path, config: DarkroomConfig) -> np.random.Generator:
-    rng, _ = rng_and_resolved_seed_for_develop(path, config)
+def rng_for_develop(path: Path, config: DarkroomConfig, *, path_seed_offset=None) -> np.random.Generator:
+    rng, _ = rng_and_resolved_seed_for_develop(path, config, path_seed_offset=path_seed_offset)
     return rng
 
 
@@ -474,6 +481,7 @@ def develop_image_file(
     scaled_override: bool = False,
     frame_identity: dict | None = None,
     control: WorkflowControl | None = None,
+    path_seed_offset: int | None = None,
 ) -> tuple[DevelopedNegative, Path, dict[str, str]]:
     """Develop one input image and write the polarity-aware medium bundle."""
     identity = normalize_frame_identity(frame_identity)
@@ -484,20 +492,20 @@ def develop_image_file(
     long_edge = processing_long_edge(config, scaled_override=scaled_override)
     _workflow_stage(control, "develop", "loading")
     if execution_axes.scaling_enabled:
-        image, input_color = load_image_with_color(
+        image, input_color = load_formation_image(
             input_path,
             decode_long_edge=long_edge,
             input_icc_policy=runtime_config.input_icc_policy,
         )
     else:
-        image, input_color = load_image_with_color(
+        image, input_color = load_formation_image(
             input_path,
             input_icc_policy=runtime_config.input_icc_policy,
         )
     image = resize_to_long_edge(image, long_edge)
-    develop_rng, resolved_seed = rng_and_resolved_seed_for_develop(input_path, runtime_config)
+    develop_rng, resolved_seed = rng_and_resolved_seed_for_develop(input_path, runtime_config, path_seed_offset=path_seed_offset)
     _workflow_stage(control, "develop", "developing")
-    medium = develop_negative(image, runtime_config, rng=develop_rng)
+    medium = develop_negative(image, runtime_config, rng=develop_rng, input_encoding=input_color["encoding"])
     medium.metadata["input_color"] = input_color
     attach_frame_identity(medium.metadata, identity)
     del image
@@ -535,6 +543,7 @@ def expose_image_file(
     scaled_override: bool = False,
     frame_identity: dict | None = None,
     control: WorkflowControl | None = None,
+    path_seed_offset: int | None = None,
 ) -> Path:
     """Expose one input image to an undeveloped latent archive."""
     identity_overlay = normalize_frame_identity(frame_identity)
@@ -545,27 +554,29 @@ def expose_image_file(
     long_edge = processing_long_edge(config, scaled_override=scaled_override)
     _workflow_stage(control, "expose", "loading")
     if execution_axes.scaling_enabled:
-        image, _input_color = load_image_with_color(
+        image, _input_color = load_formation_image(
             input_path,
             decode_long_edge=long_edge,
             input_icc_policy=runtime_config.input_icc_policy,
         )
     else:
-        image, _input_color = load_image_with_color(
+        image, _input_color = load_formation_image(
             input_path,
             input_icc_policy=runtime_config.input_icc_policy,
         )
     image = resize_to_long_edge(image, long_edge)
     expose_rng, _resolved_seed = rng_and_resolved_seed_for_develop(
-        input_path, runtime_config
+        input_path, runtime_config, path_seed_offset=path_seed_offset
     )
     _workflow_stage(control, "expose", "exposing")
-    state = expose_image_to_latent(image, runtime_config, rng=expose_rng)
+    expose = expose_linear_to_latent if _input_color["encoding"] == "linear_rgb" else expose_image_to_latent
+    state = expose(image, runtime_config, rng=expose_rng)
     del image
     latent_path = latent_path_for(input_path, latent_root)
     if latent_path.resolve() == Path(input_path).resolve():
         raise ValueError("Latent output path must not overwrite the source input file.")
     identity = latent_identity_from_film(runtime_config.film)
+    identity["input_color"] = _input_color
     if runtime_config.chemistry.incident_identity_seed is not None:
         identity["capture_incident_identity"]={"model":"roll_batch_incident_identity_v1","seed":int(runtime_config.chemistry.incident_identity_seed)}
     attach_frame_identity(identity, identity_overlay)
@@ -582,6 +593,7 @@ def develop_latent_file(
     scaled_override: bool = False,
     frame_identity: dict | None = None,
     control: WorkflowControl | None = None,
+    path_seed_offset: int | None = None,
 ) -> tuple[DevelopedNegative, Path, dict[str, str]]:
     """Develop an owned in-memory working state; preserve the source archive.
 
@@ -597,10 +609,15 @@ def develop_latent_file(
     state, metadata = load_exposed_latent(input_path)
     inherited = frame_identity_from_mapping(metadata)
     develop_rng, resolved_seed = rng_and_resolved_seed_for_develop(
-        input_path, runtime_config
+        input_path, runtime_config, path_seed_offset=path_seed_offset
     )
     _workflow_stage(control, "develop_latent", "developing")
     medium = develop_negative_from_latent(state, runtime_config, rng=develop_rng)
+    if isinstance(metadata.get("input_color"), dict):
+        medium.metadata["input_color"] = copy.deepcopy(metadata["input_color"])
+    from film_foundry.contracts.optical_cascade import CASCADE_KEY, validate_cascade
+    if CASCADE_KEY in metadata:
+        medium.metadata['film_process_model'][CASCADE_KEY] = validate_cascade(metadata[CASCADE_KEY])
     if isinstance(metadata.get("capture_incident_identity"),dict):
         medium.metadata["film_process_model"]["capture_incident_identity"]=copy.deepcopy(metadata["capture_incident_identity"])
     attach_frame_identity(
@@ -626,10 +643,15 @@ def process_image_file(
     *,
     scaled_override: bool = False,
     control: WorkflowControl | None = None,
+    artifact_paths: dict[str,str] | None = None,
+    path_seed_offset: int | None = None,
 ) -> Path:
     """Run the full develop-and-scan file pipeline through the application layer."""
     _workflow_stage(control, "full", "developing")
-    return process_file(input_path, output_path, config, preview=scaled_override)
+    from film_foundry.app.source_seed import source_seed_override
+    seed = source_seed_override(config, path_seed_offset)
+    seed_options = {'resolved_seed_override': seed} if seed is not None else {}
+    return process_file(input_path, output_path, config, preview=scaled_override,artifact_paths=artifact_paths, **seed_options)
 
 
 def is_internal_preset_name(name: str) -> bool:
@@ -704,23 +726,30 @@ def material_color_category(config: DarkroomConfig) -> str:
     return "monochrome" if color_process in {"bw", "black_white", "black-and-white", "monochrome"} else "color"
 
 
-def film_preset_record(key: str) -> dict[str, str] | None:
-    path = film_preset_path(key)
-    if not path.exists():
-        return None
+from film_foundry.core.file_cache import FileRevisionCache
+_preset_summary_cache = FileRevisionCache(256)
+
+
+def _preset_record(kind: str, key: str, path: Path) -> dict[str, str] | None:
+    def describe(target):
+        config = DarkroomConfig.from_json(target)
+        if kind == 'film':
+            return {'name': str(config.film.name).strip() or target.stem,
+                    'polarity': material_polarity_category(config), 'color': material_color_category(config)}
+        if kind == 'develop':
+            return {'name': str(config.chemistry.developer_name).strip() or target.stem}
+        return {'name': target.stem.replace('_', ' ').title(), 'polarity': scanner_preset_polarity(config)}
     try:
-        config = DarkroomConfig.from_json(path)
+        record = _preset_summary_cache.get(path, describe, namespace=kind)
     except (OSError, ValueError, TypeError, KeyError):
         return None
-    polarity = material_polarity_category(config)
-    color = material_color_category(config)
-    name = str(config.film.name).strip() or Path(key).stem
-    return {
-        "key": key,
-        "name": name,
-        "polarity": polarity,
-        "color": color,
-    }
+    # Materialized hidden resources have numeric filenames, not display names.
+    if kind == 'scanner':record['name'] = Path(key).stem.replace('_', ' ').title()
+    return {'key': key, **record}
+
+
+def film_preset_record(key: str) -> dict[str, str] | None:
+    return _preset_record('film', key, film_preset_path(key))
 
 
 def film_preset_catalog(polarity: str | None = None, *, include_variants: bool = True) -> list[dict[str, str]]:
@@ -731,15 +760,7 @@ def film_preset_catalog(polarity: str | None = None, *, include_variants: bool =
 
 
 def develop_preset_record(key: str) -> dict[str, str] | None:
-    path = develop_preset_path(key)
-    if not path.exists():
-        return None
-    try:
-        config = DarkroomConfig.from_json(path)
-    except (OSError, ValueError, TypeError, KeyError):
-        return None
-    name = str(config.chemistry.developer_name).strip() or Path(key).stem
-    return {"key": key, "name": name}
+    return _preset_record('develop', key, develop_preset_path(key))
 
 
 def develop_preset_catalog(*, include_variants: bool = False) -> list[dict[str, str]]:
@@ -752,19 +773,7 @@ def scanner_preset_polarity(config: DarkroomConfig) -> str:
 
 
 def scanner_preset_record(key: str) -> dict[str, str] | None:
-    path = scanner_preset_path(key)
-    if not path.exists():
-        return None
-    try:
-        config = DarkroomConfig.from_json(path)
-    except (OSError, ValueError, TypeError, KeyError):
-        return None
-    name = Path(key).stem.replace("_", " ").title()
-    return {
-        "key": key,
-        "name": name,
-        "polarity": scanner_preset_polarity(config),
-    }
+    return _preset_record('scanner', key, scanner_preset_path(key))
 
 
 def scanner_preset_catalog(polarity: str | None = None, *, include_variants: bool = True) -> list[dict[str, str]]:
@@ -798,6 +807,7 @@ def scanner_preset_path(name: str) -> Path:
 
 _SHARE_PAYLOAD_SOURCES = {
     "film": "film",
+    "exposure": "exposure",
     "develop": "chemistry",
     "scanner": "scanner",
     "look": "look",
@@ -813,15 +823,24 @@ _SHARE_PAYLOAD_SOURCES = {
 
 def recipe_share_payload(config: DarkroomConfig) -> dict[str, object]:
     """Recipe fields carried by a share code. Runtime/output axes stay local."""
+    if config.process_control_mode=='principle':
+        from film_foundry.core.process_controls import condition_driven_config
+        config=condition_driven_config(config)
     data = asdict(config)
     payload: dict[str, object] = {}
     for field in CONFIG_SHARE_FIELDS:
+        # Older frontends reject unknown top-level sections. Do not introduce
+        # a capture-clock extension into recipes that do not use it.
+        if field == 'exposure' and config.exposure.duration_seconds is None:
+            continue
         source = _SHARE_PAYLOAD_SOURCES[field]
         payload[field] = data[source]
     return payload
 
 
 def encode_recipe_share(config: DarkroomConfig) -> str:
+    if config.chemistry.light_leak_mask_path:
+        raise ValueError('FFC2 does not embed external leak-mask images. Use a built-in mask or share the configuration and mask files separately.')
     return encode_config_share(recipe_share_payload(config))
 
 
@@ -920,7 +939,7 @@ def observe_medium_file(
     control: WorkflowControl | None = None,
     preview_long_edge: int | None = None,
 ):
-    """Scan a developed npz or transmission raw.
+    """Observe developed NPZ, transmission raw or an ordinary captured image.
 
     Returns ``(scanned, source_kind, source_path, preview)``. CLI uses
     ``source_path`` for sidecars and overwrite protection; the GUI inspector
@@ -939,13 +958,25 @@ def observe_medium_file(
             raise ValueError("Spectral observation requires a material NPZ, not an already captured RGB TIFF.")
         _workflow_stage(control, "scan", "scanning")
         return _observe_transmission_raw(path, config, interpretation, preview_long_edge)
+    if path.suffix.lower() in SUPPORTED_EXTENSIONS:
+        from film_foundry.core.color import srgb_to_linear, linear_to_srgb
+        pixels, input_color = load_formation_image(path, decode_long_edge=preview_long_edge,
+                                                   input_icc_policy=config.input_icc_policy)
+        linear = pixels if input_color['encoding']=='linear_rgb' else srgb_to_linear(pixels)
+        if interpretation in ('auto',''):
+            interpretation='direct';config.scanner.remove_base_mask=False
+        _workflow_stage(control, 'scan', 'scanning')
+        scanned=scan_scanner_raw_direct(linear,config,interpretation,source_path=path,raw_source_kind='image_rgb')
+        scanned.metadata['input_color']=input_color
+        preview=linear_to_srgb(pixels) if input_color['encoding']=='linear_rgb' else pixels
+        return scanned,'image_rgb',path,preview
     scanner_raw_path = transmission_raw_path_for_medium(path)
     if scanner_raw_path.exists() and config.scanner.spectral_observation_profile is None:
         _workflow_stage(control, "scan", "scanning")
         return _observe_transmission_raw(scanner_raw_path, config, interpretation, preview_long_edge)
     if path.suffix.lower() != ".npz":
         raise ValueError(
-            f"不支持的底片文件：{path}。请选择 .npz 或 .scanner_raw.tiff，不要选择 sidecar .json。"
+            f"不支持的扫描来源：{path}。请选择介质 .npz 或受支持的图像文件，不要选择 sidecar .json。"
         )
     if config.processing.memory_budget_mb is not None:
         from film_foundry.core.negative_io import probe_scan_archive_memory

@@ -46,7 +46,9 @@ def test_blank_active_source_and_output_never_start_a_worker(panel,monkeypatch,t
     assert "来源" in panel.status.get()
     panel.input_path.set(str(tmp_path/"frame.png"));panel.output_path.set("")
     panel._start_process();assert not panel._processing
-    assert "输出" in panel.status.get()
+    destination=panel.film_workspace._inline_editor_host.frames[-1][1]
+    assert destination.path.text()
+    destination.reject()
     panel.pipeline_mode.set("scan");panel.scan_output_near_source.set(True)
     assert panel._required_paths()  # This mode computes its destination from the source.
     panel.negative_path.set("");assert not panel._required_paths()
@@ -87,7 +89,7 @@ def test_progress_locks_task_paths_and_opens_the_actual_output(panel,tmp_path,mo
     wait_for(lambda:panel.activity_progress.value()==250)
     assert panel.activity_progress.maximum()==1000 and panel.activity_progress.isVisible()
     assert not panel.mode_choice.qt.isEnabled() and not panel.resume_button.qt.isEnabled()
-    assert not panel.image_source_row[0].qt.isEnabled() and not panel.output_location_row[0].qt.isEnabled()
+    assert not hasattr(panel,'image_source_row') and not hasattr(panel,'output_location_row')
     assert not panel.preview_button.qt.isEnabled()
     panel._present_progress(0,WorkflowProgress("full","saving",1))
     assert panel.activity_progress.value()==250

@@ -13,14 +13,15 @@
     "push_stops": 0.0,
     "developer_exhaustion": 0.0,
     "fixer_exhaustion": 0.0,
-    "compensation": 0.70,
-    "silver_retention": 0.0
+    "compensation": 0.7,
+    "silver_retention": 0.0,
+    "formation_history_model": "bath_products_local_v2"
   },
   "mode": "bw_negative",
   "look": {
     "exposure_ev": -0.05,
     "negative_contrast": 0.95,
-    "halation_multiplier": 0.50,
+    "halation_multiplier": 0.5,
     "grain_multiplier": 1.0,
     "grain_size_multiplier": 1.0
   }

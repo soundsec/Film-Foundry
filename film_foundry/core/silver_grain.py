@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 
 from film_foundry.core.halation import radius_to_sigma
+from film_foundry.core.execution_topology import reference_execution_enabled
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +29,7 @@ class SilverGrainPlan:
     radius: float
     clump_mix: float
     tile_rows: int = 256
+    local_parameters: tuple[np.ndarray,np.ndarray,np.ndarray] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -123,12 +125,34 @@ def _blurred_coordinate_noise(
     return (blurred[crop_start:crop_stop] / noise_gain).astype(np.float32)
 
 
+def _coordinate_sampler(full_shape, *, output_start, output_stop, seed, stream, maximum_radius):
+    """Share one coordinate realization across this tile's filter radii.
+
+    Each filter still reads its original halo and uses its original kernel,
+    border and crop. Nothing survives the current tile or enters a cache.
+    """
+    height,width=full_shape
+    sigma=radius_to_sigma(float(maximum_radius),(height,width,3))
+    _,halo,_=_gaussian_kernel(round(float(sigma),5))
+    base_start=max(0,output_start-halo);base_stop=min(height,output_stop+halo)
+    noise=_coordinate_unit_noise(base_stop-base_start,width,row_start=base_start,seed=seed,stream=stream)
+    def sample(radius):
+        sigma=radius_to_sigma(float(radius),(height,width,3))
+        kernel,halo,gain=_gaussian_kernel(round(float(sigma),5))
+        start=max(0,output_start-halo);stop=min(height,output_stop+halo)
+        view=noise[start-base_start:stop-base_start]
+        blurred=cv2.sepFilter2D(view,cv2.CV_32F,kernelX=kernel,kernelY=kernel,borderType=cv2.BORDER_REFLECT_101)
+        return (blurred[output_start-start:output_stop-start]/gain).astype(np.float32)
+    return sample
+
+
 def apply_metallic_silver_grain(
     optical_density_rgb: np.ndarray,
     silver_density: np.ndarray,
     plan: SilverGrainPlan,
     *,
     row_offset: int = 0,
+    workers: int = 1,
 ) -> bool:
     """Apply neutral silver-density variation in place.
 
@@ -152,30 +176,43 @@ def apply_metallic_silver_grain(
     if not plan.enabled or silver.size == 0 or float(np.max(silver, initial=0.0)) <= 1e-8:
         return False
 
-    clump_mix = float(np.clip(plan.clump_mix, 0.0, 1.0))
-    fine_mix = float(np.sqrt(max(1.0 - clump_mix * clump_mix, 0.0)))
+    local=plan.local_parameters
+    if local is not None:
+        if any(a.shape!=plan.full_shape for a in local):raise ValueError('Local silver response must match the full frame')
+        radius_bounds=(float(np.min(local[1])),float(np.max(local[1])))
+    base_clump_mix = float(np.clip(plan.clump_mix, 0.0, 1.0))
+    base_fine_mix = float(np.sqrt(max(1.0 - base_clump_mix * base_clump_mix, 0.0)))
     tile_rows = max(1, int(plan.tile_rows))
-    for local_start in range(0, optical.shape[0], tile_rows):
-        local_stop = min(local_start + tile_rows, optical.shape[0])
+    def apply_rows(local_start, local_stop):
+        clump_mix, fine_mix = base_clump_mix, base_fine_mix
         global_start = int(row_offset) + local_start
         global_stop = int(row_offset) + local_stop
-        noise = _blurred_coordinate_noise(
-            plan.full_shape,
-            output_start=global_start,
-            output_stop=global_stop,
-            seed=int(plan.seed),
-            stream=0,
-            radius_scale=float(plan.radius),
-        )
-        if clump_mix > 1e-6:
-            coarse = _blurred_coordinate_noise(
-                plan.full_shape,
-                output_start=global_start,
-                output_stop=global_stop,
-                seed=int(plan.seed),
-                stream=1,
-                radius_scale=float(plan.radius) * 3.2,
-            )
+        def sample(radius,stream=0):
+            return _blurred_coordinate_noise(plan.full_shape,output_start=global_start,output_stop=global_stop,
+                seed=int(plan.seed),stream=stream,radius_scale=radius)
+        strength=plan.strength
+        if local is None:noise=sample(float(plan.radius))
+        else:
+            from film_foundry.core.film_process.local_grain import blend_radius_fields
+            strength,radius,clump_mix=(a[global_start:global_stop] for a in local)
+            fine_mix=np.sqrt(np.maximum(1.-clump_mix*clump_mix,0.))
+            if reference_execution_enabled():noise=blend_radius_fields(radius,sample,bounds=radius_bounds)
+            else:
+                from film_foundry.core.film_process.local_grain import prepare_radius_blend
+                blend=prepare_radius_blend(radius,bounds=radius_bounds)
+                sampler=_coordinate_sampler(plan.full_shape,output_start=global_start,output_stop=global_stop,
+                    seed=int(plan.seed),stream=0,maximum_radius=max(blend.anchors))
+                noise=blend.sample(sampler)
+                del sampler
+        if float(np.max(clump_mix)) > 1e-6:
+            if local is not None and not reference_execution_enabled():
+                sampler=_coordinate_sampler(plan.full_shape,output_start=global_start,output_stop=global_stop,
+                    seed=int(plan.seed),stream=1,maximum_radius=max(blend.anchors)*3.2)
+                coarse=blend.sample(lambda r:sampler(r*3.2))
+                del sampler
+            else:
+                coarse=(sample(float(plan.radius)*3.2,1) if local is None else
+                    blend_radius_fields(radius,lambda r:sample(r*3.2,1),bounds=radius_bounds))
             noise *= fine_mix
             noise += coarse * clump_mix
             del coarse
@@ -185,7 +222,7 @@ def apply_metallic_silver_grain(
         # the soft denominator changes the response from linear near D=0
         # toward sqrt(D) through useful silver densities.
         amplitude = (
-            float(plan.strength)
+            strength
             * local_silver
             / np.sqrt(local_silver + np.float32(0.05))
         )
@@ -193,4 +230,6 @@ def apply_metallic_silver_grain(
         np.maximum(delta, -0.90 * local_silver, out=delta)
         optical[local_start:local_stop] += delta[..., None]
         del noise, amplitude, delta
+    from .material_parallel import run_rows
+    run_rows(optical.shape[0], full_width, apply_rows, chunk_pixels=tile_rows*full_width, workers=workers)
     return True

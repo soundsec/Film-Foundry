@@ -23,6 +23,12 @@ data class ScanEditorDraft(
 ) {
     /** Saving a scanner definition changes its name/selection, not the current edit. */
     fun withSavedScanner(id: String)=copy(style=3,scannerKey="saved:$id").detached()
+    /** Freeze the visible colour settings while returning polarity and black/white points to auto. */
+    fun withAutomaticFinish(effectiveScanner: Map<String,Any?>)=copy(
+        style=com.filmfoundry.workflow.PhoneFinishRecipes.styles.indexOf(com.filmfoundry.workflow.PhoneFinishRecipes.AUTO),
+        overlay=effectiveScanner-com.filmfoundry.workflow.PhoneFinishRecipes.automaticKeys,
+        numbers=numbers-com.filmfoundry.workflow.PhoneFinishRecipes.automaticKeys,
+        normalize=true,baseMode=0,inversionMode=0,curveDraft=null).detached()
     fun detached()=copy(base=base?.let(::frozenRecipe),overlay=frozenRecipe(overlay),numbers=numbers.toMap(),
         curveDraft=curveDraft?.copy(curves=curveDraft.curves.map { it.toList() }))
     companion object {

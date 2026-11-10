@@ -15,6 +15,10 @@ import numpy as np
 
 from film_foundry.model.config import DevelopRecipeConfig
 
+# Shared with spatial bath-contact integration; units are per minute/minutes.
+REACTION_RATE_PER_MINUTE = 0.16
+REFERENCE_DEVELOPMENT_MINUTES = 8.0
+
 
 @dataclass(frozen=True, slots=True)
 class DeveloperProfile:
@@ -279,10 +283,10 @@ def build_effective_development(recipe: DevelopRecipeConfig) -> EffectiveDevelop
         * push_activity_factor
     )
 
-    rate_constant = 0.16
+    rate_constant = REACTION_RATE_PER_MINUTE
     kinetic_exposure = min(rate_constant * activity * time_min, KINETIC_EXPOSURE_MAX)
     progress = 1.0 - math.exp(-kinetic_exposure)
-    reference_progress = 1.0 - math.exp(-rate_constant * 8.0)
+    reference_progress = 1.0 - math.exp(-rate_constant * REFERENCE_DEVELOPMENT_MINUTES)
     progress_ratio = progress / max(reference_progress, 1e-6)
     activity_time = min(activity * time_min / 8.0, ACTIVITY_TIME_MAX)
     overdevelopment = max(activity_time - 1.0, 0.0)

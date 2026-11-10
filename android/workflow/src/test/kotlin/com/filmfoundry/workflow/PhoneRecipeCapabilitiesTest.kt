@@ -5,6 +5,38 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class PhoneRecipeCapabilitiesTest {
+    @Test fun frozenLightweightContextReportsOmissionsWithoutRewritingParameters() {
+        val r=mapOf("film" to mapOf("dir_material_response_matrix" to List(3) { List(3) { .15 } }),
+            "develop" to mapOf("development_adjacency_strength" to .3))
+        val before=RecipeShareCodec.encode(r)
+        val fast=PhoneRecipeCapabilities.inspect(r,PhoneRecipeCapabilities.Stage.DEVELOP,PhoneFormationProfile.LIGHTWEIGHT)
+        assertEquals(setOf("film.dir_material_response_matrix","develop.development_adjacency_strength"),
+            fast.warnings.filter { it.status==PhoneRecipeCapabilities.Status.OMITTED }.map { it.path }.toSet())
+        assertFalse(PhoneRecipeCapabilities.inspect(r,PhoneRecipeCapabilities.Stage.DEVELOP).entries.any { it.status==PhoneRecipeCapabilities.Status.OMITTED })
+        assertTrue(PhoneRecipeCapabilities.inspect(r,PhoneRecipeCapabilities.Stage.SCAN,PhoneFormationProfile.LIGHTWEIGHT).warnings.isEmpty())
+        assertEquals(before,RecipeShareCodec.encode(r))
+    }
+    @Test fun newDesktopStateModelsArePreservedAndReportedOnlyForRelevantStages() {
+        val recipe=mapOf("exposure" to mapOf("duration_seconds" to 12.5),
+            "film" to mapOf("time_response" to mapOf("model" to "film_time_response_v2"),"carbon_backing" to mapOf("model" to "carbon_backing_v2")),
+            "develop" to mapOf("process_events" to mapOf("model" to "film_process_events_v15"),
+                "formation_history_model" to "bath_products_local_v2","latent_wait" to mapOf("duration_seconds" to 900)))
+        val before=RecipeShareCodec.encode(recipe)
+        val capture=PhoneRecipeCapabilities.inspect(recipe,PhoneRecipeCapabilities.Stage.CAPTURE)
+        assertTrue(capture.warnings.any { it.path=="exposure.duration_seconds" && it.status==PhoneRecipeCapabilities.Status.PRESERVED })
+        val develop=PhoneRecipeCapabilities.inspect(recipe,PhoneRecipeCapabilities.Stage.DEVELOP)
+        for(key in listOf("process_events","formation_history_model","latent_wait"))
+            assertTrue(develop.warnings.any { it.path=="develop.$key" && it.status==PhoneRecipeCapabilities.Status.PRESERVED })
+        assertTrue(PhoneRecipeCapabilities.inspect(recipe,PhoneRecipeCapabilities.Stage.SCAN).warnings.isEmpty())
+        assertEquals(before,RecipeShareCodec.encode(recipe))
+    }
+    @Test fun desktopOnlyBathFieldsAreNotMisreportedAsAnExecutableReducedProcess() {
+        val recipe=mapOf("develop" to mapOf("program_key" to "custom","process_steps" to listOf(
+            mapOf("action" to "develop_silver","solution" to mapOf("model" to "bath_solution_v3")))))
+        assertTrue(PhoneRecipeCapabilities.inspect(recipe,PhoneRecipeCapabilities.Stage.DEVELOP).warnings.any {
+            it.path=="develop.process_steps" && it.status==PhoneRecipeCapabilities.Status.UNSUPPORTED
+        })
+    }
     @Test fun newRollExposureUsesAnIndependentFrozenPhenomenaSelectionAndEditorsValidateIt() {
         val film=mapOf("light_piping_strength" to .3,"light_piping_edge_mode" to "left","silver_grain_strength" to .1,"emulsion_highlight_spread_strength" to .5)
         val old=mapOf("spatial_effects_revision" to PhoneMaterialDefaults.REVISION,"material_model" to PhoneProcessModels.CURRENT)

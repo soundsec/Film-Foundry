@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from film_foundry.core.color import luminance
+from film_foundry.core.color import luminance, linear_to_srgb
+from film_foundry.core.color_mixer import apply_color_mixer
 from film_foundry.core.execution_topology import reference_execution_enabled
 from film_foundry.model.config import (
     FilmStockConfig,
@@ -14,6 +15,7 @@ from film_foundry.model.config import (
     ScannerConfig,
     normalize_scanner_color_curve_rgb,
     normalize_scanner_tone_curve,
+    normalize_color_mixer,
 )
 
 
@@ -21,6 +23,12 @@ _IDENTITY_RGB_MATRIX = np.eye(3, dtype=np.float32)
 _IDENTITY_RGB_MATRIX.setflags(write=False)
 _UNIT_RGB_GAMMA = np.ones((1, 1, 3), dtype=np.float32)
 _UNIT_RGB_GAMMA.setflags(write=False)
+
+
+def encode_scan_output(image, scanner, *, consume_input=False):
+    """Shared display encoding, tone curve and colour mixer for all observers."""
+    encoded = linear_to_srgb(image, consume_input=consume_input)
+    return apply_color_mixer(apply_scanner_tone_curve(encoded, scanner, consume_input=True), scanner.color_mixer)
 
 
 def _is_identity_rgb_matrix(matrix: np.ndarray) -> bool:
@@ -47,6 +55,7 @@ def scanner_color_response_record(scanner: ScannerConfig) -> dict[str, str]:
         model = "simple_channel_adjust_v1"
     return {
         "model": model,
+        **({"color_mixer": "output_hsl_bands_v1"} if normalize_color_mixer(scanner.color_mixer) is not None else {}),
         "tone": "piecewise_output_luma_v1" if scanner_tone_curve_is_active(scanner.tone_curve) else "none",
         "curve": (
             "piecewise_rgb_v1"
@@ -224,12 +233,32 @@ def layer_density_to_optical_density_rgb(
         base_response = np.maximum(overlap @ base_t, 1e-6)
         base_weighted_overlap = overlap * base_t.reshape(1, 3)
 
+    if not reference_topology:
+        from film_foundry.core.desktop_compute import try_dye
+        accelerated = try_dye(density, absorption, base_density, strength, legacy_additive,
+                              None if legacy_additive else overlap,
+                              None if legacy_additive else base_weighted_overlap,
+                              None if legacy_additive else base_response)
+        if accelerated is not None:
+            # Check this material/parameter combination against the authoritative CPU
+            # expression, including evenly distributed dark and bright image regions.
+            from film_foundry.core.execution_topology import execution_topology
+            from film_foundry.core.desktop_compute import reject
+            step=max(1, density.shape[0]*density.shape[1]//1024)
+            sample=density.reshape(-1,3)[::step].reshape(1,-1,3)
+            with execution_topology("reference"):
+                expected=layer_density_to_optical_density_rgb(sample,film,base_density_rgb=base_density)
+            if np.allclose(accelerated.reshape(-1,3)[::step],expected[0],rtol=2e-6,atol=2e-6):
+                return accelerated
+            reject("Dye kernel exceeded CPU tolerance")
     height, width = density.shape[:2]
     output = np.empty((height, width, 3), dtype=np.float32)
-    # Bound temporary spectral-proxy arrays to roughly two megapixels even
-    # when the outer scan path has not switched to its larger-stage tiler.
+    # Keep the three working RGB tiles near CPU cache size. This changes only
+    # allocation/iteration geometry, not per-pixel arithmetic or precision.
     tile_rows = height
-    if height * width > 2_000_000:
+    if not reference_topology and height * width > 131_072:
+        tile_rows = max(1, min(height, int(131_072 / max(width, 1))))
+    elif height * width > 2_000_000:
         tile_rows = max(1, min(height, int(2_000_000 / max(width, 1))))
     for start in range(0, height, tile_rows):
         stop = min(start + tile_rows, height)
@@ -494,12 +523,12 @@ def scanner_light_exposure_record(scanner: ScannerConfig) -> dict:
     """Record the desktop capture-stage EV; this is not print/scan gain."""
     ev, _ = _transmission_light_parameters(scanner)
     return {
-        "model": "illuminated_capture_ev_v1",
+        "model": "nominal_base_capture_ev_v2",
         "parameter": "scanner.transmission_light_ev",
         "stage": "transmission_capture",
         "lamp_ev": ev,
         "effective_ev": ev,
-        "calibration_ev": ev,
+        "calibration_ev": 0.0,
     }
 
 
@@ -1129,6 +1158,7 @@ def normalize_scan_rgb(
     mode: str = "luma",
     *,
     consume_input: bool = False,
+    measurement_region: tuple[int, int, int, int] | None = None,
 ) -> np.ndarray:
     """扫描软件后期定黑白点。luma 模式保留色偏，rgb 模式更像自动白平衡。"""
     image = np.asarray(image, dtype=np.float32)
@@ -1139,8 +1169,12 @@ def normalize_scan_rgb(
             return image
         return np.clip(image, 0.0, 1.0).astype(np.float32, copy=False)
 
+    samples = image
+    if measurement_region is not None:
+        y0, y1, x0, x1 = measurement_region
+        samples = image[y0:y1, x0:x1]
     black, white = scan_normalization_range(
-        image,
+        samples,
         black_percentile=black_percentile,
         white_percentile=white_percentile,
         mode=mode,

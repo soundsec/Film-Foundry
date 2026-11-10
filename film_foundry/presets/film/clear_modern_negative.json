@@ -22,63 +22,63 @@
     "digital_artifact_suppression": 0.1,
     "halation_gradient_suppression": 0.22,
     "hd_gamma": [
-      0.6,
-      0.63,
-      0.59
+      0.72,
+      0.72,
+      0.72
     ],
     "density_min": [
       0.08,
-      0.09,
+      0.08,
       0.08
     ],
     "density_max": [
-      1.82,
-      1.9,
-      1.74
+      1.88,
+      1.88,
+      1.88
     ],
     "log_exposure_toe": [
-      -2.25,
-      -2.18,
-      -2.28
+      -2.2,
+      -2.2,
+      -2.2
     ],
     "log_exposure_shoulder": [
       0.5,
-      0.52,
-      0.47
+      0.5,
+      0.5
     ],
     "hd_toe_width": 0.17,
     "hd_shoulder_width": 0.24,
     "layer_sensitivity_matrix": [
       [
-        0.84,
-        0.12,
-        0.04
+        0.94,
+        0.045,
+        0.015
       ],
       [
-        0.1,
-        0.79,
-        0.11
+        0.03,
+        0.94,
+        0.03
       ],
       [
-        0.05,
-        0.19,
-        0.76
+        0.015,
+        0.045,
+        0.94
       ]
     ],
     "dye_absorption_matrix": [
       [
-        1.02,
-        0.1,
+        1.0,
+        0.04,
+        0.02
+      ],
+      [
+        0.04,
+        1.0,
         0.04
       ],
       [
-        0.08,
-        1.01,
-        0.12
-      ],
-      [
-        0.03,
-        0.15,
+        0.02,
+        0.04,
         1.0
       ]
     ],
@@ -88,11 +88,11 @@
       0.82
     ],
     "granularity_sigma": [
-      0.018,
-      0.017,
-      0.02
+      0.01,
+      0.0095,
+      0.0105
     ],
-    "grain_density_correlation_radius": 0.0011,
+    "grain_density_correlation_radius": 0.0008,
     "halation_gaussian_amplitude": 0.64,
     "halation_exponential_amplitude": 0.36,
     "halation_exponential_radius": 0.014,
@@ -111,6 +111,16 @@
       0.08,
       0.07,
       0.06
+    ],
+    "grain_scales": [
+      0.0006,
+      0.0015,
+      0.004
+    ],
+    "grain_scale_weights": [
+      0.78,
+      0.18,
+      0.04
     ]
   }
 }

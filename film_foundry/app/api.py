@@ -26,7 +26,7 @@ from film_foundry.core.states import DevelopedNegative
 from film_foundry.model.config import DarkroomConfig
 
 
-WORKFLOW_COMMANDS = ("full", "develop", "expose", "develop_latent", "scan")
+WORKFLOW_COMMANDS = ("full", "develop", "expose", "develop_latent", "scan", "reexpose")
 WORKFLOW_ERROR_CODES = (
     "unsupported_command",
     "input_not_found",
@@ -77,6 +77,9 @@ class WorkflowRequest:
     retain_stages: bool = False
     frame_identity: dict[str, Any] | None = None
     control: WorkflowControl | None = None
+    optical_relay: dict | None = None
+    source_body_id: str | None = None
+    path_seed_offset: int | None = None
 
 
 @dataclass(frozen=True)
@@ -124,18 +127,38 @@ def run_request(request: WorkflowRequest) -> WorkflowResult:
 def _execute_request(command: str, request: WorkflowRequest) -> WorkflowResult:
     input_path = Path(request.input_path)
     output_path = Path(request.output_path)
+    from film_foundry.app.source_seed import validate_offset
+    validate_offset(request.path_seed_offset)
     config = request.config
+    if command in {'full','develop','expose','reexpose'} and config.film_border.frame_number is not None and request.frame_identity:
+        from copy import deepcopy
+        identity=normalize_frame_identity(request.frame_identity)
+        if identity and 'frame_index' in identity:
+            config=deepcopy(config);config.film_border.frame_number=identity['frame_index']
+    seed_options = {'path_seed_offset': request.path_seed_offset} if request.path_seed_offset is not None else {}
     if command != "scan" and request.frame_identity and request.frame_identity.get("roll_id"):
         config=prepare_incident_config(config,roll_id=request.frame_identity["roll_id"])
+    if command == 'reexpose':
+        if request.scaled_override:
+            raise ValueError('Set optical relay output_shape explicitly for re-exposure')
+        from film_foundry.app.optical_cascade import expose_medium_file
+        written = expose_medium_file(input_path, output_path, config, request.optical_relay,
+            body_id=request.source_body_id, frame_identity=request.frame_identity, control=request.control)
+        return WorkflowResult(command=command, output_path=written, source_path=input_path,
+                              source_kind='finished_medium', extra={'stage': 'exposed_latent'})
     if command == "full":
+        paths={}
         written = _workflow.process_image_file(
             input_path,
             output_path,
             config,
             scaled_override=bool(request.scaled_override),
             control=request.control,
+            artifact_paths=paths,
+            **seed_options,
         )
-        return WorkflowResult(command=command, output_path=Path(written))
+        medium=paths.get('positive_path') or paths.get('negative_path')
+        return WorkflowResult(command=command, output_path=Path(written),medium_path=Path(medium) if medium else None,extra={'paths':paths})
     if command == "develop":
         medium, developed_path, paths = _workflow.develop_image_file(
             input_path,
@@ -144,6 +167,7 @@ def _execute_request(command: str, request: WorkflowRequest) -> WorkflowResult:
             scaled_override=bool(request.scaled_override),
             frame_identity=request.frame_identity,
             control=request.control,
+            **seed_options,
         )
         polarity = None
         if isinstance(medium, DevelopedNegative):
@@ -169,6 +193,7 @@ def _execute_request(command: str, request: WorkflowRequest) -> WorkflowResult:
             scaled_override=bool(request.scaled_override),
             frame_identity=request.frame_identity,
             control=request.control,
+            **seed_options,
         )
         return WorkflowResult(
             command=command,
@@ -186,6 +211,7 @@ def _execute_request(command: str, request: WorkflowRequest) -> WorkflowResult:
             scaled_override=bool(request.scaled_override),
             frame_identity=request.frame_identity,
             control=request.control,
+            **seed_options,
         )
         polarity = None
         if isinstance(medium, DevelopedNegative):

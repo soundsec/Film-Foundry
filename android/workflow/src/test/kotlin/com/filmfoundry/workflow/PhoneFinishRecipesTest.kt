@@ -7,6 +7,32 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class PhoneFinishRecipesTest {
+    @Test fun automaticFinishPreservesColourAndUsesActualMediumPolarityAndBase() {
+        val curve=listOf(listOf(0.0,0.0),listOf(.4,.5),listOf(1.0,1.0))
+        val colors=mapOf("scan_saturation" to 1.37,"tone_curve" to curve,"color_curve_rgb" to List(3) { curve },
+            "color_mixer" to List(8) { if(it==0) listOf(12,17,-8) else listOf(0,0,0) })
+        val original=colors+mapOf("invert_transmission" to false,"remove_base_mask" to false,"scan_normalize_mode" to "rgb","scan_normalize" to false)
+        val auto=PhoneFinishRecipes.observation(mapOf("scanner" to original),emptyMap(),PhoneFinishRecipes.AUTO)
+        colors.forEach { (key,value)->assertEquals(value,auto[key]) }
+        assertFalse(auto.containsKey("invert_transmission"));assertFalse(auto.containsKey("remove_base_mask"))
+        assertEquals("luma",auto["scan_normalize_mode"]);assertEquals(true,auto["scan_normalize"])
+        val neutral=PhoneFinishRecipes.scanner(PhoneFinishRecipes.AUTO)
+        assertFalse(neutral.containsKey("scan_saturation"));assertFalse(neutral.containsKey("tone_curve"))
+        val k=PhoneReducedKernel()
+        for(positive in listOf(false,true)) for(masked in listOf(false,true)) {
+            val base=if(masked) floatArrayOf(.15f,.35f,.6f) else FloatArray(3) { .1f }
+            val d=FloatNd(intArrayOf(1,128,3),FloatArray(384) { base[it%3]+.01f+(it/3)/70f })
+            val master=OpticalMaster(d,mapOf("image_polarity" to if(positive) "positive" else "negative"),base)
+            val before=d.values.copyOf()
+            // Original stock says the opposite: only the formed image controls interpretation.
+            val output=k.observe(master,mapOf("film" to mapOf("image_polarity" to if(positive) "negative" else "positive"),"scanner" to auto))
+            assertEquals(!positive,output.metadata["invert_transmission"])
+            assertEquals(!positive || masked,output.metadata["remove_base_mask"])
+            assertTrue(output.outputRgb.values.all { it.isFinite() })
+            assertArrayEquals(before,d.values,0f)
+        }
+        assertEquals(1.18,PhoneFinishRecipes.scanner("ready")["scan_saturation"])
+    }
     @Test fun clearNegativeRecommendedFinishRetainsDarkDetailAndMiddleGrey() {
         val catalog=BuiltinRecipeCatalog.read(java.io.File("../app/src/main/assets/phone_builtin_recipes.json").readBytes())
         val film=catalog.materials.first { it.id=="clear_modern_negative" }.recipe["film"] as Map<String,Any?>

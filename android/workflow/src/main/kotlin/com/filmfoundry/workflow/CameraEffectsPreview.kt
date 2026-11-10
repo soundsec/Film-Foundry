@@ -40,8 +40,8 @@ object CameraEffectsPreview {
         // default here, without changing the selected stock or an already loaded roll.
         private val previewFilm=film+("spatial_reference_short_edge_mm" to (film["spatial_reference_short_edge_mm"] ?: 24.0))
         private val exposure=PhoneMaterialDefaults.exposureRecipe(previewFilm,capture)
-        private val scanner=(selected["scanner"] as? Map<*,*>)?.entries?.associate { it.key.toString() to it.value } ?: PhoneFinishRecipes.scanner("ready")
-        private val recipe=exposure+selected+mapOf("film" to exposure["film"],"enable_subtractive" to (MaterialSelection.tags(film).color!="bw"),"develop" to ((selected["develop"] as? Map<String,Any?>)
+        private val scanner=(selected["scanner"] as? Map<*,*>)?.entries?.associate { it.key.toString() to it.value } ?: PhoneFinishRecipes.scanner(PhoneFinishRecipes.AUTO)
+        private val recipe=exposure+(selected-PhoneFormationProfile.OPTION)+mapOf("film" to exposure["film"],"enable_subtractive" to (MaterialSelection.tags(film).color!="bw"),"develop" to ((selected["develop"] as? Map<String,Any?>)
             ?: ((exposure["develop"] as? Map<String,Any?>).orEmpty()+("program_key" to "auto"))),
             PhoneProcessModels.OPTION to PhoneProcessModels.CURRENT,PhoneMaterialPhenomena.DEVELOPMENT_OPTION to PhoneMaterialPhenomena.CURRENT,
             PhoneOpticalDensityModels.OPTION to PhoneOpticalDensityModels.CURRENT,

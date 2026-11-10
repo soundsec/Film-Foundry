@@ -12,12 +12,14 @@ from film_foundry.core.spectral_optics import spectral_capture_record
 import numpy as np
 
 from film_foundry.core.color import linear_to_srgb
+from film_foundry.core.formed_film_border import image_gate_rows
 from film_foundry.core.electronic_negative import (
     scanner_raw_export_border_width,
     scanner_raw_with_reference_border,
 )
 from film_foundry.core.execution_topology import reference_execution_enabled
 from film_foundry.core.scan_output import ScanOutputPlan
+from film_foundry.core.color_mixer import apply_color_mixer
 from film_foundry.core.media import config_medium_process
 from film_foundry.core.media_registry import get_scan_pipeline
 from film_foundry.core.runtime_validate import (
@@ -40,6 +42,7 @@ from film_foundry.core.scanner import (
     scanner_light_exposure_record,
     apply_scanner_tone_curve,
     transmission_illuminant_rgb,
+    encode_scan_output,
 )
 from film_foundry.core.sidecar import transmission_raw_source_kind
 from film_foundry.core.frame_identity import FRAME_IDENTITY_KEY, frame_identity_from_mapping
@@ -76,8 +79,7 @@ _engine_services = {}
 
 def _encode_scan_output(image, scanner, *, consume_input=False):
     """Final display encoding and independent tone adjustment after normalization."""
-    encoded = linear_to_srgb(image, consume_input=consume_input)
-    return apply_scanner_tone_curve(encoded, scanner, consume_input=True)
+    return encode_scan_output(image, scanner, consume_input=consume_input)
 
 
 def _bind_engine_services(services):
@@ -304,7 +306,7 @@ def _scan_negative_pipeline(
         config.mode = "bw_negative"
     config = _runtime_config(config, prepared=prepared)
     if auto_bw:
-        _force_bw_negative(config, include_scanner=True)
+        _force_bw_negative(config, include_scanner=False)
     _validate_scan_runtime(config)
 
     known_base = _clear_base_scanner_sample(config, negative).reshape(3)
@@ -375,6 +377,7 @@ def _scan_negative_pipeline(
         },
         _prepared_config=True,
         consume_scanner_raw=not reference_execution_enabled(),
+        measurement_region=image_gate_rows(negative, config),
     )
 
 
@@ -431,7 +434,7 @@ def _scan_positive_transparency_pipeline(
         and float(config.scanner.scan_normalize_strength) > 0.0
     ):
         positive_linear = normalize_scan_rgb(
-            positive_linear,
+            positive_linear, measurement_region=image_gate_rows(negative, config),
             black_percentile=config.scanner.scan_black_percentile,
             white_percentile=config.scanner.scan_white_percentile,
             strength=config.scanner.scan_normalize_strength,
@@ -571,6 +574,7 @@ def scan_scanner_raw_direct(
         physical_kind = transmission_raw_source_kind(source_path)
     selected = requested
     if requested == "auto":
+        runtime.scanner.scan_normalize_mode = "luma"
         if physical_kind == "light_table_raw_tiff":
             selected = "positive"
         elif physical_kind == "scanner_raw_tiff":
@@ -739,6 +743,7 @@ def _scan_scanner_raw_array(
     metadata: dict | None = None,
     _prepared_config: bool = False,
     consume_scanner_raw: bool = False,
+    measurement_region=None,
 ) -> ScannedPositive:
     """共享的 scanner raw -> positive 路径。"""
     config = _runtime_config(config, prepared=_prepared_config)
@@ -844,7 +849,7 @@ def _scan_scanner_raw_array(
         )
     if _density_is_monochrome(scanner_raw, tolerance=1e-4):
         config.mode = "bw_negative"
-        _force_bw_negative(config, include_scanner=True)
+        _force_bw_negative(config, include_scanner=False)
     metadata["negative_channel_compensation_enabled"] = bool(
         config.scanner.negative_channel_compensation_enabled
     )
@@ -933,7 +938,7 @@ def _scan_scanner_raw_array(
         and float(config.scanner.scan_normalize_strength) > 0.0
     ):
         positive_linear = normalize_scan_rgb(
-            positive_linear,
+            positive_linear, measurement_region=measurement_region,
             black_percentile=config.scanner.scan_black_percentile,
             white_percentile=config.scanner.scan_white_percentile,
             strength=config.scanner.scan_normalize_strength,
@@ -1031,6 +1036,7 @@ def _normalize_encode_output_tiled(
     positive_linear: np.ndarray,
     config: DarkroomConfig,
     tile_rows: int,
+    measurement_region=None,
 ) -> np.ndarray:
     """Measure once globally, then apply the frozen calibration to every tile.
 
@@ -1045,8 +1051,12 @@ def _normalize_encode_output_tiled(
         config.scanner.scan_normalize
         and float(config.scanner.scan_normalize_strength) > 0.0
     ):
+        samples = positive_linear
+        if measurement_region is not None:
+            y0, y1, x0, x1 = measurement_region
+            samples = positive_linear[y0:y1, x0:x1]
         global_black, global_white = scan_normalization_range(
-            positive_linear,
+            samples,
             black_percentile=config.scanner.scan_black_percentile,
             white_percentile=config.scanner.scan_white_percentile,
             mode=config.scanner.scan_normalize_mode,
@@ -1055,12 +1065,12 @@ def _normalize_encode_output_tiled(
         plan = ScanOutputPlan.prepare(
             config.scanner, black=global_black, white=global_white,
         )
-        for start in range(0, height, tile_rows):
-            stop = min(start + tile_rows, height)
+        def encode_rows(start, stop):
             tile = positive_linear[start:stop]
             encoded = plan.apply_cpu(tile, consume_input=True)
             if not np.shares_memory(encoded, tile):
                 tile[...] = encoded
+        _scan_rows(positive_linear.shape, tile_rows, config, encode_rows)
         return positive_linear
 
     # Keep the original separate frame passes available for exact A/B and rollback.
@@ -1086,6 +1096,20 @@ def _normalize_encode_output_tiled(
             consume_input=True,
         )
     return positive_linear
+
+
+def _scan_rows(shape, tile_rows, config, work):
+    """Disjoint observation rows with the existing process-wide worker lease.
+
+    Calibration and global statistics are frozen by the caller. The medium
+    remains read-only; explicit memory limits retain the serial work budget.
+    """
+    from .material_parallel import run_rows, thread_count
+    from .runtime_resources import resolve_native_thread_limit
+    workers = (1 if (config.processing.memory_budget_mb is not None
+                     or config.scanner.spectral_observation_profile is not None) else
+               min(thread_count(), resolve_native_thread_limit(config.processing.native_thread_limit)))
+    run_rows(shape[0], shape[1], work, chunk_pixels=tile_rows*shape[1], workers=workers)
 
 
 def _scan_negative_output_tiled(
@@ -1137,8 +1161,7 @@ def _scan_negative_output_tiled(
         )
         positive_linear[...] = clear_render.reshape(1, 1, 3)
 
-    for start in range(0, height, tile_rows):
-        stop = min(start + tile_rows, height)
+    def observe_rows(start, stop):
         tile_output = inner_output[start:stop]
         total_density = _medium_optical_density_rgb(
             medium,
@@ -1181,7 +1204,8 @@ def _scan_negative_output_tiled(
         if not np.shares_memory(rendered, tile_output):
             tile_output[...] = rendered
         del rendered, tile_output
-    return _normalize_encode_output_tiled(positive_linear, config, tile_rows)
+    _scan_rows((height, width), tile_rows, config, observe_rows)
+    return _normalize_encode_output_tiled(positive_linear, config, tile_rows, image_gate_rows(medium, config))
 
 
 def _scan_positive_output_tiled(
@@ -1231,8 +1255,7 @@ def _scan_positive_output_tiled(
             consume_input=True,
         )
         positive_linear[...] = border_render.reshape(1, 1, 3)
-    for start in range(0, height, tile_rows):
-        stop = min(start + tile_rows, height)
+    def observe_rows(start, stop):
         tile_output = inner_output[start:stop]
         total_density = _medium_optical_density_rgb(
             medium,
@@ -1263,7 +1286,8 @@ def _scan_positive_output_tiled(
         if not np.shares_memory(rendered, tile_output):
             tile_output[...] = rendered
         del rendered, scanner_raw, tile_output
-    return _normalize_encode_output_tiled(positive_linear, config, tile_rows)
+    _scan_rows((height, width), tile_rows, config, observe_rows)
+    return _normalize_encode_output_tiled(positive_linear, config, tile_rows, image_gate_rows(medium, config))
 
 
 def _scan_negative_output_only(
@@ -1275,7 +1299,7 @@ def _scan_negative_output_only(
     auto_bw = _developed_medium_is_monochrome(medium)
     if auto_bw:
         config.mode = "bw_negative"
-        _force_bw_negative(config, include_scanner=True)
+        _force_bw_negative(config, include_scanner=False)
     _validate_scan_runtime(config)
 
     tile_rows = _scan_output_tile_rows(
@@ -1355,7 +1379,7 @@ def _scan_negative_output_only(
 
     if config.scanner.scan_normalize:
         positive_linear = normalize_scan_rgb(
-            positive_linear,
+            positive_linear, measurement_region=image_gate_rows(medium, config),
             black_percentile=config.scanner.scan_black_percentile,
             white_percentile=config.scanner.scan_white_percentile,
             strength=config.scanner.scan_normalize_strength,
@@ -1411,7 +1435,7 @@ def _scan_positive_output_only(
     del scanner_raw
     if config.scanner.scan_normalize:
         positive_linear = normalize_scan_rgb(
-            positive_linear,
+            positive_linear, measurement_region=image_gate_rows(medium, config),
             black_percentile=config.scanner.scan_black_percentile,
             white_percentile=config.scanner.scan_white_percentile,
             strength=config.scanner.scan_normalize_strength,

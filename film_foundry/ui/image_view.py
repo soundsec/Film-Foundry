@@ -8,6 +8,7 @@ from film_foundry.ui.curve_editor import text
 
 class ImageView(QtWidgets.QGraphicsView):
     zoom_changed = QtCore.Signal(int)
+    pixels_changed = QtCore.Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -39,9 +40,33 @@ class ImageView(QtWidgets.QGraphicsView):
         pixmap = QtGui.QPixmap.fromImage(image)
         preserve = self.source is not None and self.source.size() == pixmap.size() and not self._fit_mode
         self.source = pixmap
+        self.pixels_changed.emit(pixels)
         self._sync_source()
         if not preserve:
             self.fit()
+
+    def clear_image(self, message=''):
+        self.source = None
+        self._image.setPixmap(QtGui.QPixmap())
+        self._empty.setPlainText(message)
+        self._sync_source()
+        self.setSceneRect(self._empty.boundingRect())
+
+    def show_image(self,image,*,preserve_view=False):
+        """Upgrade a preview without changing the inspected region or fitted view."""
+        previous=self.source
+        keep=preserve_view and previous is not None and not self._fit_mode
+        if keep:
+            center=self.mapToScene(self.viewport().rect().center())
+            relative=QtCore.QPointF(center.x()/previous.width(),center.y()/previous.height())
+            scale=self.transform().m11()*previous.width()/image.width()
+        self.source=QtGui.QPixmap.fromImage(image)
+        self._sync_source()
+        if keep:
+            self.setTransform(QtGui.QTransform.fromScale(scale,scale))
+            self.centerOn(relative.x()*image.width(),relative.y()*image.height())
+            self.zoom_changed.emit(self.zoom_percent)
+        else:self.fit()
 
     def _sync_source(self):
         present = self.source is not None

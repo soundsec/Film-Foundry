@@ -563,17 +563,17 @@ class ApplicationWindow(Widget):
 
 
 class SecondaryWindow(ApplicationWindow):
-    def __init__(self, parent: Widget | None = None) -> None:
+    def __init__(self, parent: Widget | None = None, *, embedded: bool = False) -> None:
         self.app = _application()
         self._dispatcher = _Dispatcher()
         self._timers = {}
         self._timer_counter = 0
         qt_parent = parent.qt if parent is not None else None
-        qt_window = _TopLevelWidget(qt_parent, QtCore.Qt.WindowType.Window)
+        qt_window = _TopLevelWidget(qt_parent, QtCore.Qt.WindowType.Widget if embedded else QtCore.Qt.WindowType.Window)
         qt_window.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
         Widget.__init__(self, parent, qt_window)
         qt_window.about_to_close.connect(self._mark_destroyed)
-        self.qt.show()
+        if not embedded:self.qt.show()
 
     def mainloop(self) -> int:
         self.qt.show()

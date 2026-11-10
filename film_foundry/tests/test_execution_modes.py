@@ -419,6 +419,7 @@ def test_medium_store_mode_changes_only_archive_compression(tmp_path):
     Image.fromarray(np.full((8, 10, 3), 140, dtype=np.uint8), mode="RGB").save(source)
     config = DarkroomConfig()
     config.output.medium_npz_compression = "store"
+    config.output.material_storage_precision = "full"
     config.output.save_scanner_raw = False
     config.output.export_transparent_plate = False
     process_file(source, output, config)

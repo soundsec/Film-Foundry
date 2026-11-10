@@ -42,8 +42,12 @@ class DevelopedNegative:
     compatible_interpreters: tuple[str, ...] = ("negative_scan",)
     metadata: dict[str, Any] = field(default_factory=dict)
     spectral_medium: SpectralMedium | None = None
+    process_surface: dict[str,np.ndarray] | None = None
 
     def __post_init__(self) -> None:
+        if self.process_surface is not None:
+            from film_foundry.core.process_operations import validate_surface_fields
+            self.process_surface=validate_surface_fields(self.process_surface)
         if self.spectral_medium is not None:
             if self.spectral_medium.component_amounts.shape[:2] != self.frame_shape[:2]:
                 raise ValueError("spectral medium geometry must match optical master")
@@ -186,6 +190,10 @@ def developed_medium_metadata(medium: DevelopedMedium) -> dict[str, Any]:
             "coefficient_unit": "normalized_final_pool_v1",
             "authoritative_for_spectral_observation": True,
         }
+        if spectral_medium.emulsion_coverage is not None:
+            payload['array_semantics']['spectral_component_amounts']['role']='frozen_full_coverage_source_components'
+            payload['array_semantics']['spectral_emulsion_coverage']={'role':'emulsion_area_ownership','model':'emulsion_area_mixture_v1','read_only':True}
+            if spectral_medium.covered_density_rgb is not None:payload['array_semantics']['spectral_covered_density_rgb']={'role':'density_on_covered_emulsion','read_only':True}
         if spectral_medium.post_process_density_rgb is not None:
             payload["array_semantics"]["spectral_post_process_density_rgb"] = {
                 "role": "signed_final_medium_optical_overlay", "read_only": True,
@@ -196,12 +204,20 @@ def developed_medium_metadata(medium: DevelopedMedium) -> dict[str, Any]:
         payload["clear_base_optical_density_rgb"] = [float(value) for value in clear_base]
     metadata = getattr(medium, "metadata", {})
     if isinstance(metadata, dict):
+        from film_foundry.contracts.data_kernel import FORMED_FILM_REBATE_KEY
+        rebate = metadata.get(FORMED_FILM_REBATE_KEY, metadata.get('developed_medium', {}).get(FORMED_FILM_REBATE_KEY))
+        if isinstance(rebate, dict):
+            payload[FORMED_FILM_REBATE_KEY] = rebate
+        precision=metadata.get('storage_precision') or metadata.get('developed_medium',{}).get('storage_precision')
+        if precision:payload['storage_precision']=precision
         process_model = metadata.get("film_process_model")
         if process_model is None and isinstance(metadata.get("developed_medium"), dict):
             process_model = metadata["developed_medium"].get("film_process_model")
         if isinstance(process_model, dict):
             payload["film_process_model"] = process_model
         input_color = metadata.get("input_color")
+        if isinstance(metadata.get('process_control'),dict):payload['process_control']=metadata['process_control']
+        if isinstance(metadata.get('film_process_continuation'),dict):payload['film_process_continuation']=metadata['film_process_continuation']
         if isinstance(input_color, dict):
             payload["input_color"] = input_color
         identity = frame_identity_from_mapping(metadata)

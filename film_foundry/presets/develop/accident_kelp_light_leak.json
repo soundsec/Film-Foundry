@@ -19,7 +19,8 @@
     "silver_plating": 0.48,
     "light_leak_strength": 0.38,
     "chemical_stain": 0.78,
-    "uneven_development": 0.65
+    "uneven_development": 0.65,
+    "formation_history_model": "bath_products_local_v2"
   },
   "look": {
     "exposure_ev": -0.25,

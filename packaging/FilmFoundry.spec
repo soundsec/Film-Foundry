@@ -4,15 +4,16 @@ from pathlib import Path
 from importlib.metadata import PackageNotFoundError
 import sys
 
-from PyInstaller.utils.hooks import collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata, collect_data_files
 
 
 project_root = Path(SPECPATH).resolve().parent
 if not (project_root / "film_foundry").is_dir():
     project_root = project_root.parent
 hiddenimports = collect_submodules("film_foundry", filter=lambda name: not name.startswith("film_foundry.tests"))
-dependency_metadata = []
-for package in ("numpy", "opencv-python", "Pillow", "python-lcms2", "PySide6-Essentials", "shiboken6"):
+hiddenimports += ["rawpy._rawpy", "imagecodecs._ultrahdr"]
+dependency_metadata = collect_data_files("imagecodecs", includes=["licenses/*"])
+for package in ("numpy", "opencv-python", "Pillow", "tifffile", "python-lcms2", "PySide6-Essentials", "shiboken6", "rawpy", "imagecodecs"):
     dependency_metadata += copy_metadata(package)
 try:
     dependency_metadata += copy_metadata("PySide6")

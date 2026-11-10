@@ -83,9 +83,9 @@
       0.04
     ],
     "granularity_sigma": [
-      0.012,
-      0.011,
-      0.013
+      0.009,
+      0.00825,
+      0.00975
     ],
     "grain_density_correlation_radius": 0.0007,
     "grain_scales": [

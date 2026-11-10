@@ -21,7 +21,8 @@ def test_exposure_record_and_illuminant_share_explicit_and_legacy_controls():
             expected = ev if ev is not None else (-.5 if invert and interpreter != 'positive_transparency_scan' else .5)
             record = scanner_light_exposure_record(scanner)
             assert record['stage'] == 'transmission_capture'
-            assert record['lamp_ev'] == record['effective_ev'] == record['calibration_ev'] == expected
+            assert record['lamp_ev'] == record['effective_ev'] == expected
+            assert record['calibration_ev'] == 0.
             np.testing.assert_allclose(transmission_illuminant_rgb(scanner), neutral * 2**expected, rtol=1e-6)
 
 

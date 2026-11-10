@@ -21,7 +21,7 @@ EXE 便携版使用说明：
 
 特别备注：
 1. 大尺寸图像及高质量模式仍需要较多内存和处理时间；可先用小尺寸预览调整参数，再输出原尺寸结果。
-2. 桌面版暂不直接读取 RAW／DNG，请先转换为 TIFF、PNG 或 JPEG。
+2. 当前源码支持 DNG 和手机 Ultra HDR JPEG 增益图；其他厂商 RAW 请先转换为 DNG/TIFF。旧 0.4.0 二进制需重新构建后才具备此能力。
 3. 本包为 Windows x64 未签名 Alpha 测试版，Windows 可能显示“未知发布者”提示。也可从官方仓库获取源码，在 Python 环境运行。
 
 开源协议：GPL-3.0-or-later
@@ -56,7 +56,7 @@ Portable EXE Version Instructions:
 
 Important Notes:
 1. Large images and high-quality processing can still require substantial memory and time. Adjust settings with a smaller preview before rendering at the original size.
-2. The desktop version does not directly read RAW / DNG files. Convert them to TIFF, PNG, or JPEG first.
+2. Current source supports DNG and Ultra HDR gain-map JPEG. Convert other vendor RAW formats to DNG/TIFF. Existing 0.4.0 binaries require rebuilding to gain this support.
 3. This is an unsigned Windows x64 Alpha test build. Windows may display an “Unknown publisher” warning. The source is also available from the official repository for running in a Python environment.
 
 License: GPL-3.0-or-later

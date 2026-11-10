@@ -26,6 +26,7 @@ from film_foundry.core.io_utils import (
     cv_imwrite_unicode,
     quantize_linear_rgb16,
     quantize_unit_float_rows,
+    png_compression_level,
 )
 from film_foundry.core.scanner import (
     capture_optical_density,
@@ -73,9 +74,7 @@ def _save_gray_png(values: np.ndarray, path: str | Path) -> Path:
         bit_depth=8,
         label="Gray export",
     )
-    with atomic_output_path(path) as temporary:
-        Image.fromarray(arr, mode="L").save(temporary)
-    return path
+    return _save_quantized_png(arr, path, "L")
 
 
 def _save_rgba_png(rgba: np.ndarray, path: str | Path) -> Path:
@@ -88,8 +87,13 @@ def _save_rgba_png(rgba: np.ndarray, path: str | Path) -> Path:
         bit_depth=8,
         label="RGBA export",
     )
+    return _save_quantized_png(arr, path, "RGBA")
+
+
+def _save_quantized_png(values: np.ndarray, path: Path, mode: str) -> Path:
+    """Encode an already quantized internal export without a float round-trip."""
     with atomic_output_path(path) as temporary:
-        Image.fromarray(arr, mode="RGBA").save(temporary)
+        Image.fromarray(values, mode=mode).save(temporary, compress_level=png_compression_level())
     return path
 
 
@@ -179,6 +183,47 @@ def halation_alpha_linear(after_mtf: np.ndarray, after_halation: np.ndarray, sca
     return np.clip(values / max(float(scale), 1e-6), 0.0, 1.0).astype(np.float32)
 
 
+def _export_transparent_plate_rows(image_density, physical_density, alpha, output_dir, prefix, *, workers=1):
+    """Form the three encoded renditions from bounded, shared float rows.
+
+    The original float operations and independent 8/16-bit rounding remain;
+    only the final integer arrays are retained for the standard image codecs.
+    """
+    height, width = image_density.shape[:2]
+    rgba8 = np.empty((height, width, 4), np.uint8)
+    bgra16 = np.empty((height, width, 4), np.uint16)
+    bgr16 = np.empty((height, width, 3), np.uint16)
+    def encode_rows(start, stop):
+        transmission = np.power(10.0, -image_density[start:stop]).astype(np.float32)
+        rgba = np.dstack((np.clip(transmission, 0.0, 1.0), alpha[start:stop])).astype(np.float32)
+        rgba8[start:stop] = quantize_unit_float_rows(rgba, bit_depth=8, label="RGBA export")
+        bgra16[start:stop] = quantize_unit_float_rows(
+            rgba, bit_depth=16, channel_order=(2, 1, 0, 3), label="RGBA export")
+        physical_transmission = np.power(10.0, -physical_density[start:stop]).astype(np.float32)
+        bgr16[start:stop] = quantize_linear_rgb16(physical_transmission, bgr=True)
+    from .material_parallel import run_rows, ordered_results
+    run_rows(height, width, encode_rows, chunk_pixels=256*width, workers=workers)
+
+    # Alpha has already been quantized as the fourth PNG channel. Borrow that
+    # exact channel for the independent grayscale companion.
+    jobs = ((f"{prefix}_transparent_png", rgba8, f"{prefix}_transparent.png", "RGBA"),
+            ("density_alpha_png", rgba8[...,3], "density_alpha.png", "L"),
+            (f"{prefix}_transparent_16bit_tiff", bgra16, f"{prefix}_transparent_16bit.tiff", None),
+            (f"{prefix}_transmission_16bit_tiff", bgr16, f"{prefix}_transmission_16bit.tiff", None))
+    def save(job):
+        key, values, name, mode = job
+        path = output_dir / name
+        if mode is not None:_save_quantized_png(values, path, mode)
+        elif not cv_imwrite_unicode(path, values):
+            raise OSError(f"Failed to save transparent plate TIFF: {path}")
+        return key, str(path)
+    # Only immutable integer images cross into codec jobs. Both success and
+    # failure drain inside the existing directory transaction before publish.
+    with ordered_results(jobs, save, workers=min(workers,2)) as (_, results):
+        paths = dict(results)
+    return paths
+
+
 def export_transparent_plate_set(
     density_cmy: np.ndarray,
     film: FilmStockConfig,
@@ -188,6 +233,7 @@ def export_transparent_plate_set(
     optical_density_rgb: np.ndarray | None = None,
     clear_base_optical_density_rgb: np.ndarray | tuple[float, float, float] | None = None,
     _transactional: bool = True,
+    workers: int = 1,
 ) -> dict[str, str]:
     """导出透明片基电子负片和 density alpha。"""
     output_dir = Path(output_dir)
@@ -201,6 +247,7 @@ def export_transparent_plate_set(
                 optical_density_rgb=optical_density_rgb,
                 clear_base_optical_density_rgb=clear_base_optical_density_rgb,
                 _transactional=False,
+                workers=workers,
             )
         return _published_paths(staged_paths, staging, output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -236,6 +283,10 @@ def export_transparent_plate_set(
     )
     alpha = _normalize_channel(density_luma, low=0.0)
     del density_luma
+
+    from .execution_topology import reference_execution_enabled
+    if not reference_execution_enabled():
+        return _export_transparent_plate_rows(image_density, physical_density, alpha, output_dir, prefix, workers=workers)
 
     # Encode both transparent renditions before allocating the additional
     # physical-transmission RGB array.  This shortens the lifetime overlap of
@@ -372,6 +423,8 @@ def export_layer_pack(
                 json.dumps(developed_medium_metadata(negative), ensure_ascii=False, allow_nan=False)
             ),
         }
+        if negative.process_surface is not None:
+            medium_arrays.update({f'process_surface_{key}':value for key,value in negative.process_surface.items()})
         if getattr(negative, "optical_density_rgb", None) is not None:
             medium_arrays["optical_density_rgb"] = np.asarray(
                 negative.optical_density_rgb,
@@ -450,16 +503,27 @@ def scanner_raw_with_clear_border(
     *,
     optical_density_rgb: np.ndarray | None = None,
     clear_base_optical_density_rgb: np.ndarray | tuple[float, float, float] | None = None,
+    workers: int = 1,
 ) -> np.ndarray:
     """生成带未曝光片基边框的 scanner raw 负片图像。"""
     if optical_density_rgb is None:
         scanner_raw = render_negative_image(density_cmy, film, scanner)
     else:
-        scanner_raw = capture_optical_density(
-            np.asarray(optical_density_rgb, dtype=np.float32),
-            scanner,
-            illuminant_rgb=transmission_illuminant_rgb(scanner),
-        )
+        from .execution_topology import reference_execution_enabled
+        density = np.asarray(optical_density_rgb, dtype=np.float32)
+        illuminant = transmission_illuminant_rgb(scanner)
+        if reference_execution_enabled():
+            scanner_raw = capture_optical_density(density, scanner, illuminant_rgb=illuminant)
+        else:
+            from .material_parallel import run_rows
+            scanner_raw = np.empty_like(density)
+            def capture_rows(start, stop):
+                target = scanner_raw[start:stop]
+                captured = capture_optical_density(density[start:stop], scanner,
+                                                   illuminant_rgb=illuminant, _out=target)
+                if not np.shares_memory(captured, target):
+                    target[...] = captured
+            run_rows(*density.shape[:2], capture_rows, chunk_pixels=256*density.shape[1], workers=workers)
     if clear_base_optical_density_rgb is None:
         clear_density = np.asarray(film.density_min, dtype=np.float32).reshape(1, 1, 3)
         clear_raw = render_negative_image(clear_density, film, scanner)[0, 0]
@@ -515,7 +579,11 @@ def scanner_raw_with_reference_border(
     canvas = np.empty((height + border * 2, width + border * 2, 3), dtype=np.float32)
     canvas[...] = clear_raw.reshape(1, 1, 3)
     canvas[border : border + height, border : border + width] = scanner_raw
-    return np.clip(canvas, 0.0, 1.0).astype(np.float32)
+    from .execution_topology import reference_execution_enabled
+    if reference_execution_enabled():
+        return np.clip(canvas, 0.0, 1.0).astype(np.float32)
+    np.clip(canvas, 0.0, 1.0, out=canvas)
+    return canvas
 
 
 def scanner_raw_export_border_width(
@@ -538,13 +606,20 @@ def scanner_raw_export_border_width(
     return max(border, 0)
 
 
-def save_linear_rgb_tiff(image: np.ndarray, path: str | Path) -> Path:
+def save_linear_rgb_tiff(image: np.ndarray, path: str | Path, *, workers: int = 1,
+                         watermark_payload: dict | None = None, border_width: int = 0) -> Path:
     """把线性 RGB 保存成 16-bit TIFF，不做 sRGB gamma 编码。"""
     path = Path(path)
     image = np.asarray(image)
     if image.ndim != 3 or image.shape[-1] != 3 or image.shape[0] <= 0 or image.shape[1] <= 0:
         raise ValueError(f"Linear RGB export must have non-empty HxWx3 shape, got {image.shape}.")
-    bgr16 = quantize_linear_rgb16(image, bgr=True)
+    from .execution_topology import reference_execution_enabled
+    from .provenance import apply_scanner_raw_border_watermark, mark_scanner_raw_bgr16
+    if watermark_payload is not None and reference_execution_enabled():
+        image = apply_scanner_raw_border_watermark(image, watermark_payload, border_width=border_width)
+    bgr16 = quantize_linear_rgb16(image, bgr=True, workers=workers)
+    if watermark_payload is not None and not reference_execution_enabled():
+        mark_scanner_raw_bgr16(bgr16, watermark_payload, border_width=border_width)
     if not cv_imwrite_unicode(path, bgr16):
         raise OSError(f"Failed to save scanner raw TIFF: {path}")
     return path

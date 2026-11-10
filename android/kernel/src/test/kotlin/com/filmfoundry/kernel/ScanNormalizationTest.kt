@@ -7,6 +7,24 @@ import org.junit.jupiter.api.Test
 
 /** Small independent legacy oracle; no image hashes, timing assertions or large fixtures. */
 class ScanNormalizationTest {
+    @Test fun measurementDuringProductionKeepsExactPercentilesAndNeedsOnlyOneReplay() {
+        val samples=listOf(FloatArray(31*17*3) { ((it*1297)%65521)/2048f-.2f },
+            FloatArray(99) { if(it%3==0) -0f else .4f },FloatArray(3) { .5f })
+        for(input in samples) for(mode in listOf("luma","rgb")) {
+            val before=input.copyOf();val expected=input.copyOf()
+            PhoneObserve.normalizeReference(expected,input.size/3,.63f,mode,.25f,99.7f)
+            val meter=ScanNormalization.RowMeasurement(input.size/3,.63f,mode,.25f,99.7f)
+            // Large rebate samples outside the declared image range must not affect metering.
+            val padded=FloatArray(input.size+12) { 100f };input.copyInto(padded,6)
+            for(start in 0 until input.size/3 step 37) meter.collect(padded,start+2,min(37,input.size/3-start))
+            var replays=0
+            val plan=meter.finish { consume -> replays++;consume(input) }
+            assertEquals(1,replays)
+            val actual=input.copyOf();plan.apply(actual)
+            assertArrayEquals(expected,actual,0f)
+            assertArrayEquals(before,input,0f)
+        }
+    }
     @Test fun fullPixelPercentilesRemainExactAcrossModesAndBoundaries() {
         val inputs = listOf(
             floatArrayOf(0f, 0f, 0f),

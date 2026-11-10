@@ -39,6 +39,7 @@ USER_FILM_PRESET_DIR = PROJECT_ROOT / "user_presets" / "film"
 APP_TITLE = "Film Foundry - Silver-Halide Film Material Editor"
 SUPPORTED_MEDIUM_FAMILY = "film"
 MATERIAL_CLASS_SPECS: dict[str, dict[str, str]] = {
+    'chromogenic_mono': {'medium_process':'negative','image_polarity':'negative','color_process':'chromogenic_monochrome','mode':'color_negative'},
     "color_negative": {
         "medium_process": "negative",
         "image_polarity": "negative",
@@ -107,6 +108,7 @@ MATERIAL_EDITOR_EN = {
     "实验性金属银颗粒强度": "Experimental Metallic-Silver Grain Strength",
     "金属银颗粒相关半径": "Metallic-Silver Grain Radius",
     "金属银粗团聚混合": "Metallic-Silver Coarse-Clump Mix",
+    "化学灰雾敏感度": "Chemical Fog Susceptibility",
     "银盐胶片材料预设（分类共享外壳）": "Silver-Halide Film Material Presets",
     "基准材料": "Base material",
     "加载": "Load",
@@ -267,6 +269,7 @@ def material_class_for_config(config: DarkroomConfig) -> str:
     color = str(config.film.color_process).strip().lower().replace("-", "_")
     monochrome = color in {"bw", "black_white", "monochrome"}
     reversal = polarity == "positive" or process in {"slide", "reversal", "positive"}
+    if color=='chromogenic_monochrome' and not reversal:return 'chromogenic_mono'
     if reversal:
         return "bw_reversal" if monochrome else "color_reversal"
     return "bw_negative" if monochrome else "color_negative"
@@ -304,12 +307,12 @@ color_process_for_mode = lambda mode: "monochrome" if str(mode) == "bw_negative"
 
 
 class FilmMaterialEditor:
-    def __init__(self, *, parent=None, config=None, on_apply=None) -> None:
+    def __init__(self, *, parent=None, config=None, on_apply=None, embedded=False) -> None:
         USER_FILM_PRESET_DIR.mkdir(parents=True, exist_ok=True)
 
         self._base_config = None
         self._on_apply = on_apply
-        self.root = ui.Application() if parent is None else ui.Window(parent)
+        self.root = ui.Application() if parent is None else ui.Window(parent,embedded=embedded)
         self.root.title(local_text("Film Foundry · 材料编辑组件", "Film Foundry · Material editor component"))
         self.root.geometry("1080x780")
         self.root.minsize(860, 620)
@@ -327,7 +330,7 @@ class FilmMaterialEditor:
         self.identity_summary = ui.TextValue(value="film / negative / negative polarity / color")
         self.halation_return_display = ui.TextValue(value="")
         self.light_piping_edge_display = ui.TextValue(value="")
-        self.status = ui.TextValue(value=local_text("加载银盐胶片材料预设，调整后保存到 user_presets/film。", "Load a silver-halide material preset, adjust it, then save to user_presets/film."))
+        self.status = ui.TextValue(value="")
         self.curve_photo = None
 
         self.scalar_vars: dict[str, ui.FloatValue] = {}
@@ -335,6 +338,7 @@ class FilmMaterialEditor:
         self.matrix_vars: dict[str, list[list[ui.FloatValue]]] = {}
         self.matrix_inputs: dict[str, list] = {}
         self.field_widgets: dict[str, object] = {}
+        self.field_controls: dict[str, tuple] = {}
 
         self._build()
         self._refresh_preset_choices()
@@ -352,7 +356,7 @@ class FilmMaterialEditor:
         shell.columnconfigure(1, weight=1)
         shell.rowconfigure(1, weight=1)
 
-        header = ui.Group(shell, text=local_text("Film Foundry 组件 · 材料配置", "Film Foundry component · Material settings"), padding=10)
+        header = ui.Group(shell, text=local_text("胶片材料", "Film material"), padding=10)
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ui.Label(header, text="基准材料").grid(row=0, column=0, sticky="w", pady=3)
         self.preset_combo = ui.Choice(header, textvariable=self.preset_display, state="readonly")
@@ -362,19 +366,23 @@ class FilmMaterialEditor:
         ui.Button(header, text="保存为用户胶片材料", command=self._save_user_preset).grid(row=0, column=3)
         ui.Label(header, text="材料名称").grid(row=1, column=0, sticky="w", pady=3)
         ui.TextInput(header, textvariable=self.material_name).grid(row=1, column=1, columnspan=2, sticky="ew", pady=3, padx=(8, 8))
-        ui.Choice(header, textvariable=self.material_class, values=tuple(MATERIAL_CLASS_SPECS), state="readonly", width=16).grid(
-            row=1, column=3, sticky="ew", pady=3
-        )
+        from film_foundry.ui.qt import QtCore
+        classes={'chromogenic_mono':('染料黑白负片','Chromogenic B&W'),
+                 'color_negative':('彩色负片','Color negative'),'bw_negative':('银盐黑白负片','Silver B&W negative'),
+                 'color_reversal':('彩色反转片','Color reversal'),'bw_reversal':('黑白反转片','B&W reversal')}
+        keys=tuple(MATERIAL_CLASS_SPECS)
+        choice=ui.Choice(header,values=tuple(local_text(*classes[k]) for k in keys),state='readonly',width=16)
+        choice.grid(row=1,column=3,sticky='ew',pady=3)
+        def display_class(value):
+            with QtCore.QSignalBlocker(choice.qt):choice.qt.setCurrentIndex(keys.index(value) if value in keys else -1)
+        self.material_class._bind_view(display_class,choice)
+        choice.qt.currentIndexChanged.connect(lambda index:self.material_class.set(keys[index]) if index>=0 else None)
         ui.Label(header, text="当前介质").grid(row=2, column=0, sticky="w", pady=3)
         medium_row = ui.Frame(header)
         medium_row.grid(row=2, column=1, columnspan=3, sticky="ew", pady=3, padx=(8, 0))
         ui.Label(medium_row, textvariable=self.identity_summary).pack(side="left")
         header.columnconfigure(1, weight=1)
-        ui.Label(
-            header,
-            text="负片与反转片共享编辑器外壳，但调用身份、原生极性和曲线预览分开；即时成像、撕拉片和银版仍使用独立入口。",
-            wraplength=760,
-        ).grid(row=3, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+        header.set_tooltip(local_text("编辑银盐负片与反转片；拍立得、撕拉片和银版从图库选择介质后进入。", "Edit silver-halide negatives and reversal film; choose instant, peel-apart or plate from the library."))
         add_apply_button(header, self, row=4)
 
         controls_shell = ui.Frame(shell)
@@ -382,19 +390,38 @@ class FilmMaterialEditor:
         controls_shell.rowconfigure(1, weight=1)
         controls_shell.columnconfigure(0, weight=1)
 
+        from film_foundry.ui.qt import QtWidgets
+        from film_foundry.ui.formation_execution import FormationExecutionBadge
         spectral_actions = ui.Frame(controls_shell)
         spectral_actions.grid(row=0, column=0, sticky="ew", pady=(0, 5))
-        spectral_actions.columnconfigure(0, weight=1)
-        ui.Button(spectral_actions, text=local_text("开启七色升维", "Turn on seven-color lift"),
-                  command=self._enable_smits_exposure).grid(row=0, column=0, sticky="ew", pady=2)
-        ui.Button(spectral_actions, text=local_text("编辑已开启的曝光谱", "Edit the exposure spectrum"),
-                  command=lambda: self._edit_spectral_profile(False)).grid(row=1, column=0, sticky="ew", pady=2)
-        ui.Button(spectral_actions, text=local_text("编辑材料吸收谱", "Edit material absorbance"),
-                  command=lambda: self._edit_spectral_profile(True)).grid(row=2, column=0, sticky="ew", pady=2)
-        ui.Label(spectral_actions, text=local_text(
-            "没有附带光谱 JSON。七色升维直接开启；材料吸收谱只有自己有档案时才需要载入。",
-            "No spectrum JSON is included. Seven-color lift turns on directly. Load a material absorbance only if you have your own file.",
-        ), wraplength=420).grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        toolbar = spectral_actions._ensure_pack_layout("left")
+        self.formation_badge = FormationExecutionBadge()
+        toolbar.addWidget(self.formation_badge)
+        toolbar.addStretch(1)
+        self.sensitivity_family = ui.TextValue(value=local_text('正色', 'Orthochromatic'))
+        self.sensitivity_choices = {local_text('全色','Panchromatic'):'panchromatic', local_text('正色','Orthochromatic'):'orthochromatic', local_text('蓝敏','Blue-sensitive'):'blue_sensitive'}
+        spectrum = QtWidgets.QToolButton()
+        spectrum.setText(local_text('光谱', 'Spectra'))
+        spectrum.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QtWidgets.QMenu(spectrum)
+        menu.addAction(local_text('开启七色升维', 'Enable seven-color lift'), self._enable_smits_exposure)
+        menu.addAction(local_text('曝光感光谱…', 'Exposure sensitivity…'), lambda: self._edit_spectral_profile(False))
+        menu.addAction(local_text('材料吸收谱…', 'Material absorbance…'), lambda: self._edit_spectral_profile(True))
+        sensitivity = menu.addMenu(local_text('黑白感光类型', 'Monochrome sensitivity'))
+        for label in self.sensitivity_choices:
+            sensitivity.addAction(label, lambda label=label: (self.sensitivity_family.set(label), self._set_sensitivity_family()))
+        spectrum.setMenu(menu)
+        spectrum.setToolTip(local_text('感光谱与吸收谱独立配置；黑白感光类型是创作起点，不恢复源图未记录的紫外或红外。', 'Configure sensitivity and absorbance independently. Monochrome types are creative starting points, not recovered UV or IR.'))
+        toolbar.addWidget(spectrum)
+        tools = QtWidgets.QToolButton()
+        tools.setText(local_text('材料', 'Material'))
+        tools.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QtWidgets.QMenu(tools)
+        menu.addAction(local_text('工艺响应…', 'Process response…'), self._edit_process_response)
+        menu.addAction(local_text('时间响应与储存…', 'Time response and storage…'), self._edit_time_history)
+        menu.addAction(local_text('构建材料…', 'Compose material…'), self._compose_material)
+        tools.setMenu(menu)
+        toolbar.addWidget(tools)
 
         self.controls_scroller = VerticalScrolledFrame(controls_shell, canvas_width=560)
         self.controls_scroller.grid(row=1, column=0, sticky="nsew")
@@ -489,6 +516,10 @@ class FilmMaterialEditor:
         row = self._scalar(controls, "silver_grain_strength", "实验性金属银颗粒强度", 0.00, 0.20, row)
         row = self._scalar(controls, "silver_grain_radius", "金属银颗粒相关半径", 0.0001, 0.0040, row)
         row = self._scalar(controls, "silver_grain_clump_mix", "金属银粗团聚混合", 0.00, 1.00, row)
+        row = self._scalar(controls, "chemical_fog_susceptibility", "化学灰雾敏感度", 0.00, 10.00, row)
+        self.field_widgets['chemical_fog_susceptibility'].set_tooltip(local_text(
+            '逐浴模型下，未被曝光激活的银盐在显影液中的非成像转化敏感度。0 关闭化学灰雾，1 为基准；不改变片基本色或老化底雾。',
+            'Non-image conversion of inactive halide in the bath-product model: 0 disables chemical fog, 1 is the reference. Support colour and ageing fog stay independent.'))
         row = self._scalar(controls, "emulsion_mtf_strength", "乳剂 MTF 强度", 0.00, 0.70, row)
         row = self._scalar(controls, "emulsion_blur_radius", "乳剂模糊半径", 0.0002, 0.0050, row)
         row = self._scalar(controls, "high_frequency_threshold", "高频响应阈值", 0.00, 0.20, row)
@@ -636,17 +667,43 @@ class FilmMaterialEditor:
         row = self._matrix(controls, "dye_absorption_matrix", "dye absorption", 0.0, 1.6, row)
         row = self._matrix(controls, "base_dye_interaction_matrix", "base / dye spectral overlap", 0.0, 1.0, row)
 
-        preview = ui.Group(shell, text="曲线预览", padding=10)
+        preview = ui.Group(shell, text=local_text("材料预览", "Material preview"), padding=10)
         preview.grid(row=1, column=1, sticky="nsew")
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(0, weight=1)
-        self.curve_label = ui.Label(preview)
+        from film_foundry.ui.qt import QtWidgets
+        from film_foundry.ui.material_preview import MaterialPreview
+        curve_page = ui.Frame(preview)
+        curve_page.columnconfigure(0, weight=1);curve_page.rowconfigure(0, weight=1)
+        self.curve_label = ui.Label(curve_page)
         self.curve_label.grid(row=0, column=0, sticky="nsew")
-        ui.Button(preview, text="刷新曲线", command=self._refresh_curve).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        from film_foundry.ui.editor_navigator import FittedCurvePreview
+        self.curve_fitter = FittedCurvePreview(self.curve_label.qt)
+        ui.Button(curve_page, text="刷新曲线", command=self._refresh_curve).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.preview_tabs = QtWidgets.QTabWidget()
+        self.preview_tabs.addTab(curve_page.qt,local_text("特性曲线","Characteristic curves"))
+        self.quick_preview = MaterialPreview(self._preview_config)
+        self.preview_tabs.addTab(self.quick_preview,local_text("效果预览","Image preview"))
+        preview_layout = QtWidgets.QVBoxLayout(preview.qt)
+        preview_layout.setContentsMargins(0,0,0,0);preview_layout.addWidget(self.preview_tabs)
 
         ui.Label(self.root, textvariable=self.status, padding=(12, 0, 12, 8), wraplength=980).pack(fill="x", side="bottom")
         self.controls_scroller.bind_mousewheel()
         localize_widget_tree(self.root, MATERIAL_EDITOR_EN)
+        from film_foundry.ui.editor_navigator import install_editor_navigator, install_editor_splitter
+        install_editor_navigator(self)
+        install_editor_splitter(self, shell, controls_shell, preview)
+        self.parameter_sections.setCurrentIndex(2)
+
+    def set_execution_context(self, config):
+        from film_foundry.ui.formation_execution import set_editor_execution_context
+        set_editor_execution_context(self, config)
+        if hasattr(self, 'quick_preview'):self.quick_preview.invalidate()
+
+    def _preview_config(self):
+        from film_foundry.app.config_assets import apply_recipe_bank
+        draft = self._config_from_controls()
+        return apply_recipe_bank(getattr(self, '_execution_config', draft), draft, 'film')
 
     def _refresh_preset_choices(self) -> None:
         labels, mapping = film_preset_choices()
@@ -663,11 +720,12 @@ class FilmMaterialEditor:
         return row + 1
 
     def _scalar(self, parent: ui.Frame, key: str, label: str, min_value: float, max_value: float, row: int) -> int:
+        from film_foundry.ui.film_parameter_help import field_label,describe_control
         var = ui.FloatValue(value=0.0)
         self.scalar_vars[key] = var
         control = add_numeric_control(
             parent,
-            label=label,
+            label=field_label(key,label),
             value=var,
             minimum=min_value,
             maximum=max_value,
@@ -678,12 +736,17 @@ class FilmMaterialEditor:
             pady=3,
         )
         self.field_widgets[key] = control.slider
+        self.field_controls[key] = (control.label, control.slider, control.number_input)
+        describe_control(key,control.label,control.slider,control.number_input)
         return row + 1
 
     def _vector(self, parent: ui.Frame, key: str, label: str, min_value: float, max_value: float, row: int) -> int:
+        from film_foundry.ui.film_parameter_help import field_label,describe_control
         vars_ = (ui.FloatValue(value=0.0), ui.FloatValue(value=0.0), ui.FloatValue(value=0.0))
         self.vector_vars[key] = vars_
-        ui.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
+        label_widget=ui.Label(parent,text=field_label(key,label))
+        label_widget.grid(row=row,column=0,sticky='w',pady=3)
+        describe_control(key,label_widget)
 
         vector_frame = ui.Frame(parent)
         vector_frame.grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
@@ -702,6 +765,7 @@ class FilmMaterialEditor:
                 justify="center",
             )
             spin.grid(row=0, column=1, sticky="ew")
+            describe_control(key,spin)
             vector_frame.columnconfigure(index, weight=1, uniform="rgb_vector")
             var.trace_add("write", lambda *_: self._refresh_curve())
         parent.columnconfigure(1, weight=1)
@@ -710,15 +774,21 @@ class FilmMaterialEditor:
         return row + 1
 
     def _matrix(self, parent: ui.Frame, key: str, label: str, min_value: float, max_value: float, row: int) -> int:
-        ui.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
+        from film_foundry.ui.film_parameter_help import describe_control
+        title = ui.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
+        describe_control(key, title)
+        matrix_frame=ui.Frame(parent)
+        matrix_frame.grid(row=row,column=1,columnspan=3,rowspan=3,sticky="ew",pady=3)
+        for column in range(3):matrix_frame.columnconfigure(column,weight=1)
         matrix: list[list[ui.FloatValue]] = []
         inputs: list = []
         for y in range(3):
             matrix_row = []
             for x in range(3):
                 var = ui.FloatValue(value=0.0)
-                spin = ui.NumberInput(parent, from_=min_value, to=max_value, increment=(max_value - min_value) / 200.0, textvariable=var, width=8)
-                spin.grid(row=row + y, column=x + 1, sticky="ew", padx=2, pady=2)
+                spin = ui.NumberInput(matrix_frame, from_=min_value, to=max_value, increment=(max_value - min_value) / 200.0, textvariable=var, width=8)
+                spin.grid(row=y, column=x, sticky="ew", padx=2, pady=2)
+                describe_control(key, spin)
                 var.trace_add("write", lambda *_: self._refresh_curve())
                 matrix_row.append(var)
                 inputs.append(spin)
@@ -734,20 +804,17 @@ class FilmMaterialEditor:
         self.medium_process.set(identity["medium_process"])
         self.image_polarity.set(identity["image_polarity"])
         self.color_process.set(identity["color_process"])
-        self.identity_summary.set(
-            f"film / {identity['medium_process']} / {identity['image_polarity']} polarity / "
-            f"{identity['color_process']}"
-        )
+        color=local_text('彩色','Color') if identity['color_process']=='color' else local_text('染料黑白','Chromogenic B&W') if identity['color_process']=='chromogenic_monochrome' else local_text('银盐黑白','Silver B&W')
+        polarity=local_text('正像','Positive') if identity['image_polarity']=='positive' else local_text('负像','Negative')
+        self.identity_summary.set(color+' · '+polarity)
         reversal_material = self.material_class.get() in {"color_reversal", "bw_reversal"}
-        color_material = self.material_class.get() in {"color_negative", "color_reversal"}
+        color_material = self.material_class.get() in {"color_negative", "color_reversal", "chromogenic_mono"}
         for key in POSITIVE_MATERIAL_FIELDS:
-            widget = self.field_widgets.get(key)
-            if widget is not None:
+            for widget in self.field_controls.get(key, ()):
                 widget.state(["!disabled"] if reversal_material else ["disabled"])
         dir_state = ["!disabled"] if color_material else ["disabled"]
         for key in DIR_MATERIAL_SCALAR_FIELDS:
-            widget = self.field_widgets.get(key)
-            if widget is not None:
+            for widget in self.field_controls.get(key, ()):
                 widget.state(dir_state)
         for key in DIR_MATERIAL_MATRIX_FIELDS:
             for widget in self.matrix_inputs.get(key, []):
@@ -761,6 +828,9 @@ class FilmMaterialEditor:
             return
         config = DarkroomConfig.from_json(path)
         supported = self._set_controls_from_config(config)
+        from film_foundry.app.seasonal_collection import localized_description
+        from film_foundry.ui.i18n import current_language
+        self.preset_combo.set_tooltip(localized_description('film',self.preset_name.get(),current_language()) if path.parent != USER_FILM_PRESET_DIR else '')
         source = "用户" if path.parent == USER_FILM_PRESET_DIR else "内置"
         if supported:
             self.status.set(local_text(
@@ -780,19 +850,29 @@ class FilmMaterialEditor:
         self.exposure_profile_field.load(make_smits_exposure_profile(layers))
         self.status.set(local_text("已开启七色升维。应用到当前任务后才会进入这次冲洗。", "Seven-color lift is on. Apply it to the current task before this development uses it."))
 
+    def _set_sensitivity_family(self):
+        if self.material_class.get() not in {'bw_negative','bw_reversal'}:
+            self.status.set(local_text('请先选择黑白负片或黑白反转材料','Select a monochrome negative or reversal material first'));return
+        from film_foundry.contracts.spectral_exposure import make_historical_exposure_profile
+        self.exposure_profile_field.load(make_historical_exposure_profile(self.sensitivity_choices[self.sensitivity_family.get()]))
+        self.status.set(local_text('感光类型已载入草稿，可编辑光谱后应用','Sensitivity loaded into the draft; edit its spectrum or apply'))
+
     def _edit_spectral_profile(self, material=False):
         from film_foundry.ui.spectral_editor import SpectralProfileDialog
         field = self.material_profile_field if material else self.exposure_profile_field
         layers = 1 if self.material_class.get() in {"bw_negative", "bw_reversal"} else 3
         dialog = SpectralProfileDialog(field.profile, material=material, layers=layers, parent=self.root.qt)
-        try:
-            if dialog.exec():
-                field.load(dialog.profile)
-        finally:
-            dialog.deleteLater()
+        from film_foundry.ui.inline_editor import present_inline_editor
+        present_inline_editor(self.root.qt,dialog,lambda:field.load(dialog.profile))
 
+    from film_foundry.ui.editor_navigator import batch_parameter_update
+    @batch_parameter_update('_refresh_curve')
     def _set_controls_from_config(self, config: DarkroomConfig) -> bool:
         self._base_config = copy.deepcopy(config)
+        self.set_execution_context(getattr(self, '_execution_config', config))
+        self._process_response=copy.deepcopy(config.film.process_response)
+        self._carbon_backing=copy.deepcopy(config.film.carbon_backing)
+        self._emulsion_integrity=copy.deepcopy(config.film.emulsion_integrity)
         self.spatial_reference_field.load(config.film.spatial_reference_short_edge_mm)
         self.grain_scales_field.load(config.film.grain_scales)
         self.grain_weights_field.load(config.film.grain_scale_weights)
@@ -837,6 +917,34 @@ class FilmMaterialEditor:
                     matrix[y][x].set(float(values[y][x]))
         return supported
 
+    def _compose_material(self):
+        from film_foundry.ui.material_design_dialog import MaterialDesignDialog
+        dialog=MaterialDesignDialog(self._config_from_controls(),self.root.qt)
+        from film_foundry.ui.inline_editor import present_inline_editor
+        present_inline_editor(self.root.qt,dialog,lambda:self._set_controls_from_config(dialog.config))
+
+    def _edit_process_response(self):
+        from film_foundry.ui.process_operations_editor import ProcessResponseDialog
+        from film_foundry.ui.qt import QtWidgets
+        film=self._config_from_controls().film
+        dialog=ProcessResponseDialog(film.process_response,self.root.qt,carbon_backing=film.carbon_backing,emulsion_integrity=film.emulsion_integrity)
+        def apply():
+            self._process_response=copy.deepcopy(dialog.value)
+            self._carbon_backing=copy.deepcopy(dialog.carbon_backing)
+            self._emulsion_integrity=copy.deepcopy(dialog.emulsion_integrity)
+        from film_foundry.ui.inline_editor import present_inline_editor
+        present_inline_editor(self.root.qt,dialog,apply)
+
+    def _edit_time_history(self):
+        from film_foundry.ui.film_time_editor import FilmTimeDialog
+        config=self._config_from_controls();dialog=FilmTimeDialog(config,self.root.qt,material=True)
+        def apply():
+            config.film.time_response=dialog.response;config.film.storage_history=dialog.storage_value
+            config.film.reciprocity_response=dialog.reciprocity_value
+            self._set_controls_from_config(config);self._refresh_curve()
+        from film_foundry.ui.inline_editor import present_inline_editor
+        present_inline_editor(self.root.qt,dialog,apply)
+
     def _config_from_controls(self) -> DarkroomConfig:
         base_path = film_preset_path(self.preset_name.get())
         config = (copy.deepcopy(self._base_config) if self._base_config is not None
@@ -846,6 +954,9 @@ class FilmMaterialEditor:
         config.film.grain_scale_weights = self.grain_weights_field.read()
         config.film.spectral_exposure_profile = self.exposure_profile_field.profile
         config.film.spectral_material_profile = self.material_profile_field.profile
+        config.film.process_response = copy.deepcopy(getattr(self,'_process_response',config.film.process_response))
+        config.film.carbon_backing = copy.deepcopy(getattr(self,'_carbon_backing',config.film.carbon_backing))
+        config.film.emulsion_integrity = copy.deepcopy(getattr(self,'_emulsion_integrity',config.film.emulsion_integrity))
         config.film.name = self.material_name.get().strip() or "Custom Film Material"
         identity = material_identity_for_class(self.material_class.get())
         config.mode = identity["mode"]
@@ -882,13 +993,15 @@ class FilmMaterialEditor:
         }
 
     def _refresh_curve(self) -> None:
+        if getattr(self, '_loading_parameters', False):return
+        if hasattr(self, 'quick_preview'):self.quick_preview.invalidate()
         if not hasattr(self, "curve_label"):
             return
         try:
             config = self._config_from_controls()
             image = self._draw_hd_curve(config)
             self.curve_photo = PhotoImage(image)
-            self.curve_label.configure(image=self.curve_photo)
+            self.curve_fitter.set_pixmap(self.curve_photo.pixmap)
         except Exception:
             # Numeric typing can briefly create invalid floats; ignore until input stabilizes.
             return
@@ -911,6 +1024,12 @@ class FilmMaterialEditor:
         exposure = np.repeat((10.0 ** log_e)[:, None], 3, axis=1)
         density = material_preview_density(exposure, config)
         y_max = max(float(np.max(density)) * 1.08, 0.6)
+        for i in range(6):
+            y = y1 - (y1-y0)*i/5
+            draw.text((12, y-5), f'{y_max*i/5:.2f}', fill=(70,66,58))
+        for i in range(5):
+            x = x0 + (x1-x0)*i/4
+            draw.text((x-7,y1+5), str(i-3), fill=(70,66,58))
         colors = ((220, 70, 70), (70, 170, 85), (70, 110, 220))
         for channel, color in enumerate(colors):
             xs = x0 + (log_e + 3.0) / 4.0 * (x1 - x0)
@@ -924,8 +1043,7 @@ class FilmMaterialEditor:
         draw.rectangle((x0, 14, x0 + 46, 26), fill=swatch, outline=(90, 86, 78))
         draw.text((x0 + 54, 12), f"{config.film.name}  |  base preview", fill=(42, 38, 34))
         draw.text((x0, height - 29), "log10(relative exposure)", fill=(70, 66, 58))
-        curve_kind = "positive density" if self.material_class.get().endswith("reversal") else "negative density"
-        draw.text((12, y0 - 4), curve_kind, fill=(70, 66, 58))
+        draw.text((12, y0 - 18), 'D', fill=(70, 66, 58))
         return image
 
     def _save_user_preset(self) -> None:

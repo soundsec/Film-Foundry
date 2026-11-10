@@ -3,14 +3,16 @@ package com.filmfoundry.workflow
 /** Known cross-frontend capability differences. Reporting preserves every recipe field. */
 object PhoneRecipeCapabilities {
     enum class Stage { CAPTURE, DEVELOP, SCAN }
-    enum class Status { IMPLEMENTED, REDUCED, PRESERVED, UNSUPPORTED }
+    enum class Status { IMPLEMENTED, REDUCED, PRESERVED, UNSUPPORTED, OMITTED }
     data class Entry(val path: String,val status: Status)
     data class Report(val entries: List<Entry>) {
-        val warnings get()=entries.filter { it.status==Status.PRESERVED || it.status==Status.UNSUPPORTED }
+        val warnings get()=entries.filter { it.status in listOf(Status.PRESERVED,Status.UNSUPPORTED,Status.OMITTED) }
     }
-    fun inspect(recipe: Map<String,Any?>,stage: Stage): Report {
+    fun inspect(recipe: Map<String,Any?>,stage: Stage,
+        formationProfile: Any?=recipe[com.filmfoundry.interchange.PhoneFormationProfile.OPTION]): Report {
+        val lightweight=stage!=Stage.SCAN && com.filmfoundry.interchange.PhoneFormationProfile.validate(formationProfile)==com.filmfoundry.interchange.PhoneFormationProfile.LIGHTWEIGHT
         fun section(key: String)=(recipe[key] as? Map<*,*>)?.entries?.associate { it.key.toString() to it.value }.orEmpty()
-        val film=section("film");val develop=section("develop");val scanner=recipe+section("scanner")
+        val film=section("film");val develop=section("chemistry")+section("develop");val scanner=recipe+section("scanner")
         val entries=mutableListOf<Entry>()
         fun add(path: String,status: Status) { if(entries.none { it.path==path }) entries+=Entry(path,status) }
         fun nonzero(value: Any?): Boolean=when(value) {
@@ -32,21 +34,29 @@ object PhoneRecipeCapabilities {
         }
         if(stage!=Stage.SCAN) {
             add("film.material_response",Status.REDUCED)
+            // Desktop parameter transport is not a promise to run its newer models.
+            for(key in listOf("carbon_backing","time_response"))
+                if(film[key]!=null) add("film.$key",Status.PRESERVED)
+            if(stage==Stage.CAPTURE && nonzero(section("exposure")["duration_seconds"]))
+                add("exposure.duration_seconds",Status.PRESERVED)
             if((recipe["film_border"] as? Map<*,*>)?.get("enabled")==true) add("film_border",Status.REDUCED)
             if(film["spectral_exposure_profile"]!=null) add("film.spectral_exposure_profile",Status.REDUCED)
-            if(nonzero(film["dir_material_response_matrix"])) add("film.dir_material_response_matrix",Status.REDUCED)
+            if(nonzero(film["dir_material_response_matrix"])) add("film.dir_material_response_matrix",if(lightweight) Status.OMITTED else Status.REDUCED)
             for(key in listOf("light_piping_strength","silver_grain_strength","emulsion_highlight_spread_strength"))
                 if(nonzero(film[key])) add("film.$key",Status.REDUCED)
             if(recipe["enable_halation"]!=false && nonzero(film["halation_strength"])) add("film.halation_strength",
                 if(film["halation_return_model"] in listOf(null,"compatibility_rgb","layer_selective")) Status.REDUCED else Status.UNSUPPORTED)
             if(stage==Stage.DEVELOP) {
-                add("develop.process_steps",Status.REDUCED)
+                val supported=runCatching { com.filmfoundry.interchange.ProcessSteps.validate(develop) }.isSuccess
+                add("develop.process_steps",if(supported) Status.REDUCED else Status.UNSUPPORTED)
+                for(key in listOf("process_events","bath_overrides","effect_intent","latent_wait","post_process_light","formation_history_model"))
+                    if(develop[key]!=null) add("develop.$key",Status.PRESERVED)
                 if(nonzero(develop["mask_bleach_completion"])) add("develop.mask_bleach_completion",Status.REDUCED)
-                if(nonzero(develop["development_adjacency_strength"])) add("develop.development_adjacency_strength",Status.REDUCED)
+                if(nonzero(develop["development_adjacency_strength"])) add("develop.development_adjacency_strength",if(lightweight) Status.OMITTED else Status.REDUCED)
             }
         } else {
             add("scanner.transmission",Status.REDUCED)
-            for(key in listOf("scanner_response_matrix","device_response_rgb","color_curve_rgb","tone_curve"))
+            for(key in listOf("scanner_response_matrix","device_response_rgb","color_curve_rgb","tone_curve","color_mixer"))
                 if(scanner[key]!=null || recipe[key]!=null) add("scanner.$key",Status.IMPLEMENTED)
             for(key in listOf("negative_channel_matrix")) if(matrixActive(scanner[key])) add("scanner.$key",Status.PRESERVED)
             for(key in listOf("negative_channel_gamma","print_gamma","print_color_bias","highlight_color_bias"))

@@ -37,6 +37,7 @@ class ScanHistogramPanel(private val shell: MobileShell,parent: FrameLayout,show
     private var caption=""
     private var histogram: DisplayHistogram?=null
     private var logarithmic=false
+    private var brightness=false
     private var pending=false
     private var initial=false
     private val title=TextView(context).apply { textSize=10f;setTextColor(Color.WHITE);maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END }
@@ -47,8 +48,23 @@ class ScanHistogramPanel(private val shell: MobileShell,parent: FrameLayout,show
             guide.color=0x33777777;guide.strokeWidth=shell.dp(1).toFloat()
             for(i in 1..3) canvas.drawLine(width*i/4f,0f,width*i/4f,bottom,guide)
             canvas.drawLine(0f,bottom,width.toFloat(),bottom,guide)
-            val colors=intArrayOf(0x44777777,0x88D56C68.toInt(),0x886BB37A.toInt(),0x88769ED0.toInt())
-            traces.forEachIndexed { i,trace->trace.draw(canvas,0f,shell.dp(3).toFloat(),width.toFloat(),bottom,colors[i]) }
+            if(brightness) {
+                traces[0].draw(canvas,0f,shell.dp(3).toFloat(),width.toFloat(),bottom,0xFFBBBBBB.toInt())
+            } else {
+                // Isolated black layer: additive RGB overlap is independent of draw order.
+                val layer=canvas.saveLayer(0f,0f,width.toFloat(),bottom,null)
+                canvas.drawColor(Color.BLACK)
+                val mix=Paint().apply { xfermode=PorterDuffXfermode(PorterDuff.Mode.ADD) }
+                val colors=intArrayOf(0xFFCC0000.toInt(),0xFF00CC00.toInt(),0xFF0000CC.toInt())
+                for(i in 1..3) {
+                    val channel=canvas.saveLayer(0f,0f,width.toFloat(),bottom,mix)
+                    traces[i].draw(canvas,0f,shell.dp(3).toFloat(),width.toFloat(),bottom,colors[i-1])
+                    canvas.restoreToCount(channel)
+                }
+                canvas.restoreToCount(layer)
+            }
+            guide.color=0x33777777
+            for(i in 1..3) canvas.drawLine(width*i/4f,0f,width*i/4f,bottom,guide)
             guide.color=0xFFAAAAAA.toInt();guide.textSize=shell.dp(9).toFloat()
             guide.textAlign=Paint.Align.LEFT;canvas.drawText("0",0f,height.toFloat()-1f,guide)
             guide.textAlign=Paint.Align.RIGHT;canvas.drawText("255",width.toFloat(),height.toFloat()-1f,guide)
@@ -76,9 +92,11 @@ class ScanHistogramPanel(private val shell: MobileShell,parent: FrameLayout,show
             toggle.tooltipText=toggle.contentDescription
         }
         display(shown)
-        title.setOnClickListener { toggleScale() }
-        chart.setOnClickListener { toggleScale() }
-        title.tooltipText=shell.copy("最终扫描预览；横轴0–255，纵轴自动缩放，裁切峰值另示。点击切换线性／对数。","Final scan preview; 0–255 levels, auto vertical scale, clipping shown separately. Tap for linear/log.")
+        title.setOnClickListener { brightness=!brightness;refresh() }
+        chart.setOnClickListener { brightness=!brightness;refresh() }
+        chart.setOnLongClickListener { toggleScale();true }
+        title.setOnLongClickListener { toggleScale();true }
+        title.tooltipText=shell.copy("最终扫描预览；横轴0–255，纵轴自动缩放，裁切峰值另示。点击切换RGB／亮度，长按切换线性／对数。","Final scan preview; 0–255 levels, auto vertical scale, clipping shown separately. Tap for RGB/brightness; hold for linear/log.")
         toggle.setOnClickListener { val show=visibility!=View.VISIBLE;display(show);onToggle(show) }
     }
     fun bind(value: DisplayHistogram?,label: String,pending: Boolean=false,initial: Boolean=false) {
@@ -86,10 +104,10 @@ class ScanHistogramPanel(private val shell: MobileShell,parent: FrameLayout,show
     }
     private fun toggleScale() { logarithmic=!logarithmic;refresh() }
     private fun refresh() {
-        val scale=if(logarithmic) shell.copy("对数","Log") else shell.copy("线性","Linear")
+        val scale=(if(brightness) shell.copy("亮度","Brightness") else "RGB")+" · "+(if(logarithmic) shell.copy("对数","Log") else shell.copy("线性","Linear"))
         title.text=when { histogram==null->shell.copy("等待扫描预览","Waiting for scan");pending && !initial->shell.copy("待刷新 · $scale","Pending · $scale");initial->shell.copy("初始扫描 · $scale","Initial scan · $scale");else->shell.copy("扫描结果 · $scale","Scan output · $scale") }
-        chart.contentDescription="$caption · $scale · "+shell.copy("RGB共用纵轴；两端三角标示裁切；点击切换线性／对数","Shared RGB scale; corner triangles indicate clipping; tap for linear/log")
-        val peak=histogram?.plotPeak() ?: 1
+        chart.contentDescription="$caption · $scale · "+shell.copy("RGB共用纵轴；两端三角标示裁切；点击切换RGB／亮度，长按切换线性／对数","Shared RGB scale; corner triangles indicate clipping; tap for RGB/brightness; hold for linear/log")
+        val peak=histogram?.plotPeak(if(brightness) 0..0 else 1..3) ?: 1
         traces.forEachIndexed { i,trace->trace.bind(histogram,i,logarithmic,peak) };chart.invalidate()
     }
 }

@@ -8,7 +8,7 @@
     "halation_strength": 0.05,
     "halation_threshold": 0.74,
     "halation_softness": 0.16,
-    "halation_core_radius": 0.0030,
+    "halation_core_radius": 0.003,
     "halation_outer_radius": 0.012,
     "hd_gamma": [
       0.78,
@@ -48,11 +48,14 @@
       1.0
     ],
     "granularity_sigma": [
-      0.032,
-      0.032,
-      0.032
+      0.0,
+      0.0,
+      0.0
     ],
     "grain_density_correlation_radius": 0.0016,
-    "halation_exponential_radius": 0.012
+    "halation_exponential_radius": 0.012,
+    "silver_grain_strength": 0.038,
+    "silver_grain_radius": 0.0011,
+    "silver_grain_clump_mix": 0.26
   }
 }

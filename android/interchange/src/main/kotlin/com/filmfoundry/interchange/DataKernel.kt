@@ -50,6 +50,7 @@ object DataKernel {
 
     val CONFIG_SHARE_FIELDS = listOf(
         "film",
+        "exposure",
         "develop",
         "scanner",
         "look",
@@ -126,6 +127,7 @@ object DataKernel {
         "remove_base_mask",
         "invert_transmission",
         "color_curve_rgb",
+        "color_mixer",
         "tone_curve",
         "scan_normalize",
         "scan_normalize_strength",

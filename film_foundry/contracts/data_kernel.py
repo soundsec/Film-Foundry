@@ -13,7 +13,7 @@ POSITIVE_SUFFIX = ".darkroom_positive.npz"
 
 # Headless commands with a desktop load path. New latents bind their material
 # parameters; older archives still need caller-supplied material at development.
-WORKFLOW_COMMANDS = ("full", "develop", "expose", "develop_latent", "scan")
+WORKFLOW_COMMANDS = ("full", "develop", "expose", "develop_latent", "scan", "reexpose")
 
 # Coarse application-layer stages. Not a medium JSON field. fraction is
 # optional and may be omitted; this is not a wall-clock or per-tile meter.
@@ -55,6 +55,13 @@ LATENT_OPTIONAL_ARRAY_KEYS = (
 LATENT_SCALAR_FIELDS = ("auxiliary_remaining", "masking_coupler_remaining")
 MATERIAL_SNAPSHOT_KEY = "material_snapshot"
 MATERIAL_SNAPSHOT_MODEL = "film_material_parameters_v1"
+FILM_REBATE_EXPOSURE_KEY = "film_border_snapshot"
+FILM_REBATE_EXPOSURE_MODEL = "film_rebate_exposure_v1"
+
+# Optional provenance of medium-to-material optical re-exposure. Copies to the
+# final film_process_model; no source pixels or source state are overwritten.
+OPTICAL_CASCADE_KEY = 'optical_cascade'
+OPTICAL_CASCADE_MODEL = 'optical_cascade_v1'
 
 # Optional final optical strip. Existing RGB / spectral arrays already contain the border.
 FORMED_FILM_REBATE_KEY = "formed_film_rebate"
@@ -220,6 +227,7 @@ PHONE_SCANNER_INTERPRETATION_FIELDS = (
     "remove_base_mask",
     "invert_transmission",
     "color_curve_rgb",
+    "color_mixer",
     "tone_curve",
     "scan_normalize",
     "scan_normalize_strength",
@@ -302,6 +310,7 @@ MATERIAL_GEOMETRY_FIELDS = (
 CONFIG_SHARE_PREFIX = "FFC2:"
 CONFIG_SHARE_FIELDS = (
     "film",
+    "exposure",
     "develop",
     "scanner",
     "look",

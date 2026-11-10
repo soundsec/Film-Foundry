@@ -16,8 +16,6 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from PIL import Image, ImageDraw
-
 from film_foundry.core.accidents import (
     LIGHT_LEAK_CONFIG_TEMPLATE_KEYS,
     LIGHT_LEAK_ENTRY_SIDE_KEYS,
@@ -34,7 +32,7 @@ from film_foundry.core.film_process.recipe import (
 from film_foundry.model.config import DEVELOP_LOOK_FIELDS, DarkroomConfig
 from film_foundry.ui.components import add_choice_control, add_numeric_control
 from film_foundry.ui.i18n import tr
-from film_foundry.ui.qt import PhotoImage, file_dialog, message_box, text_dialog, ui
+from film_foundry.ui.qt import file_dialog, message_box, text_dialog, ui
 from film_foundry.ui.widgets import VerticalScrolledFrame
 from film_foundry.ui.config_fields import OptionalNumberField, add_apply_button
 from film_foundry.tools.editor_ui import local_text, localize_widget_tree, localized_preset_name, unique_choice_map
@@ -355,15 +353,15 @@ def save_json(path: Path, payload: dict) -> None:
 
 
 class DevelopProcessEditor:
-    def __init__(self, *, parent=None, config=None, on_apply=None) -> None:
+    def __init__(self, *, parent=None, config=None, on_apply=None, embedded=False) -> None:
         USER_DEVELOP_PRESET_DIR.mkdir(parents=True, exist_ok=True)
 
         self._base_config = None
         self._on_apply = on_apply
-        self.root = ui.Application() if parent is None else ui.Window(parent)
+        self.root = ui.Application() if parent is None else ui.Window(parent,embedded=embedded)
         self.root.title(local_text("Film Foundry · 工艺编辑组件", "Film Foundry · Process editor component"))
         self.root.geometry("1100x860")
-        self.root.minsize(900, 700)
+        self.root.minsize(900, 620)
 
         self.preset_name = ui.TextValue(value="standard_color_negative")
         self.preset_display = ui.TextValue(value="")
@@ -372,6 +370,10 @@ class DevelopProcessEditor:
         self.fixer_name = ui.TextValue(value="")
         self.mode = ui.TextValue(value="color_negative")
         self.program_key = ui.TextValue(value="auto")
+        self.history_labels = {local_text('逐浴局部颗粒响应', 'Local retained bath response'): 'bath_products_local_v2',
+                               local_text('逐浴保留产物', 'Retained bath products'): 'bath_products_v1',
+                               local_text('旧版整体近似', 'Legacy global approximation'): 'legacy_global_v1'}
+        self.history_display = ui.TextValue(value=next(iter(self.history_labels)))
         self._last_program_key = "auto"
         self.developer_type = ui.TextValue(value="standard")
         self.fixer_type = ui.TextValue(value="standard")
@@ -399,7 +401,7 @@ class DevelopProcessEditor:
         self.light_leak_identity_seed = ui.TextValue(value="")
         self.exposure_occlusion_identity_seed = ui.TextValue(value="")
         self.incident_identity_seed = ui.TextValue(value="")
-        self.status = ui.TextValue(value=local_text("加载冲洗流程预设，调整后保存到 user_presets/develop。", "Load a process preset, adjust it, then save to user_presets/develop."))
+        self.status = ui.TextValue(value="")
         self.preview_photo = None
 
         self.vars: dict[str, ui.FloatValue] = {
@@ -460,7 +462,7 @@ class DevelopProcessEditor:
         shell.columnconfigure(1, weight=1)
         shell.rowconfigure(1, weight=1)
 
-        header = ui.Group(shell, text=local_text("Film Foundry 组件 · 药浴与工艺配置", "Film Foundry component · Bath and process settings"), padding=10)
+        header = ui.Group(shell, text=local_text("药液与流程", "Chemistry and process"), padding=10)
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ui.Label(header, text="基准流程").grid(row=0, column=0, sticky="w", pady=3)
         self.preset_combo = ui.Choice(header, textvariable=self.preset_display, state="readonly")
@@ -488,24 +490,32 @@ class DevelopProcessEditor:
             state="readonly",
             width=28,
         ).grid(row=2, column=3, sticky="ew", pady=3)
-        ui.Label(
-            header,
-            text="共享范围：银盐负片 / 反转片 / 漂白旁路 / 交叉冲洗。auto 使用统一材料池；legacy_density 仅用于旧结果对照。黑白程序不会把彩色材料改写成黑白胶片；即时成像、撕拉片和银版使用独立工具。",
-            wraplength=920,
-        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        header.set_tooltip(local_text("银盐负片、反转片、漂白旁路与交叉冲洗；黑白程序不会改写材料身份。拍立得、撕拉片和银版使用各自流程。", "Silver-halide negative, reversal, bleach bypass and cross processing. B&W processing preserves material identity; instant, peel-apart and plates have separate workflows."))
         header.columnconfigure(1, weight=1)
         add_apply_button(header, self, row=4)
+        ui.Button(header,text=local_text('编辑流程…','Edit process…'),command=self._edit_baths).grid(row=3,column=0,columnspan=2,sticky='ew',pady=3)
+        ui.Button(header,text=local_text('潜影与受光…','Latent image and light…'),command=self._edit_time_history).grid(row=3,column=2,columnspan=2,sticky='ew',pady=3)
 
         controls_panel = ui.Group(shell, text="暗房流程与算子参数", padding=6)
         controls_panel.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
         controls_panel.columnconfigure(0, weight=1)
-        controls_panel.rowconfigure(0, weight=1)
+        from film_foundry.ui.formation_execution import FormationExecutionBadge
+        self.formation_badge = FormationExecutionBadge()
+        controls_panel._ensure_grid_layout().addWidget(self.formation_badge, 0, 0)
+        controls_panel.rowconfigure(1, weight=1)
         self.controls_scroller = VerticalScrolledFrame(controls_panel, canvas_width=520)
-        self.controls_scroller.grid(row=0, column=0, sticky="nsew")
+        self.controls_scroller.grid(row=1, column=0, sticky="nsew")
         controls = self.controls_scroller.content
         controls.columnconfigure(1, weight=1)
         row = 0
-        row = self._combo(controls, "显影液 / 药水类型", self.developer_type, ("standard", "fine_grain", "compensating", "high_acutance", "high_contrast", "monobath", "experimental_reversal"), row)
+        row = self._section(controls,local_text('显影液与形成模型','Developer and formation model'),row)
+        history_choice = add_choice_control(controls, label=local_text('颗粒与化学灰雾', 'Grain and chemical fog'),
+            value=self.history_display, choices=tuple(self.history_labels), row=row, on_change=self._refresh_preview)
+        history_choice.set_tooltip(local_text(
+            '逐浴模型将化学灰雾形成在真实银盐池中，并按保留产物汇总颗粒响应。旧配方保持整体近似；切换会改变形成结果。',
+            'The bath model forms chemical fog in real halide pools and weights grain by retained products. Existing recipes retain their global approximation; switching changes formation.'))
+        row += 1
+        row = self._combo(controls, "显影液类型", self.developer_type, ("standard", "fine_grain", "compensating", "high_acutance", "high_contrast", "push", "exhausted", "monobath", "experimental_reversal"), row)
         row = self._combo(controls, "定影 / 清除类型", self.fixer_type, ("standard", "rapid", "hardening", "monobath", "experimental_mask_bleach"), row)
         row = self._combo(controls, "药水执行模式", self.process_mode, ("normal_negative", "reversal", "monobath"), row)
         row = self._combo(controls, "画幅", self.frame_size, ("half_frame", "35mm", "6x6", "6x7", "4x5"), row)
@@ -513,16 +523,16 @@ class DevelopProcessEditor:
         row += 1
         self.dir_effectiveness_field = OptionalNumberField(controls, local_text("DIR 工艺有效性 0–1（空=按程序）", "DIR process effectiveness 0–1 (blank: program default)"), row=row)
         row += 1
-        row = self._slider(controls, "冲洗时间 min", "time_min", 1.0, 20.0, row)
-        row = self._slider(controls, "药水/环境温度 C", "temperature_c", 12.0, 32.0, row)
-        row = self._slider(controls, "药水浓度 x", "concentration", 0.25, 2.0, row)
-        row = self._slider(controls, "搅拌强度", "agitation", 0.0, 2.5, row)
-        row = self._slider(controls, "迫冲 / 欠冲 stop", "push_stops", -2.0, 3.0, row)
+        row = self._section(controls,local_text('工艺条件','Process conditions'),row)
+        from film_foundry.contracts.process_steps import CONDITION_RANGES
+        for key,label in (('time_min','显影时间 min'),('temperature_c','药液温度 °C'),('concentration','药液浓度倍数'),('agitation','搅拌强度'),('push_stops','迫冲／减冲 EV')):
+            row=self._slider(controls,label,key,*CONDITION_RANGES[key],row)
         row = self._slider(controls, "补偿显影", "compensation", 0.0, 1.0, row)
         row = self._slider(controls, "显影液疲劳", "developer_exhaustion", 0.0, 1.0, row)
         row = self._slider(controls, "定影疲劳 / 清除失败", "fixer_exhaustion", 0.0, 1.0, row)
         row = self._slider(controls, "留银（降低漂白去银）", "silver_retention", 0.0, 1.0, row)
         row = self._slider(controls, "表面镀银 / 银沉积事故", "silver_plating", 0.0, 1.0, row)
+        row = self._section(controls,local_text('漏光与曝光遮挡','Light leaks and exposure obstruction'),row)
         row = self._combo(
             controls,
             "漏光形态",
@@ -569,13 +579,15 @@ class DevelopProcessEditor:
             row+=1
         row = self._text_row(controls, "毛发/飞虫身份种子", self.exposure_occlusion_identity_seed, row)
         row = self._text_row(controls, local_text("本卷／批次瑕疵种子（留空自动）", "Roll/batch defect seed (blank: automatic)"), self.incident_identity_seed, row)
-        row = self._slider(controls, "海带 / 药染浑浊", "chemical_stain", 0.0, 1.0, row)
+        row = self._section(controls,local_text('污染与乳剂损伤','Contamination and emulsion damage'),row)
+        row = self._slider(controls, "药液污染", "chemical_stain", 0.0, 1.0, row)
         row = self._slider(controls, "显影不均 / 药痕", "uneven_development", 0.0, 1.0, row)
         row = self._slider(controls, "乳剂网裂 / 温度冲击损伤", "reticulation_strength", 0.0, 1.0, row)
         row = self._slider(controls, "染料损伤（显式事故）", "dye_damage_strength", 0.0, 1.0, row)
         row = self._slider(controls, "显影邻接强度（降阶）", "development_adjacency_strength", 0.0, 1.0, row)
         row = self._slider(controls, "显影邻接半径", "development_adjacency_radius", 0.0002, 0.02, row)
         row = self._slider(controls, "批次 / 单张过程差异", "process_variation", 0.0, 1.0, row)
+        row = self._section(controls,local_text('反应完成度','Reaction completion'),row)
         ui.Separator(controls).grid(row=row, column=0, columnspan=4, sticky="ew", pady=10)
         row += 1
         row = self._slider(controls, "首次显影阶段完成度", "first_development_completion", 0.0, 1.0, row)
@@ -592,6 +604,7 @@ class DevelopProcessEditor:
         row = self._slider(controls, "程序自身感光层 3 倍率", "process_layer_2", 0.25, 1.75, row)
         ui.Separator(controls).grid(row=row, column=0, columnspan=4, sticky="ew", pady=10)
         row += 1
+        row = self._section(controls,local_text('形成参数校准','Formation calibration'),row)
         row = self._slider(controls, "曝光校准 EV", "exposure_ev", -2.0, 2.0, row)
         row = self._slider(controls, "负片反差校准", "negative_contrast", 0.65, 1.45, row)
         row = self._slider(controls, "染料选择性 / 成色饱和", "saturation_multiplier", 0.40, 1.80, row)
@@ -608,8 +621,9 @@ class DevelopProcessEditor:
         preview.grid(row=1, column=1, sticky="nsew")
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(0, weight=1)
-        self.preview_label = ui.Label(preview)
-        self.preview_label.grid(row=0, column=0, sticky="nsew")
+        from film_foundry.ui.process_state_view import ProcessStateView
+        self.preview_table=ProcessStateView(preview.qt)
+        preview._ensure_grid_layout().addWidget(self.preview_table,0,0)
         ui.Button(preview, text="刷新预览", command=self._refresh_preview).grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
         self.program_key.trace_add("write", self._sync_mode_to_program)
@@ -617,6 +631,14 @@ class DevelopProcessEditor:
 
         ui.Label(self.root, textvariable=self.status, padding=(12, 0, 12, 8), wraplength=940).pack(fill="x", side="bottom")
         localize_widget_tree(self.root, DEVELOP_EDITOR_EN)
+        from film_foundry.ui.editor_navigator import install_editor_navigator, install_editor_splitter
+        install_editor_navigator(self)
+        install_editor_splitter(self, shell, controls_panel, preview)
+
+    def set_execution_context(self, config):
+        from film_foundry.ui.formation_execution import set_editor_execution_context
+        set_editor_execution_context(self, config)
+        self._refresh_preview()
 
     def _refresh_preset_choices(self) -> None:
         labels, mapping = develop_preset_choices()
@@ -657,11 +679,16 @@ class DevelopProcessEditor:
         )
         return row + 1
 
+    def _section(self,parent,label,row):
+        ui.Label(parent,text=label,font=('',10,'bold')).grid(row=row,column=0,columnspan=4,sticky='w',pady=(12,4))
+        return row+1
+
     def _slider(self, parent: ui.Frame, label: str, key: str, min_value: float, max_value: float, row: int) -> int:
+        from film_foundry.ui.film_parameter_help import field_label,describe_control
         var = self.vars[key]
-        add_numeric_control(
+        control = add_numeric_control(
             parent,
-            label=label,
+            label=field_label(key,label),
             value=var,
             minimum=min_value,
             maximum=max_value,
@@ -669,6 +696,7 @@ class DevelopProcessEditor:
             increment=max((max_value - min_value) / 200.0, 0.000001),
             on_change=self._refresh_preview,
         )
+        describe_control(key,control.label,control.slider,control.number_input)
         return row + 1
 
     def _text_row(self, parent: ui.Frame, label: str, var: ui.TextValue, row: int) -> int:
@@ -718,11 +746,15 @@ class DevelopProcessEditor:
         self.controls_scroller.scroll_to_top()
         self._refresh_preview()
 
+    from film_foundry.ui.editor_navigator import batch_parameter_update
+    @batch_parameter_update('_refresh_preview')
     def _set_controls_from_config(self, config: DarkroomConfig) -> None:
         self._base_config = copy.deepcopy(config)
+        self.set_execution_context(getattr(self, '_execution_config', config))
         self.frame_long_edge_field.load(config.chemistry.frame_long_edge_mm)
         self.dir_effectiveness_field.load(config.chemistry.dir_process_effectiveness)
         recipe = config.chemistry
+        self.history_display.set(next(label for label, key in self.history_labels.items() if key == recipe.formation_history_model))
         self.mode.set(str(config.mode))
         self.program_key.set(str(getattr(recipe, "program_key", "auto")))
         self.developer_name.set(str(recipe.developer_name))
@@ -785,6 +817,7 @@ class DevelopProcessEditor:
         config.chemistry.frame_long_edge_mm = self.frame_long_edge_field.read()
         config.chemistry.dir_process_effectiveness = self.dir_effectiveness_field.read()
         recipe = config.chemistry
+        recipe.formation_history_model = self.history_labels[self.history_display.get()]
         recipe.program_key = str(self.program_key.get())
         config.mode = mode_for_program(recipe.program_key, self.mode.get())
         self.mode.set(config.mode)
@@ -841,93 +874,53 @@ class DevelopProcessEditor:
         return config
 
     def _preset_payload(self, config: DarkroomConfig) -> dict:
-        look = {field_name: getattr(config.look, field_name) for field_name in DEVELOP_LOOK_FIELDS}
-        return {
-            "develop": asdict(config.chemistry),
-            "mode": str(config.mode),
-            "look": look,
-        }
+        from film_foundry.app.preset_exchange import current_items
+        item=next(item for item in current_items(config) if item['kind']=='develop')
+        return {**item['payload'],'preset':{'kind':'develop','version':1,'name':item['name']}}
 
     def _refresh_preview(self) -> None:
-        if not hasattr(self, "preview_label"):
+        if getattr(self, '_loading_parameters', False):return
+        if not hasattr(self, "preview_table"):
             return
         try:
             config = self._config_from_controls()
+            from film_foundry.core.implementation_plan import resolve_implementation_plan
+            plan = resolve_implementation_plan(config)
+            if plan.basic_formation_only:
+                from film_foundry.core.basic_formation import basic_formation_config
+                config, _ = basic_formation_config(config)
             state = build_effective_development(config.chemistry)
             program = program_from_develop_recipe(
                 config.chemistry,
                 mode=config.mode,
                 material_process=config.chemistry.medium_process,
+                coupled_intervals=plan.coupled_intervals,
             )
-            image = self._draw_state_preview(state, program, config.chemistry)
-            self.preview_photo = PhotoImage(image)
-            self.preview_label.configure(image=self.preview_photo)
-        except Exception:
-            return
+            self.preview_table.update_state(state,program,config.chemistry,
+                                            local_grain_response=plan.local_grain_response_enabled)
+            self.preview_table.setToolTip(self.formation_badge.toolTip() + '\n' + local_text(
+                '这里是实际执行配方的参考反应量，不是最终成片测量。',
+                'Reference reaction amounts for the execution recipe, not measurements of the finished image.'))
+        except (TypeError,ValueError) as exc:
+            self.status.set(str(exc))
 
-    def _draw_state_preview(self, state, program, recipe) -> Image.Image:
-        width, height = 500, 830
-        image = Image.new("RGB", (width, height), (252, 250, 246))
-        draw = ImageDraw.Draw(image)
-        draw.rectangle((0, 0, width - 1, height - 1), outline=(222, 218, 208))
-        draw.text((18, 16), "Derived process state", fill=(42, 38, 34))
-        draw.text(
-            (18, 34),
-            f"developer={state.developer_profile} · fixer={state.fixer_profile}",
-            fill=(70, 66, 58),
-        )
-        explicit_dye_damage = next(
-            (
-                float(step.strength)
-                for step in program.steps
-                if step.action.value == "destroy_dye"
-                and step.dye_destruction_basis == "explicit"
-            ),
-            0.0,
-        )
-        rows = [
-            ("activity", state.activity, 0.0, 2.5),
-            ("push activity x", state.push_activity_factor, 0.6, 1.75),
-            ("development progress", state.progress, 0.0, 1.0),
-            ("gamma factor", state.gamma_factor, 0.4, 1.8),
-            ("D-min fog shift", state.d_min_shift, 0.0, 0.18),
-            ("D-max factor", state.d_max_factor, 0.4, 1.2),
-            ("toe shift", state.toe_shift, -0.35, 0.20),
-            ("shoulder shift", state.shoulder_shift, -0.45, 0.15),
-            ("grain factor", state.grain_factor, 0.3, 2.8),
-            ("grain radius", state.grain_radius_factor, 0.3, 2.0),
-            ("clearing failure", state.clearing_failure, 0.0, 1.0),
-            ("surface silver plating", state.silvering_factor, 0.0, 2.0),
-            ("residue", state.residue_factor, 0.0, 2.0),
-            ("light leak", state.light_leak_strength, 0.0, 1.0),
-            ("dust occlusion", recipe.exposure_occlusion_dust, 0.0, 1.0),
-            ("hair occlusion", recipe.exposure_occlusion_hair, 0.0, 1.0),
-            ("insect occlusion", recipe.exposure_occlusion_insect, 0.0, 1.0),
-            ("debris occlusion", recipe.exposure_occlusion_debris, 0.0, 1.0),
-            ("chemical stain", state.chemical_stain, 0.0, 1.0),
-            ("uneven dev", state.uneven_development, 0.0, 1.0),
-            ("reticulation", state.reticulation_strength, 0.0, 1.0),
-            ("dye damage", explicit_dye_damage, 0.0, 1.0),
-        ]
-        x0, x1 = 172, 420
-        y = 58
-        for label, value, min_value, max_value in rows:
-            ratio = (float(value) - min_value) / max(max_value - min_value, 1e-6)
-            ratio = max(0.0, min(1.0, ratio))
-            draw.text((18, y - 2), label, fill=(70, 66, 58))
-            draw.rectangle((x0, y, x1, y + 11), fill=(229, 224, 214), outline=(205, 200, 190))
-            color = (90, 130, 180)
-            if label in {"D-min fog shift", "clearing failure", "surface silver plating", "residue", "light leak", "dust occlusion", "hair occlusion", "insect occlusion", "debris occlusion", "chemical stain", "uneven dev", "reticulation", "dye damage"} and ratio > 0.55:
-                color = (190, 100, 80)
-            draw.rectangle((x0, y, x0 + int((x1 - x0) * ratio), y + 11), fill=color)
-            draw.text((x1 - 58, y + 14), f"{value:.3f}", fill=(70, 66, 58))
-            y += 29
-        draw.text((18, height - 96), "formation: occlusion -> leak -> latent -> process (incl. dye damage) -> grain -> deposits", fill=(92, 76, 62))
-        draw.text((18, height - 76), f"program={program.key} · chemistry={state.process_mode}", fill=(70, 66, 58))
-        actions = " → ".join(step.action.value for step in program.steps)
-        draw.text((18, height - 52), actions, fill=(70, 66, 58))
-        draw.text((18, height - 28), f"output polarity={program.output_polarity}", fill=(70, 66, 58))
-        return image
+    def _edit_baths(self):
+        from film_foundry.ui.roll_process_dialog import RollProcessDialog
+        config=self._config_from_controls();dialog=RollProcessDialog(config,self.root.qt,principle_only=False)
+        def apply():
+            config.chemistry=copy.deepcopy(dialog.config.chemistry)
+            self._set_controls_from_config(config);self._refresh_preview()
+        from film_foundry.ui.inline_editor import present_inline_editor
+        present_inline_editor(self.root.qt,dialog,apply)
+
+    def _edit_time_history(self):
+        from film_foundry.ui.film_time_editor import FilmTimeDialog
+        config=self._config_from_controls();dialog=FilmTimeDialog(config,self.root.qt)
+        def apply():
+            config.chemistry.latent_wait=dialog.wait_value;config.chemistry.post_process_light=dialog.light_value
+            self._set_controls_from_config(config);self._refresh_preview()
+        from film_foundry.ui.inline_editor import present_inline_editor
+        present_inline_editor(self.root.qt,dialog,apply)
 
     def _save_user_preset(self) -> None:
         config = self._config_from_controls()

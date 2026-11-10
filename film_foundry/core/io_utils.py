@@ -33,7 +33,7 @@ from film_foundry.core.provenance import PROJECT_NAME
 from film_foundry.model.config import OutputConfig
 
 
-SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
+SUPPORTED_EXTENSIONS = {".dng", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
 RAW_EXTENSIONS = {".dng", ".cr2", ".cr3", ".nef", ".arw", ".rw2", ".orf", ".raf", ".pef"}
 _EXIF_ORIENTATION_TAG = 274
 INPUT_ICC_POLICIES = ("apply", "ignore")
@@ -102,11 +102,37 @@ def cv_imread_unicode(path: str | Path, flags: int = cv2.IMREAD_UNCHANGED) -> np
     return cv2.imdecode(data, flags)
 
 
+_TIFF_SAMPLE_MIN_PIXELS = 8_000_000
+
+
+def _tiff_write_params(image: np.ndarray) -> list[int]:
+    """Avoid expensive LZW expansion on large, noisy 16-bit image exports.
+
+    A bounded set of original rows estimates transport compression only. It
+    never changes pixel data, precision, alpha, or the TIFF container contract.
+    """
+    from .execution_topology import reference_execution_enabled
+    if (reference_execution_enabled() or image.dtype != np.uint16
+            or image.ndim != 3 or image.shape[2] not in (3, 4)
+            or image.shape[0] * image.shape[1] < _TIFF_SAMPLE_MIN_PIXELS):
+        return []
+    rows = np.linspace(0, image.shape[0] - 1, min(16, image.shape[0]), dtype=np.intp)
+    sample = np.ascontiguousarray(image[rows])
+    try:
+        ok, encoded = cv2.imencode(".tiff", sample)
+    except cv2.error:
+        return []  # Retain the established encoder path on other builds.
+    if ok and encoded.nbytes >= sample.nbytes * 0.9:
+        return [cv2.IMWRITE_TIFF_COMPRESSION, 1]  # Baseline uncompressed TIFF.
+    return []
+
+
 def cv_imwrite_unicode(path: str | Path, image: np.ndarray) -> bool:
     """用 OpenCV 编码图像，同时兼容 Windows 中文路径。"""
     path = Path(path)
     suffix = path.suffix or ".png"
-    ok, encoded = cv2.imencode(suffix, image)
+    params = _tiff_write_params(image) if suffix.lower() in {".tif", ".tiff"} else []
+    ok, encoded = cv2.imencode(suffix, image, params) if params else cv2.imencode(suffix, image)
     if not ok:
         return False
     # Write the contiguous encoder buffer directly. ``tobytes()`` would keep a
@@ -486,10 +512,14 @@ def load_image_with_color(
     path = Path(path)
     suffix = path.suffix.lower()
     policy = _normalize_input_icc_policy(input_icc_policy)
+    if suffix == ".dng":
+        from .source_image import load_formation_image, exposure_preview
+        pixels, record = load_formation_image(path)
+        return exposure_preview(pixels, "linear_rgb"), {**record, "encoding": "srgb", "preview_only": True}
     if suffix in RAW_EXTENSIONS:
         raise ValueError(
-            f"RAW/DNG input is not supported yet: {path}. "
-            "Please export a display-referred TIFF/PNG/JPEG first. Future RAW input support is planned for DNG only, not vendor-private RAW formats."
+            f"Only DNG RAW input is supported: {path}. "
+            "Please export a display-referred TIFF/PNG/JPEG first. Vendor-private RAW formats are not supported."
         )
     if suffix not in SUPPORTED_EXTENSIONS:
         raise ValueError(
@@ -499,6 +529,10 @@ def load_image_with_color(
     icc_bytes, png_srgb_chunk = _read_embedded_color_tags(path)
     if suffix in {".png", ".tif", ".tiff"}:
         native = _load_cv_native(path)
+        if np.issubdtype(native.dtype,np.floating):
+            low=float(np.min(native));high=float(np.max(native))
+            if not np.isfinite(low) or not np.isfinite(high) or low<0 or high>1:
+                raise ValueError('Floating-point PNG/TIFF input must contain normalized display RGB in [0, 1]. HDR float TIFF is not supported; use the supported DNG or Ultra HDR JPEG capture path.')
         return _convert_rgb_to_working_srgb(
             native,
             icc_bytes,
@@ -564,9 +598,12 @@ def probe_image_dimensions(path: str | Path) -> tuple[int, int]:
     """Read image width/height from metadata without decoding its pixel array."""
     path = Path(path)
     suffix = path.suffix.lower()
+    if suffix == ".dng":
+        from .source_image import dng_dimensions
+        return dng_dimensions(path)
     if suffix in RAW_EXTENSIONS:
         raise ValueError(
-            f"RAW/DNG input is not supported yet: {path}. "
+            f"Only DNG RAW input is supported: {path}. "
             "Please export a display-referred TIFF/PNG/JPEG first."
         )
     if suffix not in SUPPORTED_EXTENSIONS:
@@ -613,6 +650,7 @@ def _quantize_rgb_rows(
     tile_rows: int,
     anti_banding_strength: float = 0.0,
     bgr: bool = False,
+    workers: int = 1,
 ) -> np.ndarray:
     """Quantize with bounded float scratch while retaining one encoded array."""
     image = np.asarray(image)
@@ -620,8 +658,7 @@ def _quantize_rgb_rows(
     scale = np.float32(65535.0 if bit_depth == 16 else 255.0)
     output = np.empty(image.shape, dtype=dtype)
     height = image.shape[0]
-    for y_start in range(0, height, tile_rows):
-        y_end = min(y_start + tile_rows, height)
+    def quantize_rows(y_start, y_end):
         source = np.asarray(image[y_start:y_end], dtype=np.float32)
         minimum = float(np.min(source))
         maximum = float(np.max(source))
@@ -641,10 +678,13 @@ def _quantize_rgb_rows(
             block[..., ::-1] if bgr else block,
             casting="unsafe",
         )
+    from .material_parallel import run_rows
+    run_rows(height, image.shape[1], quantize_rows,
+             chunk_pixels=max(1, tile_rows)*image.shape[1], workers=workers)
     return output
 
 
-def quantize_linear_rgb16(image: np.ndarray, *, bgr: bool = True) -> np.ndarray:
+def quantize_linear_rgb16(image: np.ndarray, *, bgr: bool = True, workers: int = 1) -> np.ndarray:
     """Convert linear RGB to uint16 with bounded row temporaries."""
     image = np.asarray(image)
     if image.ndim != 3 or image.shape[-1] != 3 or image.shape[0] <= 0 or image.shape[1] <= 0:
@@ -654,6 +694,7 @@ def quantize_linear_rgb16(image: np.ndarray, *, bgr: bool = True) -> np.ndarray:
         bit_depth=16,
         tile_rows=_encoding_tile_rows(image),
         bgr=bgr,
+        workers=workers,
     )
 
 
@@ -702,8 +743,20 @@ def quantize_unit_float_rows(
     return output
 
 
-def save_image(image: np.ndarray, path: str | Path, output: OutputConfig) -> None:
+def png_compression_level() -> int:
+    """Use fast lossless compression; reference keeps Pillow's former level 6.
+
+    This changes encoding effort and file size, never quantization or pixels.
+    """
+    from .execution_topology import reference_execution_enabled
+    return 6 if reference_execution_enabled() else 1
+
+
+def save_image(image: np.ndarray, path: str | Path, output: OutputConfig, *, workers: int = 1, apply_orientation: bool = False) -> None:
     """保存归一化 sRGB 图像，支持 8-bit 和部分 16-bit 格式。"""
+    if apply_orientation:
+        from .image_orientation import rotate_output
+        image=rotate_output(image,output.rotation_quarters)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     image = np.asarray(image)
@@ -721,6 +774,7 @@ def save_image(image: np.ndarray, path: str | Path, output: OutputConfig) -> Non
             bit_depth=16,
             tile_rows=_encoding_tile_rows(image, output),
             bgr=True,
+            workers=workers,
         )
         if not cv_imwrite_unicode(path, arr):
             raise OSError(f"Failed to save image: {path}")
@@ -731,10 +785,13 @@ def save_image(image: np.ndarray, path: str | Path, output: OutputConfig) -> Non
         bit_depth=8,
         tile_rows=_encoding_tile_rows(image, output),
         anti_banding_strength=getattr(output, "anti_banding_strength", 0.0),
+        workers=workers,
     )
     pil_image = Image.fromarray(arr, mode="RGB")
 
     save_kwargs: dict[str, object] = {}
+    if path.suffix.lower() == ".png":
+        save_kwargs["compress_level"] = png_compression_level()
     if path.suffix.lower() in {".jpg", ".jpeg", ".webp"}:
         save_kwargs["quality"] = int(output.quality)
     if output.watermark_metadata:
@@ -773,7 +830,7 @@ def save_image_bundle(
         sidecar_path = target.with_suffix(target.suffix + ".json")
         targets.append(sidecar_path)
     with atomic_path_set(targets):
-        save_image(image, target, output)
+        save_image(image, target, output,apply_orientation=True)
         if sidecar_path is not None:
             atomic_write_json(sidecar_path, sidecar)
     return target

@@ -63,7 +63,7 @@ def test_hidden_in_all_catalogs_then_official_and_direct_sharing_always_works(tm
     assert scans.issubset(scan_editor.scanner_preset_names())
 
 
-def test_desktop_unlock_preserves_recipe_and_explicit_selection_pairs_scan(tmp_path,monkeypatch):
+def test_desktop_unlock_and_material_selection_preserve_scan_style(tmp_path,monkeypatch):
     monkeypatch.setenv("FILM_FOUNDRY_SEASONAL_STATE",str(tmp_path/"unlock.json"))
     monkeypatch.setenv("FILM_FOUNDRY_CAMERA_SETTINGS",str(tmp_path/"camera.json"))
     monkeypatch.setenv("FILM_FOUNDRY_UI_SETTINGS",str(tmp_path/"ui.json"))
@@ -76,16 +76,21 @@ def test_desktop_unlock_preserves_recipe_and_explicit_selection_pairs_scan(tmp_p
         monkeypatch.setattr(QtWidgets.QInputDialog,"getMultiLineText",lambda *a:(seasons._phrase_bytes().decode(),True))
         panel._enter_share_code()
         assert asdict(panel._config())==before
+        scan_key=panel.scanner_preset.get()
+        scan_before=asdict(panel._config().scanner)
         key="season_spring_negative"
         label=next(label for label,value in panel._film_display_key_map.items() if value==key)
         panel.film_preset_display.set(label);panel._on_film_preset_display_selected()
-        assert panel.scanner_preset.get()==seasons.matching_scanner(key)
+        assert panel.scanner_preset.get()==scan_key
+        assert asdict(panel._config().scanner)==scan_before
         references=panel._session_payload()["presets"]
         assert references["film"]["source"]==references["scanner"]["source"]=="builtin"
         assert references["film"]["name"]==key
         config=panel._config()
+        # A matching style is still available, but only through explicit choice.
+        panel.scanner_preset.set(seasons.matching_scanner(key))
         expected=DarkroomConfig.from_json(workflow.scanner_preset_path(seasons.matching_scanner(key)))
-        assert config.scanner.color_curve_rgb==expected.scanner.color_curve_rgb
+        assert panel._config().scanner.color_curve_rgb==expected.scanner.color_curve_rgb
         # Normal FFC2 still imports, with the same public application method.
         shared=DarkroomConfig();shared.look.exposure_ev=.37
         monkeypatch.setattr(QtWidgets.QInputDialog,"getMultiLineText",lambda *a:(workflow.encode_recipe_share(shared),True))

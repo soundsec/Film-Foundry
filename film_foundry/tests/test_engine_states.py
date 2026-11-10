@@ -2180,9 +2180,16 @@ def test_quality_mode_resolves_real_internal_work_sizes_and_fast_cap():
     config.fast_mode = False
 
     config.processing.quality_mode = "draft"
-    assert _processing_work_long_edge(config, "halation") == 1200
-    assert _processing_work_long_edge(config, "grain") == 1200
-    assert _emulsion_spread_work_long_edge(config) == 1400
+    assert _processing_work_long_edge(config, "halation") == 768
+    assert _processing_work_long_edge(config, "grain") == 768
+    assert _emulsion_spread_work_long_edge(config) == 1024
+    from film_foundry.core.engine import _adjacency_work_long_edge, _dir_work_long_edge
+    from film_foundry.core.implementation_plan import resolve_implementation_plan
+    assert _adjacency_work_long_edge(config) == 768
+    assert _dir_work_long_edge(config) == 640
+    plan = resolve_implementation_plan(config)
+    assert not plan.lower_order_enabled and not plan.scaling_enabled
+    assert plan.profile_id == 'canonical_full_v1'
 
     config.processing.quality_mode = "standard"
     assert _processing_work_long_edge(config, "halation") == 1800

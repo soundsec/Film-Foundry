@@ -12,9 +12,9 @@
     "halation_outer_radius": 0.018,
     "halation_exponential_radius": 0.018,
     "hd_gamma": [
-      0.66,
-      0.69,
-      0.64
+      0.726,
+      0.759,
+      0.704
     ],
     "density_min": [
       0.09,
@@ -44,10 +44,20 @@
       0.84
     ],
     "granularity_sigma": [
-      0.024,
-      0.023,
-      0.026
+      0.0144,
+      0.0138,
+      0.0156
     ],
-    "grain_density_correlation_radius": 0.0014
+    "grain_density_correlation_radius": 0.00112,
+    "grain_scales": [
+      0.0006,
+      0.0015,
+      0.004
+    ],
+    "grain_scale_weights": [
+      0.78,
+      0.18,
+      0.04
+    ]
   }
 }

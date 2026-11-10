@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -21,7 +22,8 @@ from film_foundry.core.electronic_negative import (
     scanner_raw_with_reference_border,
 )
 from film_foundry.core.io_utils import save_image
-from film_foundry.core.preview import negative_visual_preview, optical_density_visual_preview
+from film_foundry.core.runtime_resources import output_worker_limit
+from film_foundry.core.preview import negative_visual_preview, optical_density_visual_preview, resize_to_long_edge
 from film_foundry.core.provenance import (
     apply_scanner_raw_border_watermark,
     payload_with_config,
@@ -45,6 +47,14 @@ NEGATIVE_MATERIAL_DIR_NAME = "negatives"
 POSITIVE_MATERIAL_DIR_NAME = "positives"
 NEGATIVE_SUFFIX = ".darkroom_negative.npz"
 POSITIVE_SUFFIX = ".darkroom_positive.npz"
+
+
+def _save_medium_preview(preview, path, config):
+    # Keep the existing whole-frame normalization, then resize only the
+    # browsing rendition. A layer pack is explicitly a full-size export.
+    edge = 0 if config.output.export_layer_pack else config.output.medium_preview_long_edge
+    save_image(resize_to_long_edge(preview, edge), path, config.output,
+               workers=output_worker_limit(config.processing))
 
 
 def _save_debug_outputs(
@@ -164,6 +174,15 @@ def _assert_output_set_safe(input_path: Path, targets: tuple[Path, ...]) -> None
             )
 
 
+def developed_medium_output_paths(path: str | Path) -> tuple[Path, ...]:
+    """Complete managed output set, including optional/stale companion products.
+
+    Application-level exports use the same namespace for a larger transaction;
+    they must not duplicate the naming rules or leave companions out of rollback.
+    """
+    return _developed_medium_bundle_targets(Path(path))
+
+
 def _save_full_developed_medium_materials(
     input_path: Path,
     output_path: Path,
@@ -199,214 +218,233 @@ def _save_full_developed_medium_materials(
     negative_path = developed_path or _developed_medium_path(input_path, output_path, negative)
     bundle_targets = _developed_medium_bundle_targets(negative_path)
     _assert_output_set_safe(input_path, bundle_targets)
-    if _transactional:
-        with atomic_path_set(bundle_targets):
-            return _save_full_developed_medium_materials(
-                input_path,
-                output_path,
-                negative,
-                config,
-                resolved_seed,
-                developed_path=negative_path,
-                _transactional=False,
-                _export_config_prepared=True,
+    from .export_jobs import archive_writer
+    # Validate the complete input once, before entering its transaction. A
+    # recursive transaction wrapper used to scan the same large arrays twice.
+    transaction = atomic_path_set(bundle_targets) if _transactional else nullcontext()
+    with transaction, archive_writer(config.processing, overlap_images=True,
+                                    image_jobs=1 if is_positive else 2) as submit_archive:
+        negative_path.parent.mkdir(parents=True, exist_ok=True)
+        material_key = "positive_path" if is_positive else "negative_path"
+        visual_suffix = ".positive_visual.png" if is_positive else ".negative_visual.png"
+        provenance_stage = "developed_positive_transparency" if is_positive else "developed_negative"
+        provenance = provenance_payload(
+            stage=provenance_stage,
+            input_path=input_path,
+            output_path=output_path,
+            negative_path=negative_path,
+            resolved_seed=resolved_seed,
+        )
+        npz_payload: dict[str, np.ndarray] = {
+            "density_cmy": np.asarray(negative.density_cmy, dtype=np.float32),
+            "density_grain": np.asarray(negative.density_grain, dtype=np.float32),
+            "developed_medium_metadata": np.asarray(
+                json.dumps(developed_medium_metadata(negative), ensure_ascii=False, allow_nan=False)
+            ),
+        }
+        if negative.optical_density_rgb is not None:
+            npz_payload["optical_density_rgb"] = np.asarray(
+                negative.optical_density_rgb,
+                dtype=np.float32,
             )
-    negative_path.parent.mkdir(parents=True, exist_ok=True)
-    material_key = "positive_path" if is_positive else "negative_path"
-    visual_suffix = ".positive_visual.png" if is_positive else ".negative_visual.png"
-    provenance_stage = "developed_positive_transparency" if is_positive else "developed_negative"
-    provenance = provenance_payload(
-        stage=provenance_stage,
-        input_path=input_path,
-        output_path=output_path,
-        negative_path=negative_path,
-        resolved_seed=resolved_seed,
-    )
-    npz_payload: dict[str, np.ndarray] = {
-        "density_cmy": np.asarray(negative.density_cmy, dtype=np.float32),
-        "density_grain": np.asarray(negative.density_grain, dtype=np.float32),
-        "developed_medium_metadata": np.asarray(
-            json.dumps(developed_medium_metadata(negative), ensure_ascii=False, allow_nan=False)
-        ),
-    }
-    if negative.optical_density_rgb is not None:
-        npz_payload["optical_density_rgb"] = np.asarray(
-            negative.optical_density_rgb,
-            dtype=np.float32,
-        )
-    if negative.spectral_medium is not None:
-        npz_payload["spectral_component_amounts"] = negative.spectral_medium.component_amounts
-        if negative.spectral_medium.post_process_density_rgb is not None:
-            npz_payload[SPECTRAL_POST_PROCESS_ARRAY_KEY] = negative.spectral_medium.post_process_density_rgb
-    if negative.clear_base_optical_density_rgb is not None:
-        npz_payload["clear_base_optical_density_rgb"] = np.asarray(
-            negative.clear_base_optical_density_rgb,
-            dtype=np.float32,
-        )
-    if config.output.watermark_negative_material:
-        npz_payload["film_foundry_provenance"] = provenance_npz_array(payload_with_config(provenance, asdict(config)))
-    atomic_savez(
-        negative_path,
-        compression_level=1,
-        compressed=(
-            str(config.output.medium_npz_compression).strip().lower()
-            == "compressed"
-        ),
-        **npz_payload,
-    )
-    del npz_payload
-
-    paths: dict[str, str] = {material_key: str(negative_path)}
-    if is_positive:
-        paths["negative_path"] = str(negative_path)
-    preview_path = negative_path.with_suffix(visual_suffix)
-    positive_transmission_raw: np.ndarray | None = None
-    if is_positive:
-        positive_transmission_raw = capture_optical_density(
-            _medium_optical_density_rgb(negative, config.film, scanner=config.scanner),
-            config.scanner,
-            illuminant_rgb=transmission_illuminant_rgb(config.scanner),
-        )
-        preview_linear = positive_transmission_raw
-        save_image(linear_to_srgb(np.clip(preview_linear, 0.0, 1.0)), preview_path, config.output)
-        del preview_linear
-        paths["positive_visual_preview"] = str(preview_path)
-    else:
-        preview = (
-            negative_visual_preview(negative.density_grain, config.film)
-            if negative.optical_density_rgb is None
-            else optical_density_visual_preview(negative.optical_density_rgb)
-        )
-        save_image(preview, preview_path, config.output)
-        del preview
-        paths["negative_visual_preview"] = str(preview_path)
-
-    scanner_raw_path: Path | None = None
-    scanner_raw_border_px = 0
-    if config.output.save_scanner_raw:
-        scanner_raw_border_px = scanner_raw_export_border_width(
-            negative.density_grain.shape,
-            config.output.scanner_raw_border_percent,
-            config.output.scanner_raw_border_min_px,
-        )
-        if is_positive:
-            scanner_raw = positive_transmission_raw
-            if scanner_raw is None:
-                scanner_raw = capture_optical_density(
-                    _medium_optical_density_rgb(negative, config.film, scanner=config.scanner),
-                    config.scanner,
-                    illuminant_rgb=transmission_illuminant_rgb(config.scanner),
-                )
-            scanner_raw = scanner_raw_with_reference_border(
-                scanner_raw,
-                _clear_base_scanner_sample(config, negative).reshape(3),
-                border_percent=config.output.scanner_raw_border_percent,
-                border_min_px=config.output.scanner_raw_border_min_px,
+        if negative.process_surface is not None:
+            npz_payload.update({f'process_surface_{key}':value for key,value in negative.process_surface.items()})
+        if negative.spectral_medium is not None:
+            npz_payload["spectral_component_amounts"] = negative.spectral_medium.component_amounts
+            if negative.spectral_medium.emulsion_coverage is not None:npz_payload['spectral_emulsion_coverage']=negative.spectral_medium.emulsion_coverage
+            if negative.spectral_medium.covered_density_rgb is not None:npz_payload['spectral_covered_density_rgb']=negative.spectral_medium.covered_density_rgb
+            if negative.spectral_medium.post_process_density_rgb is not None:
+                npz_payload[SPECTRAL_POST_PROCESS_ARRAY_KEY] = negative.spectral_medium.post_process_density_rgb
+        if negative.clear_base_optical_density_rgb is not None:
+            npz_payload["clear_base_optical_density_rgb"] = np.asarray(
+                negative.clear_base_optical_density_rgb,
+                dtype=np.float32,
             )
-            scanner_raw_path = negative_path.with_suffix(".light_table_raw.tiff")
-        else:
-            scanner_raw = scanner_raw_with_clear_border(
+        if config.output.watermark_negative_material:
+            npz_payload["film_foundry_provenance"] = provenance_npz_array(payload_with_config(provenance, asdict(config)))
+        from .runtime_resources import resolve_native_thread_limit
+        from .material_parallel import thread_count
+        from .storage_precision import pack_film_fields,film_precision_record
+        npz_payload,stored_fields=pack_film_fields(npz_payload,config.output.material_storage_precision,quality=config.processing.quality_mode)
+        stored_metadata=json.loads(str(npz_payload['developed_medium_metadata'].item()))
+        stored_metadata['storage_precision']=film_precision_record(stored_fields,config.processing.quality_mode,
+            config.output.material_storage_precision,stored_metadata.get('storage_precision'))
+        npz_payload['developed_medium_metadata']=np.asarray(json.dumps(stored_metadata,ensure_ascii=False,allow_nan=False))
+        submit_archive(atomic_savez,
+            negative_path,
+            compression_level=1,
+            compression_workers=min(4, thread_count(), resolve_native_thread_limit(config.processing.native_thread_limit)),
+            parallel_compression=(config.processing.memory_budget_mb is None
+                                  and config.processing.native_thread_limit != 1),
+            compressed=(
+                str(config.output.medium_npz_compression).strip().lower()
+                == "compressed"
+            ),
+            **npz_payload,
+        )
+        del npz_payload
+
+        # Transparent renditions depend only on the final medium. They need
+        # neither the preview nor scanner raw, so prepare them alongside those
+        # exports, with the same bounded writer scope and rollback boundary.
+        material_base = negative_path.with_suffix("")
+        transparent_job = None
+        if config.output.export_transparent_plate and not config.output.export_layer_pack:
+            transparent_job = submit_archive.image(
+                export_transparent_plate_set,
                 negative.density_grain,
                 config.film,
-                config.scanner,
-                border_percent=config.output.scanner_raw_border_percent,
-                border_min_px=config.output.scanner_raw_border_min_px,
-                optical_density_rgb=_medium_optical_density_rgb(negative, config.film, scanner=config.scanner),
-                clear_base_optical_density_rgb=_clear_base_optical_density_rgb(config, negative),
-            )
-            scanner_raw_path = negative_path.with_suffix(".scanner_raw.tiff")
-        if config.output.watermark_scanner_raw_border:
-            scanner_raw = apply_scanner_raw_border_watermark(
-                scanner_raw,
-                provenance,
-                border_width=scanner_raw_border_px,
-            )
-        save_linear_rgb_tiff(scanner_raw, scanner_raw_path)
-        del scanner_raw
-        paths["light_table_raw_path" if is_positive else "scanner_raw_path"] = str(scanner_raw_path)
-        if config.save_sidecar:
-            scanner_raw_sidecar_path = scanner_raw_path.with_suffix(scanner_raw_path.suffix + ".json")
-            atomic_write_json(
-                scanner_raw_sidecar_path,
-                scanner_raw_sidecar(
-                    input_path=input_path,
-                    negative_path=negative_path,
-                    scanner_raw_path=scanner_raw_path,
-                    config=config,
-                    negative=negative,
-                    provenance=provenance if config.output.watermark_metadata else None,
-                    border_width_px=scanner_raw_border_px,
-                ),
-            )
-            paths["scanner_raw_sidecar"] = str(scanner_raw_sidecar_path)
-    positive_transmission_raw = None
-
-    material_base = negative_path.with_suffix("")
-    material_paths: dict[str, str] = {}
-    if config.output.export_layer_pack:
-        material_paths.update(
-            export_layer_pack(
-                negative,
-                config.film,
-                material_base.parent / f"{material_base.name}_layer_pack",
+                material_base.parent / f"{material_base.name}_transparent_plate",
                 polarity="positive" if is_positive else "negative",
-                source_negative_path=negative_path,
-                scanner_raw_path=scanner_raw_path,
-                orange_preview_path=preview_path,
-                metadata={
-                    **layer_pack_metadata(
+                optical_density_rgb=negative.optical_density_rgb,
+                clear_base_optical_density_rgb=negative.clear_base_optical_density_rgb,
+                workers=(1 if config.processing.memory_budget_mb is not None else
+                         min(thread_count(), resolve_native_thread_limit(config.processing.native_thread_limit))),
+            )
+
+        paths: dict[str, str] = {material_key: str(negative_path)}
+        if is_positive:
+            paths["negative_path"] = str(negative_path)
+        preview_path = negative_path.with_suffix(visual_suffix)
+        preview_job = None
+        positive_transmission_raw: np.ndarray | None = None
+        if is_positive:
+            positive_transmission_raw = capture_optical_density(
+                _medium_optical_density_rgb(negative, config.film, scanner=config.scanner),
+                config.scanner,
+                illuminant_rgb=transmission_illuminant_rgb(config.scanner),
+            )
+            preview_linear = positive_transmission_raw
+            _save_medium_preview(linear_to_srgb(np.clip(preview_linear, 0.0, 1.0)), preview_path, config)
+            del preview_linear
+            paths["positive_visual_preview"] = str(preview_path)
+        else:
+            def save_negative_preview():
+                preview = (
+                    negative_visual_preview(negative.density_grain, config.film)
+                    if negative.optical_density_rgb is None
+                    else optical_density_visual_preview(negative.optical_density_rgb)
+                )
+                _save_medium_preview(preview, preview_path, config)
+            preview_job = submit_archive.image(save_negative_preview)
+            paths["negative_visual_preview"] = str(preview_path)
+
+        scanner_raw_path: Path | None = None
+        scanner_raw_border_px = 0
+        if config.output.save_scanner_raw:
+            scanner_raw_border_px = scanner_raw_export_border_width(
+                negative.density_grain.shape,
+                config.output.scanner_raw_border_percent,
+                config.output.scanner_raw_border_min_px,
+            )
+            if is_positive:
+                scanner_raw = positive_transmission_raw
+                if scanner_raw is None:
+                    scanner_raw = capture_optical_density(
+                        _medium_optical_density_rgb(negative, config.film, scanner=config.scanner),
+                        config.scanner,
+                        illuminant_rgb=transmission_illuminant_rgb(config.scanner),
+                    )
+                scanner_raw = scanner_raw_with_reference_border(
+                    scanner_raw,
+                    _clear_base_scanner_sample(config, negative).reshape(3),
+                    border_percent=config.output.scanner_raw_border_percent,
+                    border_min_px=config.output.scanner_raw_border_min_px,
+                )
+                scanner_raw_path = negative_path.with_suffix(".light_table_raw.tiff")
+            else:
+                scanner_raw = scanner_raw_with_clear_border(
+                    negative.density_grain,
+                    config.film,
+                    config.scanner,
+                    border_percent=config.output.scanner_raw_border_percent,
+                    border_min_px=config.output.scanner_raw_border_min_px,
+                    optical_density_rgb=_medium_optical_density_rgb(negative, config.film, scanner=config.scanner),
+                    clear_base_optical_density_rgb=_clear_base_optical_density_rgb(config, negative),
+                    workers=output_worker_limit(config.processing),
+                )
+                scanner_raw_path = negative_path.with_suffix(".scanner_raw.tiff")
+            save_linear_rgb_tiff(scanner_raw, scanner_raw_path,
+                                 workers=output_worker_limit(config.processing),
+                                 watermark_payload=provenance if config.output.watermark_scanner_raw_border else None,
+                                 border_width=scanner_raw_border_px)
+            del scanner_raw
+            paths["light_table_raw_path" if is_positive else "scanner_raw_path"] = str(scanner_raw_path)
+            if config.save_sidecar:
+                scanner_raw_sidecar_path = scanner_raw_path.with_suffix(scanner_raw_path.suffix + ".json")
+                atomic_write_json(
+                    scanner_raw_sidecar_path,
+                    scanner_raw_sidecar(
                         input_path=input_path,
-                        output_path=output_path,
                         negative_path=negative_path,
+                        scanner_raw_path=scanner_raw_path,
                         config=config,
                         negative=negative,
-                        paths=paths,
+                        provenance=provenance if config.output.watermark_metadata else None,
+                        border_width_px=scanner_raw_border_px,
                     ),
-                },
-            )
-        )
-    else:
-        if config.output.export_transparent_plate:
-            material_paths.update(
-                export_transparent_plate_set(
-                    negative.density_grain,
-                    config.film,
-                    material_base.parent / f"{material_base.name}_transparent_plate",
-                    polarity="positive" if is_positive else "negative",
-                    optical_density_rgb=negative.optical_density_rgb,
-                    clear_base_optical_density_rgb=negative.clear_base_optical_density_rgb,
                 )
-            )
-        if config.output.export_plate_set:
-            material_paths.update(
-                export_plate_set(
-                    negative.density_cmy,
-                    negative.density_grain,
-                    negative.after_mtf,
-                    negative.after_halation,
-                    config.film,
-                    material_base.parent / f"{material_base.name}_plate_set",
-                )
-            )
-    paths.update({f"material:{key}": value for key, value in material_paths.items()})
+                paths["scanner_raw_sidecar"] = str(scanner_raw_sidecar_path)
+        positive_transmission_raw = None
+        if preview_job is not None:
+            preview_job.result()
 
-    if config.save_sidecar:
-        sidecar_path = negative_path.with_suffix(negative_path.suffix + ".json")
-        atomic_write_json(
-            sidecar_path,
-            developed_negative_sidecar(
-                input_path=input_path,
-                output_path=output_path,
-                negative_path=negative_path,
-                config=config,
-                negative=negative,
-                paths=paths,
-                resolved_seed=resolved_seed,
-                provenance=provenance if config.output.watermark_metadata else None,
-            ),
-        )
-        paths["sidecar"] = str(sidecar_path)
-    return paths
+        material_paths: dict[str, str] = {}
+        if config.output.export_layer_pack:
+            material_paths.update(
+                export_layer_pack(
+                    negative,
+                    config.film,
+                    material_base.parent / f"{material_base.name}_layer_pack",
+                    polarity="positive" if is_positive else "negative",
+                    source_negative_path=negative_path,
+                    scanner_raw_path=scanner_raw_path,
+                    orange_preview_path=preview_path,
+                    metadata={
+                        **layer_pack_metadata(
+                            input_path=input_path,
+                            output_path=output_path,
+                            negative_path=negative_path,
+                            config=config,
+                            negative=negative,
+                            paths=paths,
+                        ),
+                    },
+                )
+            )
+        else:
+            if transparent_job is not None:
+                material_paths.update(transparent_job.result())
+            if config.output.export_plate_set:
+                material_paths.update(
+                    export_plate_set(
+                        negative.density_cmy,
+                        negative.density_grain,
+                        negative.after_mtf,
+                        negative.after_halation,
+                        config.film,
+                        material_base.parent / f"{material_base.name}_plate_set",
+                    )
+                )
+        paths.update({f"material:{key}": value for key, value in material_paths.items()})
+
+        if config.save_sidecar:
+            sidecar_path = negative_path.with_suffix(negative_path.suffix + ".json")
+            atomic_write_json(
+                sidecar_path,
+                developed_negative_sidecar(
+                    input_path=input_path,
+                    output_path=output_path,
+                    negative_path=negative_path,
+                    config=config,
+                    negative=negative,
+                    paths=paths,
+                    resolved_seed=resolved_seed,
+                    provenance=provenance if config.output.watermark_metadata else None,
+                ),
+            )
+            paths["sidecar"] = str(sidecar_path)
+        return paths
 
 
 def _save_full_negative_materials(

@@ -11,31 +11,103 @@
     "halation_core_radius": 0.0025,
     "halation_outer_radius": 0.009,
     "halation_exponential_radius": 0.009,
-    "halation_color": [1.0, 0.52, 0.28],
-    "hd_gamma": [0.7428, 0.7473, 0.7398],
-    "density_min": [0.0464, 0.0464, 0.0472],
-    "density_max": [1.9557, 1.9662, 1.9482],
-    "log_exposure_toe": [-2.2443, -2.2368, -2.2488],
-    "log_exposure_shoulder": [0.3000, 0.3030, 0.2970],
+    "halation_color": [
+      1.0,
+      0.52,
+      0.28
+    ],
+    "hd_gamma": [
+      0.7428,
+      0.7473,
+      0.7398
+    ],
+    "density_min": [
+      0.0464,
+      0.0464,
+      0.0472
+    ],
+    "density_max": [
+      1.9557,
+      1.9662,
+      1.9482
+    ],
+    "log_exposure_toe": [
+      -2.2443,
+      -2.2368,
+      -2.2488
+    ],
+    "log_exposure_shoulder": [
+      0.3,
+      0.303,
+      0.297
+    ],
     "hd_toe_width": 0.16,
-    "hd_shoulder_width": 0.20,
-    "layer_sensitivity_matrix": [[0.85, 0.11, 0.04], [0.09, 0.82, 0.09], [0.04, 0.17, 0.79]],
-    "dye_absorption_matrix": [[1.0180, 0.0814, 0.0305], [0.0590, 0.9826, 0.0884], [0.0200, 0.1100, 1.0000]],
-    "film_base_density_rgb": [0.032, 0.032, 0.036],
-    "granularity_sigma": [0.011, 0.010, 0.012],
+    "hd_shoulder_width": 0.2,
+    "layer_sensitivity_matrix": [
+      [
+        0.85,
+        0.11,
+        0.04
+      ],
+      [
+        0.09,
+        0.82,
+        0.09
+      ],
+      [
+        0.04,
+        0.17,
+        0.79
+      ]
+    ],
+    "dye_absorption_matrix": [
+      [
+        1.018,
+        0.0814,
+        0.0305
+      ],
+      [
+        0.059,
+        0.9826,
+        0.0884
+      ],
+      [
+        0.02,
+        0.11,
+        1.0
+      ]
+    ],
+    "film_base_density_rgb": [
+      0.032,
+      0.032,
+      0.036
+    ],
+    "granularity_sigma": [
+      0.00825,
+      0.0075,
+      0.009
+    ],
     "grain_density_correlation_radius": 0.00065,
-    "grain_scales": [0.00060, 0.0015, 0.0038],
-    "grain_scale_weights": [0.68, 0.24, 0.08],
+    "grain_scales": [
+      0.0006,
+      0.0015,
+      0.0038
+    ],
+    "grain_scale_weights": [
+      0.68,
+      0.24,
+      0.08
+    ],
     "positive_density_contrast": 1.04,
     "positive_density_bias": 0.02,
     "positive_latitude_compression": 0.55,
     "positive_dye_saturation": 0.96,
     "positive_midtone_density": 0.16,
-    "positive_shadow_toe": 0.30,
+    "positive_shadow_toe": 0.3,
     "positive_shadow_toe_width": 0.31,
-    "positive_highlight_shoulder": 0.50,
-    "positive_highlight_shoulder_width": 0.30,
+    "positive_highlight_shoulder": 0.5,
+    "positive_highlight_shoulder_width": 0.3,
     "positive_highlight_chroma_retention": 0.24,
-    "positive_shadow_chroma_retention": 0.30
+    "positive_shadow_chroma_retention": 0.3
   }
 }

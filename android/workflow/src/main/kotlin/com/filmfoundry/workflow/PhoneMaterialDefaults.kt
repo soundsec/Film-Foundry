@@ -44,6 +44,9 @@ object PhoneMaterialDefaults {
         if(captureSettings[com.filmfoundry.interchange.PhoneMaterialPhenomena.ROLL_SETTING]==com.filmfoundry.interchange.PhoneMaterialPhenomena.CURRENT)
             base=base+(com.filmfoundry.interchange.PhoneMaterialPhenomena.EXPOSURE_OPTION to com.filmfoundry.interchange.PhoneMaterialPhenomena.CURRENT)
         base=base+captureSettings.filterKeys { it=="film_border" }
+        com.filmfoundry.interchange.PhoneFormationProfile.validate(captureSettings[com.filmfoundry.interchange.PhoneFormationProfile.ROLL_SETTING])?.let {
+            base=base+(com.filmfoundry.interchange.PhoneFormationProfile.OPTION to it)
+        }
         captureSettings[com.filmfoundry.interchange.PhoneGrainModels.ROLL_SETTING]?.let {
             require(it==com.filmfoundry.interchange.PhoneGrainModels.LAYERED)
             base=base+(com.filmfoundry.interchange.PhoneGrainModels.EXPOSURE_OPTION to it)

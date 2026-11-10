@@ -55,12 +55,25 @@ class LibraryExportPlanner(private val library: FilmLibrary,private val scans: P
             control.checkCancel();val roll=library.roll(id)
             if(request.kind=="latents") {
                 require(roll.lifecycle==RollLifecycle.SEALED) { "Seal the selected rolls before exporting latents" }
-                roll.frames.filter { it.state in listOf(FrameState.CAPTURED,FrameState.LATENT) }.map { frame ->
-                    LibraryExportSession.Item("${roll.rollId}:${frame.frameIndex}","FilmFoundry-${roll.rollId.take(8)}-${frame.frameIndex}${DataKernel.LATENT_SUFFIX}","application/octet-stream",false) { cancel ->
+                require(roll.frames.all { it.state in listOf(FrameState.EMPTY,FrameState.CAPTURED,FrameState.LATENT) }) { "Recover failed or missing captures before exporting a sealed roll" }
+                fun filename(index: Int)="FilmFoundry-${roll.rollId}-$index${DataKernel.LATENT_SUFFIX}"
+                val manifest=RecipeJson.text(mapOf("kind" to "film_foundry_electronic_roll","version" to 1,
+                    "roll_id" to roll.rollId,"capacity" to roll.capacity,"lifecycle" to "sealed","label" to roll.label,
+                    "frames" to roll.frames.map { frame ->
+                        if(frame.state==FrameState.EMPTY) mapOf("frame_index" to frame.frameIndex,"state" to "empty")
+                        else mapOf("frame_index" to frame.frameIndex,"state" to "latent","file" to filename(frame.frameIndex))
+                    }))
+                val files=roll.frames.filter { it.state in listOf(FrameState.CAPTURED,FrameState.LATENT) }.map { frame ->
+                    LibraryExportSession.Item("${roll.rollId}:${frame.frameIndex}",filename(frame.frameIndex),"application/octet-stream",false) { cancel ->
                         val model=if(roll.captureSettings[PhoneGrainModels.ROLL_SETTING]==PhoneGrainModels.LAYERED) PhoneGrainModels.LAYERED else PhoneGrainModels.CURRENT
                         val path=deferred.prepareFrame(roll.rollId,frame.frameIndex,cancel,model).latentPath ?: error("Latent is missing")
                         exports.file("latent",path,"latent.npz","application/octet-stream").prepare(cancel)
                     }
+                }
+                files+LibraryExportSession.Item("${roll.rollId}:manifest","FilmFoundry-${roll.rollId}.ffroll.json","application/json",false) { cancel ->
+                    cancel.checkCancel()
+                    val writer: (java.io.OutputStream)->Unit = { output -> output.write(manifest.toByteArray(Charsets.UTF_8)) }
+                    writer
                 }
             } else roll.frames.filter { it.capturePath!=null }.flatMap { frame ->
                 control.checkCancel();val path=frame.capturePath!!

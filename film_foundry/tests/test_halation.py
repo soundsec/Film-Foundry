@@ -216,7 +216,9 @@ def test_halation_source_lifetime_optimization_preserves_legacy_formula():
     assert np.allclose(actual, expected, atol=2e-7)
 
 
-def test_tiled_halation_source_is_exact_and_tile_size_independent():
+def test_tiled_halation_source_is_exact_and_tile_size_independent(monkeypatch):
+    from film_foundry.core import material_parallel
+    monkeypatch.setattr(material_parallel, 'PARALLEL_MIN_PIXELS', 1)
     rng = np.random.default_rng(20260717)
     image = rng.uniform(0.02, 0.84, (173, 257, 3)).astype(np.float32)
     # Include frame-edge and would-be tile-boundary sources.
@@ -231,11 +233,14 @@ def test_tiled_halation_source_is_exact_and_tile_size_independent():
             image,
             film,
             tile_rows=tile_rows,
+            workers=4,
         )
         assert np.array_equal(actual, expected)
 
 
-def test_reduced_halation_source_retains_peak_and_area_gates_and_is_tile_exact():
+def test_reduced_halation_source_retains_peak_and_area_gates_and_is_tile_exact(monkeypatch):
+    from film_foundry.core import material_parallel
+    monkeypatch.setattr(material_parallel, 'PARALLEL_MIN_PIXELS', 1)
     image = np.full((173, 257, 3), 0.04, dtype=np.float32)
     image[18:22, 31:35] = 1.25
     image[74:142, 140:232] = 0.94
@@ -271,6 +276,7 @@ def test_reduced_halation_source_retains_peak_and_area_gates_and_is_tile_exact()
             film,
             tile_rows=tile_rows,
             model=REDUCED_HALATION_SOURCE_MODEL,
+            workers=4,
         )
         assert np.array_equal(tiled, reduced)
 

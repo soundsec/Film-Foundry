@@ -1,10 +1,7 @@
-"""Film rebate, sprocket-hole layout and film-plane edge-imprint exposure.
+"""Film-edge geometry and independent in-picture film-plane imprint exposure.
 
-Sprocket and rebate geometry is resolved only; it is not rasterized and does
-not expand the developed medium. Edge imprint styles other than ``none`` add
-a super-bright film-plane flash into linearized exposure after MTF. The
-scanner ``include_clear_base_border`` path remains an observation-canvas
-feature and must not be reused as sprocket geometry.
+Actual rebate formation lives in formed_film_border; scanner reference borders
+remain a separate observation-canvas option.
 """
 
 from __future__ import annotations
@@ -21,7 +18,7 @@ from film_foundry.model.config import FilmBorderConfig
 from film_foundry.contracts.edge_marks import normalize_edge_pattern
 
 
-FILM_BORDER_PIPELINE_STATUS = "interface_only"
+FILM_BORDER_PIPELINE_STATUS = "formed_rebate_reference_v1"
 FILM_BORDER_FORMAT_KEYS = ("135", "120", "110", "half_frame")
 FILM_BORDER_SPROCKET_ROWS = ("none", "top", "bottom", "both")
 FILM_BORDER_IMPRINT_STYLES = ("none", "laser_dot", "optical_amber", "lab_edge")
@@ -62,7 +59,10 @@ class SprocketHoleSpec:
 
 @dataclass(frozen=True, slots=True)
 class FilmBorderImprintSpec:
-    """Laser/optical/lab edge marking placed on the rebate, not the image gate."""
+    """Legacy layout slot; actual in-picture exposure uses its own image gate.
+
+    Retained for old layout consumers, never rasterized into factory rebates.
+    """
 
     style: str
     side: str
@@ -74,7 +74,7 @@ class FilmBorderImprintSpec:
 
 @dataclass(frozen=True, slots=True)
 class FactoryEdgeSpec:
-    """Factory-stencil slot outside the holes; desktop layout only."""
+    """Factory-stencil slot outside the perforations."""
 
     side: str
     normalized_rect: tuple[float, float, float, float]
@@ -84,7 +84,7 @@ class FactoryEdgeSpec:
 
 @dataclass(frozen=True, slots=True)
 class FilmBorderLayout:
-    """Resolved rebate geometry. Contains no pixels and is not pipeline-applied."""
+    """Resolved rebate geometry consumed by the formation-side rasterizer."""
 
     format_key: str
     canvas_size: tuple[int, int]
@@ -134,6 +134,40 @@ def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
     if config.factory_mark_type not in {"hard", "laser"}:
         raise ValueError("film_border.factory_mark_type must be hard or laser.")
     spread = float(config.factory_mark_spread)
+    if config.factory_layout not in {'legacy','text_code','combined','text_only','code_text','cinema','compact','roll_markings'}:
+        raise ValueError('Unknown factory lettering layout')
+    if config.factory_barcode not in {'legacy','code128c','none','blocks','staggered_blocks','paired_blocks'}:
+        raise ValueError('Unknown factory barcode')
+    if isinstance(config.factory_barcode_seed,bool) or not isinstance(config.factory_barcode_seed,int) or not 0<=config.factory_barcode_seed<=2147483647:
+        raise ValueError('Factory barcode seed must be an integer within 0–2147483647')
+    if not math.isfinite(config.loading_offset) or not -.5<=config.loading_offset<=.5:
+        raise ValueError('Loading offset must be within -0.5 to 0.5 frames')
+    if config.advance_marker_style not in {'legacy','arrow','double_arrow','chevron','triangle','outline_triangle','none'}:
+        raise ValueError('Unknown advance marker style')
+    positions={}
+    for name in ('factory_offset_top','factory_offset_bottom','advance_marker_offset'):
+        value=tuple(float(v) for v in getattr(config,name))
+        if len(value)!=2 or any(not math.isfinite(v) or not -1<=v<=1 for v in value):
+            raise ValueError(name+' requires two offsets within -1 to 1')
+        positions[name]=value
+    if not math.isfinite(config.factory_exposure_ev) or not -4<=config.factory_exposure_ev<=4:
+        raise ValueError('Factory exposure must be within -4 to +4 EV')
+    if not math.isfinite(config.factory_exposure_variation) or not 0<=config.factory_exposure_variation<=1:
+        raise ValueError('Factory exposure variation must be within 0–1')
+    if config.advance_direction not in {'left','right'}:
+        raise ValueError('Advance direction must be left or right')
+    for value,limit,name in ((config.factory_batch,4095,'factory_batch'),(config.frame_number,9999,'frame_number')):
+        if value is not None and (isinstance(value,bool) or int(value)!=value or not 0<=value<=limit):
+            raise ValueError('Invalid film_border.'+name)
+    if config.imprint_font not in {'legacy','seven_segment','dot_matrix'}:
+        raise ValueError('Unknown imprint font')
+    position=config.imprint_position_xy
+    if position is not None:
+        position=tuple(float(v) for v in position)
+        if len(position)!=2 or any(not math.isfinite(v) or not 0<=v<=1 for v in position):
+            raise ValueError('Imprint position requires two normalized coordinates')
+    if not math.isfinite(config.imprint_scale) or not .25<=config.imprint_scale<=3:
+        raise ValueError('Imprint scale must be within .25–3')
     if not math.isfinite(spread) or not 0 <= spread <= 3:
         raise ValueError("film_border.factory_mark_spread must be between 0 and 3.")
     return FilmBorderConfig(
@@ -144,6 +178,17 @@ def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
         sprocket_count=sprocket_count,
         factory_marks=bool(config.factory_marks),
         stock_label=str(config.stock_label),
+        factory_layout=config.factory_layout,
+        factory_batch=int(config.factory_batch),
+        factory_barcode=config.factory_barcode,
+        factory_barcode_seed=config.factory_barcode_seed,
+        loading_offset=float(config.loading_offset),
+        advance_marker_style=config.advance_marker_style,
+        **positions,
+        factory_exposure_ev=float(config.factory_exposure_ev),
+        factory_exposure_variation=float(config.factory_exposure_variation),
+        frame_number=None if config.frame_number is None else int(config.frame_number),
+        advance_direction=config.advance_direction,
         factory_pattern_top=normalize_edge_pattern(config.factory_pattern_top),
         factory_pattern_bottom=normalize_edge_pattern(config.factory_pattern_bottom),
         factory_pattern_linked=bool(config.factory_pattern_linked),
@@ -155,6 +200,9 @@ def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
         imprint_side=imprint_side,
         imprint_text=str(config.imprint_text or ""),
         imprint_time=str(config.imprint_time or ""),
+        imprint_font=config.imprint_font,
+        imprint_position_xy=position,
+        imprint_scale=float(config.imprint_scale),
     )
 
 
@@ -316,7 +364,7 @@ def _render_imprint_mask(
     label = edge_imprint_label(config)
     if not label:
         return None
-    font_size = max(8, int(round(min(height, width) * 0.045)))
+    font_size = max(8, int(round(min(height, width) * 0.045 * config.imprint_scale)))
     style = str(config.imprint_style)
     scale=4
     font = _imprint_font(font_size*scale,label)
@@ -331,6 +379,11 @@ def _render_imprint_mask(
     strip=Image.new("L",(min(available,text_w)*scale,text_h*scale),0)
     ImageDraw.Draw(strip).text((-bbox[0],-bbox[1]),label,font=font,fill=255)
     high=np.asarray(strip,dtype=np.uint8)
+    if config.imprint_font != 'legacy':
+        from film_foundry.core.imprint_glyphs import render_display_text
+        high=render_display_text(label,config.imprint_font,font_size*scale,available*scale)
+        text_h=max(1,int(math.ceil(high.shape[0]/scale)))
+        strip=Image.fromarray(high)
     if style == "optical_amber":
         # Quarter-pixel thinning keeps counters open without erasing strokes.
         high=cv2.erode(high,np.ones((2,2),np.uint8))
@@ -343,6 +396,9 @@ def _render_imprint_mask(
     else:
         y = height - margin_y - text_h
     y = int(np.clip(y,0,max(0,height-text_h)))
+    if config.imprint_position_xy is not None:
+        x=round(config.imprint_position_xy[0]*max(0,width-text_w))
+        y=round(config.imprint_position_xy[1]*max(0,height-text_h))
     glyph=np.zeros((height,width),np.float32)
     used_h=min(text_h,height-y);used_w=min(text_w,width-x)
     if used_h > 0 and used_w > 0:glyph[y:y+used_h,x:x+used_w]=ink[:used_h,:used_w]

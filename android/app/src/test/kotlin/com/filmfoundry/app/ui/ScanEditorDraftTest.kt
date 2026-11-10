@@ -6,6 +6,27 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class ScanEditorDraftTest {
+    @Test fun automaticFinishKeepsVisibleColourAndDeliveryAndCanBeUndone() {
+        val color=mapOf("scan_saturation" to 1.7,"tone_curve" to listOf(listOf(0.0,0.0),listOf(.5,.6),listOf(1.0,1.0)))
+        val before=ScanEditorDraft(style=0,gain=47,manual=true,numbers=mapOf("scan_white_percentile" to "90","print_contrast" to "1.2"),
+            baseMode=2,inversionMode=1,grid="1920",rotationDegrees=90,outputFormat="JPG",outputBits=8,jpegQuality=70)
+        val after=before.withAutomaticFinish(color+mapOf("scan_normalize" to false,"scan_white_percentile" to 90,"invert_transmission" to true))
+        assertEquals(4,after.style);assertEquals(color,after.overlay);assertEquals(0,after.inversionMode);assertEquals(0,after.baseMode)
+        assertEquals(mapOf("print_contrast" to "1.2"),after.numbers);assertTrue(after.normalize)
+        assertEquals(before.gain,after.gain);assertEquals(before.grid,after.grid);assertEquals(90,after.rotationDegrees);assertEquals(70,after.jpegQuality)
+        val history=ScanEditHistory(before);history.change(after);assertEquals(before,history.undo());assertEquals(after,history.redo())
+    }
+    @Test fun mixerSurvivesPhotoRestoreUndoRedoAndCancel() {
+        val rows=List(8) { if(it==0) listOf(15,20,-10) else listOf(0,0,0) }
+        val initial=ScanEditorDraft.saved(mapOf("scanner" to mapOf("color_mixer" to rows)),"Photo",true)
+        val history=ScanEditHistory(initial)
+        val edited=initial.copy(overlay=initial.overlay+("color_mixer" to List(8){listOf(0,0,0)}))
+        history.begin();history.change(edited);history.commit()
+        assertEquals(initial,history.undo());assertEquals(edited.detached(),history.redo())
+        history.begin();history.change(initial);history.cancel()
+        assertEquals(edited.detached(),history.current)
+        assertTrue((initial.base?.get("scanner") as Map<*,*>).containsKey("color_mixer"))
+    }
     @Test fun outputDirectionSurvivesPhotoRestoreHistoryAndCancelledStyleAuditions() {
         val recipe=com.filmfoundry.platform.OutputOrientation.apply(mapOf("scanner" to mapOf("scan_saturation" to 1.4)),270)
         val initial=ScanEditorDraft.saved(recipe,"Photo",true)
