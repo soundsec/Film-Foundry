@@ -80,7 +80,7 @@ def test_debounce_one_worker_latest_frame_and_manual_toggle(tmp_path,monkeypatch
         assert asdict(panel._config()) == formal
         for value in (.2,.4,.6):panel.print_exposure.set(value)
         panel.curve_editors["tone_curve"].add_point(.5,.65)
-        QTest.qWait(80);assert len(requests)==1
+        QTest.qWait(80);assert len(requests)==1 and requests[0].cancel.requested()
         release.set();wait_for(lambda:len(requests)==2 and not panel._preview_running)
         assert shown == [.6]
         assert requests[1].config.scanner.tone_curve is not None
@@ -90,6 +90,14 @@ def test_debounce_one_worker_latest_frame_and_manual_toggle(tmp_path,monkeypatch
         panel.print_exposure.set(.8);QTest.qWait(80);assert len(requests)==2
         panel.preview_button.qt.click();wait_for(lambda:len(requests)==3 and not panel._preview_running)
         assert shown == [.6,.8]
+        panel.auto_preview.set(True)
+        slider = panel.film_workspace.findChildren(QtWidgets.QSlider)[0]
+        slider.sliderPressed.emit()
+        panel.print_exposure.set(.9)
+        wait_for(lambda:len(requests)==4 and not panel._preview_running)
+        slider.sliderReleased.emit()
+        wait_for(lambda:len(requests)==5 and not panel._preview_running)
+        assert [r.long_edge for r in requests[-2:]] == [320,900]
     finally:
         release.set();panel.root.destroy()
 

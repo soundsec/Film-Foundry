@@ -32,6 +32,7 @@ class HardwareSelfTestUi(private val activity: ComponentActivity,private val she
         "jpeg_srgb"->copy("JPEG 输入线性化","JPEG input linearization")
         "rgb_transmission"->copy("普通 RGB 透射","RGB transmission")
         "scan_output"->copy("扫描输出联合计算","Combined scan output")
+        "film_development"->copy("胶片连续药浴（FP32）","Ordered film baths (FP32)")
         else->copy("31 波长光谱积分","31-wavelength integration")
     }
     private fun format(raw: String): String=runCatching {

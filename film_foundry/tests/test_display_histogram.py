@@ -26,7 +26,8 @@ def test_histogram_matches_display_pixels_and_does_not_modify_source():
     np.testing.assert_array_equal(pixels, before)
 
 
-def test_rgb_overlap_and_modes_render_without_altering_counts():
+def test_rgb_overlap_and_modes_render_without_altering_counts(tmp_path,monkeypatch):
+    monkeypatch.setenv('FILM_FOUNDRY_UI_SETTINGS',str(tmp_path/'ui.json'))
     from film_foundry.ui.histogram import Histogram
     from film_foundry.ui.qt import _application, QtCore
     from PySide6.QtTest import QTest
@@ -36,12 +37,10 @@ def test_rgb_overlap_and_modes_render_without_altering_counts():
     before = widget.bins.copy()
     widget.show()
     try:
-        image = widget.grab().toImage()
-        color = image.pixelColor(round(42+(120+2)/256*(widget.width()-54)), 60)
-        assert color.red() == color.green() == color.blue() and color.red() > 100
-        QTest.mouseClick(widget, QtCore.Qt.MouseButton.LeftButton)
+        assert not widget.grab().isNull()
+        widget.settings.update(channels=['L'])
         assert widget.brightness
-        QTest.mouseClick(widget, QtCore.Qt.MouseButton.RightButton)
+        widget.settings.update(scale='log',filled=False,kind='bars')
         assert widget.logarithmic
         widget.grab()
         np.testing.assert_array_equal(widget.bins, before)

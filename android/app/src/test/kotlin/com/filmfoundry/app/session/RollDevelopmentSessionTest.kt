@@ -11,6 +11,30 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 
 class RollDevelopmentSessionTest {
+    @Test fun timeProfileKeepsV13TaskAndDoesNotGainNewMonoResponse() = runBlocking {
+        val library=FilmLibrary()
+        library.loadRoll("roll",12,mapOf("color_process" to "monochrome"),captureSettings=mapOf(PhoneFormationProfile.ROLL_SETTING to PhoneFormationProfile.TIME_LIGHTWEIGHT))
+        val shoot=capture(library);shoot.capture("roll",camera);shoot.seal("roll")
+        val engine=session(library);val task=engine.create("roll","time-fast",emptyMap())
+        assertEquals("phone_roll_lightweight_v13",task.revision)
+        engine.run("roll",task.id)
+        val latent=MediumStore(storage()).readLatent(cameraLatentPath("roll",1))
+        assertEquals(PhoneFormationProfile.TIME_LIGHTWEIGHT,latent.metadata[PhoneFormationProfile.OPTION])
+        assertNotNull(latent.metadata["phone_exposure_time"]);assertNull(latent.metadata["phone_monochrome_sensitivity"])
+    }
+    @Test fun previousLightweightRollKeepsV12TaskAndLatent() = runBlocking {
+        val library=FilmLibrary()
+        library.loadRoll("roll",12,mapOf("grain_strength" to .03),captureSettings=mapOf(PhoneFormationProfile.ROLL_SETTING to PhoneFormationProfile.PREVIOUS_LIGHTWEIGHT))
+        val shoot=capture(library);shoot.capture("roll",camera);shoot.seal("roll")
+        val engine=session(library);val task=engine.create("roll","old-fast",emptyMap())
+        assertEquals("phone_roll_lightweight_v12",task.revision)
+        val result=engine.run("roll",task.id).single()
+        val medium=MediumStore(storage())
+        assertEquals(PhoneFormationProfile.PREVIOUS_LIGHTWEIGHT,medium.readLatent(cameraLatentPath("roll",1)).metadata[PhoneFormationProfile.OPTION])
+        val output=medium.readOptical(result.opticalPath)
+        assertEquals(PhoneFormationProfile.PREVIOUS_LIGHTWEIGHT,output.metadata[PhoneFormationProfile.OPTION])
+        assertNull((output.metadata["film_process_model"] as Map<*,*>)["phone_film_time"])
+    }
     @Test fun lightweightRollFreezesItsProfileAcrossTaskCreationAndReprocessing() = runBlocking {
         val library=FilmLibrary()
         library.loadRoll("roll",12,mapOf("grain_strength" to .03),captureSettings=mapOf(PhoneFormationProfile.ROLL_SETTING to PhoneFormationProfile.LIGHTWEIGHT))

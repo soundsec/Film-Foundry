@@ -83,7 +83,8 @@ def test_family_target_formation_reused_and_body_observation_readonly(kind,tmp_p
     _,brighter,reused=renderer.render_target('color24',{'view':{'exposure_ev':.5}})
     assert reused and renderer.session.state is state
     assert np.mean(brighter)>=np.mean(result)
-    path=tmp_path/(kind+'.npz');renderer.session.save_products(path);stamp=path.stat().st_mtime_ns
+    # This assertion covers observation identity, not lossy storage quantization.
+    path=tmp_path/(kind+'.npz');renderer.session.save_products(path,precision='full');stamp=path.stat().st_mtime_ns
     body=renderer.session.group.bodies[0]
     payload=load_print_source({'path':str(path),'kind':'material','family':kind,'body_id':body.body_id})
     np.testing.assert_array_equal(payload['image'],result)

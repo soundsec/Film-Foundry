@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from enum import Enum
 
+from ..computation_control import checkpoint
 import numpy as np
 
 from film_foundry.core.execution_topology import reference_execution_enabled
@@ -975,6 +976,7 @@ def apply_process_program(
     if process_run is not None:
         process_run.at_boundary(state, first_step, reports, binding, validated=True,surface=surface,inhibitor=inhibitor)
     for index in range(first_step, len(program.steps)):
+        checkpoint()
         step = program.steps[index]
         if surface is not None:surface.before_step(index)
         if inhibitor is not None:inhibitor.before_step(index)

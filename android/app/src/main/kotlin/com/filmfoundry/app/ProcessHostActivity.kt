@@ -50,6 +50,20 @@ class ProcessHostActivity : ComponentActivity() {
     private var cameraReady=false
     private lateinit var cameraButton: Button
     private lateinit var shell: MobileShell
+    private lateinit var cameraSounds: com.filmfoundry.app.session.CameraSounds
+    private var soundCue: com.filmfoundry.app.session.CameraSoundSynth.Cue? = null
+    private val soundLabels = mutableMapOf<com.filmfoundry.app.session.CameraSoundSynth.Cue, () -> Unit>()
+    private val pickSound = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val cue = soundCue ?: return@registerForActivityResult
+        soundCue = null
+        if (uri == null) return@registerForActivityResult
+        runCatching {
+            contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            cameraSounds.use(cue, uri)
+            soundLabels[cue]?.invoke()
+            status.text = copy("已换成自定义音效","Custom sound installed")
+        }.onFailure { status.text = it.message ?: copy("无法使用这个音频","Could not use that audio") }
+    }
     private var cameraWanted=false
     private var boundTarget: String?=null
     private var failedTarget: String?=null
@@ -132,6 +146,28 @@ class ProcessHostActivity : ComponentActivity() {
         super.attachBaseContext(context)
     }
     private fun copy(zh: String,en: String)=if(resources.configuration.locales[0].language == "zh") zh else en
+    private fun installCameraSounds() {
+        cameraSounds=com.filmfoundry.app.session.CameraSounds.get(this)
+        val card=shell.card(MobileShell.Page.SETTINGS,"相机音效","Camera sounds",
+            "快门、反光板、过片上弦、卷片马达和倒片马达。每一种都可以换成自己的音频。快门跟随快门速度；反光板可在相机设置里关闭。倒片马达在自动过片封卷时播放。",
+            "Shutter, mirror, advance, motor drive and rewind motor. Each one can use your own audio. The shutter follows shutter speed; the mirror can be turned off in camera settings. Rewind plays when auto advance seals a roll.")
+        val cues=listOf(
+            com.filmfoundry.app.session.CameraSoundSynth.Cue.SHUTTER to ("快门" to "Shutter"),
+            com.filmfoundry.app.session.CameraSoundSynth.Cue.MIRROR to ("反光板" to "Mirror"),
+            com.filmfoundry.app.session.CameraSoundSynth.Cue.ADVANCE to ("过片上弦" to "Advance"),
+            com.filmfoundry.app.session.CameraSoundSynth.Cue.MOTOR to ("卷片马达" to "Motor drive"),
+            com.filmfoundry.app.session.CameraSoundSynth.Cue.REWIND to ("倒片马达" to "Rewind motor"))
+        for((cue,names) in cues) {
+            val title=TextView(this)
+            fun paint() { title.text=copy(names.first,names.second)+copy(if(cameraSounds.isCustom(cue)) " · 自定义" else " · 内置", if(cameraSounds.isCustom(cue)) " · Custom" else " · Built-in") }
+            paint();soundLabels[cue]={ paint() };title.textSize=15f;card.addView(title)
+            val row=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+            shell.action(row,"试听","Preview") { cameraSounds.play(cue) }
+            shell.action(row,"更换","Replace") { soundCue=cue;pickSound.launch(arrayOf("audio/*")) }
+            shell.action(row,"默认","Default") { cameraSounds.clear(cue);paint();status.text=copy("已恢复内置音效","Built-in sound restored") }
+            card.addView(row)
+        }
+    }
     private fun loadCameraChoices(ready: ()->Unit) {
         if(isDestroyed) return
         cameraCatalogReady=ready
@@ -334,6 +370,15 @@ class ProcessHostActivity : ComponentActivity() {
         shell.settingsEntry("附加工具","Additional tools","视频来源与材料母带","Video sources and material masters",MobileShell.Page.SETTINGS_TOOLS)
         shell.settingsEntry("关于软件","About","版本、作者与源码","Version, author and source",MobileShell.Page.SETTINGS_ABOUT)
         shell.settingsEntry("使用指南","Guide","拍摄、冲洗、观片与资源管理","Capture, develop, view and manage",MobileShell.Page.SETTINGS_GUIDE)
+        val materialUnlock=com.filmfoundry.app.session.ExperimentalMaterialUnlock(this)
+        val experimentalMaterials=shell.settingsShortcut("实验材料","Experimental materials","单张拍摄，选择材料后处理","Take one photo, choose a material, then process") {
+            startActivity(android.content.Intent(this, com.filmfoundry.app.ui.ExperimentalMaterialActivity::class.java))
+        }
+        val showExperimental={ experimentalMaterials.visibility=View.VISIBLE }
+        val developmentPath=(applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0
+        experimentalMaterials.visibility=if(com.filmfoundry.workflow.ExperimentalMaterialAccess.visible(developmentPath, materialUnlock.unlocked)) View.VISIBLE else View.GONE
+        rollActions?.onExperimentalMaterialsUnlocked=showExperimental
+        installCameraSounds()
         com.filmfoundry.app.ui.MobileGuide.install(shell)
         val about=shell.card(MobileShell.Page.SETTINGS_ABOUT,"Film Foundry","Film Foundry",
             "拍摄、冲洗、观片与扫描。","Capture, develop, view and scan.")
@@ -527,13 +572,15 @@ class ProcessHostActivity : ComponentActivity() {
             }
         }
         if(::shell.isInitialized) shell.root.post {
+            if(lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) shell.resumeFinderGuides()
             rollActions?.resumeScanPreview()
             if(!readingCameras && !openingNativeSettings) updateCameraForPage()
         }
     }
     override fun onStop() {
+        if (::cameraSounds.isInitialized) cameraSounds.cancelPending()
         cancelNaturalLight(keepPermission=true)
-        if(::shell.isInitialized) shell.closeQuickControls()
+        if(::shell.isInitialized) { shell.pauseFinderGuides();shell.closeQuickControls() }
         isoLock.leave()
         observeProcessing?.invoke();observeProcessing=null
         rollActions?.saveDrafts();rollActions?.pauseCapture(cancelWaiting=true);rollActions?.cancel(keepDisplayedPreview=true,pauseTask=false)
@@ -623,7 +670,7 @@ class ProcessHostActivity : ComponentActivity() {
         nativeSettings=com.filmfoundry.app.session.CaptureAutomationPolicy.apply(exposureFromFilm(nativeSettings))
         val iso=nativeSettings.iso
         status.text=if(iso==null) copy("ISO 保持自动，拍摄中锁定","ISO stays automatic and locked while shooting")
-            else copy("ISO $iso 已写入胶卷设置，拍摄中锁定","ISO $iso is saved in film settings and locked while shooting")
+            else copy("ISO $iso 已保存为机身曝光设置，拍摄中锁定","ISO $iso is saved in camera exposure settings and locked while shooting")
     }
     private fun captureSize(lens: com.filmfoundry.platform.NativeCameraCatalog.Lens,settings: com.filmfoundry.platform.NativeCaptureSettings): Pair<Int,Int>? {
         val parts=rollActions?.captureTarget()?.split(":").orEmpty()

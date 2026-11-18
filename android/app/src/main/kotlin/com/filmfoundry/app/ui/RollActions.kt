@@ -44,6 +44,8 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
     private val nativeLens: ()->NativeCameraCatalog.Lens?={ null },private val nativeCameraSettings: ()->Unit={},
     private val nativeFormat: ()->String={ "jpeg" },private val frameFormat: (String,String)->Unit={_,_->},
     private val onFilmExposure: ()->Unit={},private val onFinderStyle: (String)->Unit={},private val expert: FinderExpertPort?=null) {
+    var onExperimentalMaterialsUnlocked: ()->Unit = {}
+    private val sounds by lazy { com.filmfoundry.app.session.CameraSounds.get(activity) }
     private val taskOwner=Any()
     private val openedRevision=com.filmfoundry.app.session.ProcessingWork.snapshot.revision
     private var pendingCompletion: (() -> Unit)?=null
@@ -76,7 +78,9 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
     private val library = FilmLibrary(PrivateLibraryIndexStore(storage))
     private val store = MediumStore(storage)
     private val opticalProxies=com.filmfoundry.app.session.OpticalProxyStore(activity.filesDir,activity.cacheDir)
-    private val facade = DefaultWorkflowFacade()
+    private val formationCompute=com.filmfoundry.platform.QueuedFilmDevelopmentCompute({ jobGpuEnabled },
+        { backend -> preferences.edit().putString("last_formation_backend",backend).apply() })
+    private val facade = formationCompute.workflow()
     private val displayObservation=OpticalPreviewSession(facade,retainPrepared=true)
     private val captureStore = CaptureReceiptStore(activity.filesDir)
     private val preferences=activity.getSharedPreferences("capture_conditions",android.content.Context.MODE_PRIVATE)
@@ -101,6 +105,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
     private val cancelled = AtomicBoolean(false)
     private var running = false
     private var loadingView: FilmLoadingView?=null
+    private var unloadingView: FilmUnloadingView?=null
     private var loadingSession: RollLoadingSession?=null
     private val stillQueue=StillCaptureQueue<StillShot>()
     @Volatile private var drainingStill=false
@@ -134,10 +139,14 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
     private var exposureOwner: CameraXCameraAdapter?=null
     private var exposureEpoch=0L
     private val autoAdvance=CheckBox(activity)
+    private val mirrorSound=CheckBox(activity)
+    private var soundPage: MobileShell.Page?=null
     private val panorama=CheckBox(activity)
     private val wideGate: Button
     private val advanceMode: Button
     private val startSummary=TextView(activity)
+    private lateinit var startHeading: TextView
+    private val nextRollScope=TextView(activity)
     private lateinit var startShooting: Button
     private val references=com.filmfoundry.app.session.RollDirectReferenceStore(activity.filesDir)
     private val rollMarkCache=linkedMapOf<String,Pair<Bitmap,Long>>()
@@ -278,7 +287,8 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             else shell.selected==MobileShell.Page.DEVELOP && stages.backDevelopment()
         }
         buildViewer()
-        val start=shell.card(MobileShell.Page.START,"胶卷与规格","Film & format")
+        val start=shell.card(MobileShell.Page.START,"片仓 · 尚未装卷","Camera · no roll loaded")
+        startHeading=start.getChildAt(0) as TextView
         start.addView(startSummary)
         shell.note(start,"装卷开始，未拍完可随时继续。","Load film to start. Resume unfinished rolls anytime.")
         val skipLoading=CheckBox(activity).apply {
@@ -287,6 +297,13 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             setOnCheckedChangeListener { _,checked -> preferences.edit().putBoolean("skip_loading",checked).apply() }
         }
         start.addView(skipLoading)
+        val skipUnloading=CheckBox(activity).apply {
+            text=copy("跳过退出过程","Skip the unloading sequence")
+            isChecked=preferences.getBoolean("skip_unloading",false)
+            setOnCheckedChangeListener { _,checked -> preferences.edit().putBoolean("skip_unloading",checked).apply() }
+        }
+        start.addView(skipUnloading)
+        shell.note(start,"跳过只省去牵片或开盖取卷。结束拍摄仍会渐黑。","Skipping omits threading or opening the back. Ending a shoot still fades to black.")
         button(start,"装填／切换胶卷与规格","Load / switch film & format") { loadDialog() }
         autoAdvance.text=copy("自动过片","Auto advance")
         autoAdvance.isChecked=preferences.getBoolean("auto_advance",true)
@@ -332,6 +349,10 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
                     val key=OpticalFinderGeometry.styles[which];preferences.edit().putString("viewfinder_style",key).apply();onFinderStyle(key);dialog.dismiss()
                 }.setNegativeButton(copy("取消","Cancel"),null).show()
         }
+        mirrorSound.text=copy("反光板","Reflex mirror")
+        mirrorSound.isChecked=preferences.getBoolean("camera_mirror",true)
+        mirrorSound.setOnCheckedChangeListener { _,checked -> preferences.edit().putBoolean("camera_mirror",checked).apply() }
+        column.addView(mirrorSound)
         val shotChoices=LinearLayout(activity).apply { orientation=LinearLayout.HORIZONTAL }
         wideGate=button(shotChoices,"宽幅","Wide") { if(panorama.isEnabled) panorama.isChecked=!panorama.isChecked }
         wideGate.tag="capture_rail";wideGate.contentDescription=copy("135 宽幅挡片，上下不曝光","135 panorama baffles, top and bottom stay unexposed")
@@ -347,6 +368,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             val open=library.roll(id).frames.firstOrNull { it.state == FrameState.CAPTURING }
             if(open == null) { holdFirst=!holdFirst;refresh() }
             else job(copy("正在为当前格上弦…","Cocking the current frame…")) { control ->
+                sounds.play(transportCue())
                 control.checkCancel();library.rearmCurrentFrame(id)
                 copy("当前格可再曝光一次；没有过片","Current frame cocked for one more exposure; film not advanced")
             }
@@ -356,6 +378,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         shell.mountShutter(shoot)
         advance=button(column,"完成本格并过片","Finish this frame and advance") {
             val id=current ?: return@button
+            sounds.play(transportCue())
             job(copy("正在过片并上弦…","Advancing and cocking…"),onSuccess={ holdFirst=false;refresh() }) { control ->
                 val frame=deferred.finishFrame(id,control)
                 copy("第 ${frame.frameIndex} 格多重曝光完成，已过片","Frame ${frame.frameIndex} multiple exposure complete; advanced")
@@ -368,7 +391,9 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             confirm(copy("封存这卷胶片？","Seal this roll?"),copy(
                 "已曝光 ${roll.exposedCount()}/${roll.capacity} 格。封卷后不能继续拍摄，未使用格位将留空；原曝光会保留。",
                 "Exposed ${roll.exposedCount()}/${roll.capacity} frames. Sealing ends shooting; unused frames stay empty. Original exposures are retained."),copy("封卷","Seal")) {
-            job(copy("正在封卷…","Sealing roll…"),onSuccess={ shell.select(MobileShell.Page.START,false) }) { control ->
+            job(copy("正在封卷…","Sealing roll…"),onSuccess={
+                leaveSealed(runCatching { library.roll(id) }.getOrNull())
+            }) { control ->
                 deferred.seal(id,control); current = null
                 copy("已封卷，拍摄结束。稍后可从胶卷库进入冲洗；原曝光保留。","Roll sealed. Shooting has ended. Develop later from Rolls; original exposures retained.")
             }
@@ -377,9 +402,13 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         shell.mountCaptureDetails(button(column,"暂停取景","Pause viewfinder") { shell.closeCaptureMenu();stopCamera() }.apply { tag="capture_option";shell.styleButton(this) })
         menuPause.text=copy("暂停当前任务","Pause task");menuPause.tag="capture_option";shell.styleButton(menuPause)
         menuPause.setOnClickListener { cancel() };column.addView(menuPause)
-        val cameraPanel=shell.card(MobileShell.Page.START,"相机设置","Camera settings")
-        shortcut(cameraPanel,"相机设置","Camera settings","镜头、采集格式、漏光与文字打印","Lens, capture format, light leaks and date imprint",::cameraDialog)
-        shortcut(cameraPanel,"胶卷设置","Film settings","ISO、颗粒、老化与片边","ISO, grain, aging and film edges",::filmDialog)
+        val cameraPanel=shell.card(MobileShell.Page.START,"机身与拍摄设置","Camera & capture settings")
+        shell.note(cameraPanel,"用于之后的新曝光；已经拍下的格子保持不变。","Applies to subsequent exposures; saved frames stay unchanged.")
+        shortcut(cameraPanel,"相机设置","Camera settings","过片、反光板、漏光与文字打印","Advance, mirror, light leaks and imprint",::cameraDialog)
+        shortcut(cameraPanel,"感光度与快门","ISO & shutter","传感器曝光控制，不改变胶卷材料","Sensor exposure controls; film material stays unchanged",::exposureDialog)
+        val nextRollPanel=shell.card(MobileShell.Page.START,"下一卷默认设置","Next-roll defaults")
+        nextRollPanel.addView(nextRollScope)
+        shortcut(nextRollPanel,"预设下一卷材料特性…","Set next-roll material defaults…","颗粒、老化、乳剂柔化、光晕与片边","Grain, aging, softness, halation and film edges",::filmDialog)
         val rollsPanel=shell.card(MobileShell.Page.ROLLS,"胶卷库","Roll library")
         rollsPanel.addView(rollSelection)
         button(rollsPanel,"存储","Storage",::resourceRolls)
@@ -498,7 +527,10 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         recipe.setSingleLine(true);recipe.setText(preferences.getString("recipe_draft",""));shell.field(sharing,recipe,copy("FFC2 配方分享码","FFC2 recipe share code"),copy("留空使用默认配方；不会覆盖已装卷或已冻结任务。","Blank uses defaults; loaded rolls and frozen tasks stay unchanged."))
         button(sharing,"应用分享码到当前配置","Apply share code") {
             runCatching {
-                if(seasonal.tryUnlock(recipe.text.toString())) {
+                if(com.filmfoundry.app.session.ExperimentalMaterialUnlock(activity).tryUnlock(recipe.text.toString())) {
+                    recipe.setText(lastValidRecipeText);saveDrafts();onExperimentalMaterialsUnlocked()
+                    status(copy("实验材料已打开，入口在设置页","Experimental materials are open from Settings"))
+                } else if(seasonal.tryUnlock(recipe.text.toString())) {
                     recipe.setText(lastValidRecipeText)
                     stages.updateBuiltins(builtin);saveDrafts()
                     status(copy("四季合集已解锁：8 款材料与专属扫描","Seasons unlocked: 8 materials and their matching scans"))
@@ -604,6 +636,8 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             resourceSession.recover();copy("资源管理状态已恢复，仍被引用的材料已保留","Resource state recovered; referenced materials retained")
         }
         worker.execute { runCatching { OwnedScratch.recover(activity.cacheDir) } }
+        soundPage=shell.selected
+        if(shell.selected==MobileShell.Page.CAPTURE) indicateCocked()
     }
     fun saveDrafts() {
         stages.save()
@@ -833,7 +867,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             LibraryInfoDialog.Content(information.roll(roll),listOf(
                 LibraryInfoDialog.Section(copy("材料","Material"),roll.filmRecipe),
                 LibraryInfoDialog.Section(copy("形成方式","Formation"),description=
-                    if(roll.captureSettings[PhoneFormationProfile.ROLL_SETTING]==PhoneFormationProfile.LIGHTWEIGHT)
+                    if(PhoneFormationProfile.isLightweight(roll.captureSettings[PhoneFormationProfile.ROLL_SETTING]))
                         copy("轻量形成：保留颗粒的明暗响应、材料与药浴差异；简化分层颗粒，省略邻接效应和 DIR 抑制。药痕、网纹采用参数触发的密度附加。像素尺寸与扫描流程不变。",
                             "Lightweight formation: preserves density-dependent grain, stock and bath differences. Simplifies layered grain and omits adjacency and DIR inhibition. Stains and reticulation use parameter-triggered density overlays. Pixel dimensions and scanning are unchanged.")
                     else copy("沿用原有手机形成：包含分层颗粒，以及配方开启的邻接效应和 DIR 抑制。装卷后形成方式固定。",
@@ -1084,6 +1118,20 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
                 galleryRoll=if(which==0) null else rolls[which-1].rollId;resultPage=0;scanPage=0;refreshLists();shell.decorate()
             }.show()
     }
+    private fun mirrorEnabled()=preferences.getBoolean("camera_mirror",true)
+    private fun transportCue()=if(autoAdvance.isChecked) com.filmfoundry.app.session.CameraSoundSynth.Cue.MOTOR else com.filmfoundry.app.session.CameraSoundSynth.Cue.ADVANCE
+    private fun windDelayMs(exposureNs: Long?): Long {
+        val lead=if(mirrorEnabled()) 90L else 0L
+        val gap=com.filmfoundry.app.session.CameraSoundSynth.shutterGapMs(exposureNs)
+        return lead+(if(gap>0L) gap else 80L)+40L
+    }
+    private fun indicateCocked() {
+        val id=current ?: return
+        val roll=runCatching { library.roll(id) }.getOrNull() ?: return
+        val open=roll.frames.firstOrNull { it.state == FrameState.CAPTURING }
+        val cocked=if(open != null) open.shutterArmed else roll.exposedCount() < roll.capacity
+        if(cocked) sounds.play(transportCue())
+    }
     fun pageSelected(page: MobileShell.Page) {
         if(page!=MobileShell.Page.VIEWER) stopScene()
         if(page!=MobileShell.Page.ROLLS) rollSelection.clear()
@@ -1094,6 +1142,10 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         if(page != MobileShell.Page.OBSERVE) { photoGrid.suspendLoading();negativeGrid.suspendLoading() }
         else { photoGrid.schedule();negativeGrid.schedule() }
         if(page != MobileShell.Page.LOADING) releaseLoading()
+        val enteredCapture=page==MobileShell.Page.CAPTURE && soundPage!=MobileShell.Page.CAPTURE
+        if(page!=MobileShell.Page.CAPTURE && soundPage==MobileShell.Page.CAPTURE) sounds.cancelPending()
+        soundPage=page
+        if(enteredCapture) indicateCocked()
         if(page == MobileShell.Page.SCAN) scheduleScanPreview() else {
             scanComparison.clear()
             scanFeedback.finish()
@@ -1133,12 +1185,13 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             isChecked=gpuEnabled
             setOnCheckedChangeListener { _,enabled -> preferences.edit().putBoolean("gpu_source_linearization",enabled).apply() }
         };panel.addView(gpu)
-        shell.note(panel,"正式扫描可用GPU完成光谱积分，以及归一化应用、曝光、对比度、颜色编码与曲线的联合计算。各步骤含传输测速后择优；全图统计、显影与预览仍用CPU。校验失败自动回退，下次任务生效。","Saved scans can use GPU for spectral integration and combined normalization application, exposure, contrast, color encoding and curves. Operations select using transfer-inclusive timing. Global statistics, development and previews stay on CPU. Failed qualification falls back; applies to the next job.")
+        shell.note(panel,"轻量冲洗的连续药浴、采集线性化和正式扫描可用GPU。按实际参数校准，并包含上传、读回开销择优。颗粒、空间事故、全图统计与预览仍用CPU；失败自动回退，下次任务生效。","GPU can run ordered lightweight film baths, source linearization and saved scans. Actual plans qualify against CPU and selection includes transfers. Grain, spatial incidents, global statistics and previews stay on CPU. Failure falls back; applies to the next job.")
         shell.note(panel,"原片读取：整幅参考解码；JPEG 分区读取未启用","Source reading: full reference decode; JPEG region reading is disabled")
         shell.note(panel,"自动分段已启用 · 当前工作预算 ${mib(budget)}。分段不降低成片尺寸。","Automatic processing blocks are active · working budget ${mib(budget)}. Blocking keeps the output dimensions.")
         shell.note(panel,planZh,planEn)
         shell.explanation(panel,"最近运行记录","Recent execution records") { details ->
             shell.note(details,"计算记录：${preferences.getString("last_decode_backend","尚未处理")}","Recorded computation: ${preferences.getString("last_decode_backend","not run")}")
+            shell.note(details,"显影计算：${preferences.getString("last_formation_backend","尚未处理")}","Film development: ${preferences.getString("last_formation_backend","not run")}")
             shell.note(details,"原片读取记录：${preferences.getString("last_source_backend","尚未处理")}","Recorded source read: ${preferences.getString("last_source_backend","not run")}")
             preferences.getString("last_formation_timing",null)?.let { raw ->
                 runCatching { org.json.JSONObject(raw) }.getOrNull()?.let { times ->
@@ -1176,7 +1229,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             .setNegativeButton(copy("关闭","Close"),null).create()
         shell.decorate(panel);dialog.show()
     }
-    fun close() { hardwareSelfTestUi.close();stopScene();scanComparison.clear();scanFeedback.finish();displayObservation.clear();shell.closeQuickControls();viewerRevision++;viewerWork.cancel();scanWork.cancel();viewerWorker.shutdownNow();styleSampleWork.cancel();sampleWorker.shutdownNow();sampleCache.clear();catalogSerial.incrementAndGet();pendingCatalog.set(null);photoGrid.close();negativeGrid.close();batchGrid.close();thumbnails.clear();image.dispose();previewHandler.removeCallbacksAndMessages(null);previewCache.clear();clearViewerImage() }
+    fun close() { sounds.cancelPending();stopMotion();hardwareSelfTestUi.close();stopScene();scanComparison.clear();scanFeedback.finish();displayObservation.clear();shell.closeQuickControls();viewerRevision++;viewerWork.cancel();scanWork.cancel();viewerWorker.shutdownNow();styleSampleWork.cancel();sampleWorker.shutdownNow();sampleCache.clear();catalogSerial.incrementAndGet();pendingCatalog.set(null);photoGrid.close();negativeGrid.close();batchGrid.close();thumbnails.clear();image.dispose();previewHandler.removeCallbacksAndMessages(null);previewCache.clear();clearViewerImage() }
     fun trimMemory(critical: Boolean) {
         thumbnails.trim(critical);listOf(photoGrid,negativeGrid,batchGrid).forEach { it.trim() }
         if(critical) { previewCache.clear();displayObservation.clear() }
@@ -1273,7 +1326,9 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
                 PhoneFormationProfile.ROLL_SETTING to defaultFormationProfile())
             CameraEffectsDialog(activity,shell,sampleWorker,sampleCache).open(cameraSettings(),film,settings,imprintOnly=imprintOnly,
                 initialAutoAdvance=if(imprintOnly) null else autoAdvance.isChecked,
-                saveAutoAdvance={ autoAdvance.isChecked=it }) { camera ->
+                saveAutoAdvance={ autoAdvance.isChecked=it },
+                initialMirror=if(imprintOnly) null else mirrorSound.isChecked,
+                saveMirror={ mirrorSound.isChecked=it }) { camera ->
                 check(available() && !running && !captureInProgress()) { copy("请先结束当前拍摄或任务","Finish the active capture or task first") }
                 val remembered=imprintStyle(camera["imprint_style"]) ?: imprintStyle(cameraSettings()["imprint_style"])
                 preferences.edit().apply {
@@ -1286,18 +1341,10 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
     private fun newFilmBorder(format: String,materialLabel: String)=com.filmfoundry.workflow.FilmEdgeSettings.create(format,
         preferences.getBoolean("film_rebate",true),materialLabel,preferences.getString("film_edge_text","").orEmpty(),preferences.getBoolean("film_factory_marks",true),
         RecipeJson.objectMap(preferences.getString("film_factory_pattern_v1","{}").orEmpty()))
-    private fun filmDialog() {
+    private fun exposureDialog() {
+        if(!available() || running || captureInProgress()) return
         val panel=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;setPadding(shell.dp(20),shell.dp(8),shell.dp(20),shell.dp(12)) }
-        panel.addView(TextView(activity).apply { text=copy("片边齿孔和厂印跟胶卷走，不跟漏光、边字放在一起。","Sprockets and factory marks belong to the roll, separate from light leak and edge imprint.") })
-        val rebate=CheckBox(activity).apply { text=copy("新胶卷保留齿孔与厂印边字","Keep sprockets & factory marks on new rolls");isChecked=preferences.getBoolean("film_rebate",true) };panel.addView(rebate)
-        shell.action(panel,"齿孔与厂印边字：预览…","Sprockets & factory marks: preview…") {
-            showFilmBorderPreview(activity,shell,current?.let(library::roll)?.captureSettings?.get("format")?.toString() ?: preferences.getString("load_format","135").orEmpty(),
-                custom=preferences.getString("film_edge_text","").orEmpty(),marks=preferences.getBoolean("film_factory_marks",true),previewSample=::previewRecipe,
-                factorySettings=RecipeJson.objectMap(preferences.getString("film_factory_pattern_v1","{}").orEmpty()),
-                save={ text,marks,patterns -> preferences.edit().putString("film_edge_text",text).putBoolean("film_factory_marks",marks)
-                    .putString("film_factory_pattern_v1",RecipeJson.text(patterns)).apply() })
-        }
-        panel.addView(TextView(activity).apply { text=copy("相机 ISO 在这里指定，拍摄中默认锁定。只有拍摄页里强制手动解锁，才能临时改 ISO 和快门。过片模式仍由相机自动曝光。已拍的格子不变。","Set the camera ISO here. It stays locked while shooting unless the capture page is force-unlocked. Motion capture stays on automatic exposure. Saved frames are unchanged.") })
+        panel.addView(TextView(activity).apply { text=copy("ISO 与快门用于之后拍摄的格子，不改变胶卷材料；拍摄中默认锁定。只有拍摄页里强制手动解锁，才能临时改 ISO 和快门。过片模式仍由相机自动曝光。已拍的格子不变。","ISO and shutter apply to subsequent captures, not the film material. It stays locked while shooting unless the capture page is force-unlocked. Motion capture stays on automatic exposure. Saved frames are unchanged.") })
         val lens=nativeLens()
         val chars=lens?.characteristics
         val isoRange=chars?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
@@ -1320,6 +1367,40 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             }
             showIso()
         }
+        val dialog=AlertDialog.Builder(activity).setTitle(copy("感光度与快门","ISO & shutter")).setView(ScrollView(activity).apply { addView(panel) })
+            .setNegativeButton(copy("取消","Cancel"),null).setPositiveButton(copy("保存","Save"),null).create()
+        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            if(!available() || running || captureInProgress()) return@setOnClickListener
+            val edit=preferences.edit()
+            if(manualSensor && isoMode.selectedItemPosition==1) {
+                if(lens==null) { status(copy("先选择可用镜头，再指定 ISO","Choose an available lens before setting ISO"));return@setOnClickListener }
+                val iso=isoInput.text.toString().toIntOrNull()
+                val millis=shutterInput.text.toString().toDoubleOrNull()
+                if(iso==null || isoRange?.contains(iso)!=true) { isoInput.error=copy("ISO 超出当前镜头范围","ISO is outside this lens range");return@setOnClickListener }
+                val ns=if(millis!=null && millis.isFinite() && millis>0) (millis*1e6).toLong() else null
+                if(ns==null || timeRange?.contains(ns)!=true) { shutterInput.error=copy("快门超出当前镜头范围","Shutter time is outside this lens range");return@setOnClickListener }
+                edit.putString("film_iso_mode","manual").putInt("film_iso",iso).putString("film_shutter_ms",shutterInput.text.toString().trim())
+            } else edit.putString("film_iso_mode","auto")
+            edit.apply();dialog.dismiss();onFilmExposure()
+        } }
+        shell.decorate(panel);dialog.show()
+    }
+    private fun filmDialog(onClosed: ()->Unit = {}) {
+        if(!available() || running || captureInProgress()) return
+        val panel=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;setPadding(shell.dp(20),shell.dp(8),shell.dp(20),shell.dp(12)) }
+        val activeRoll=current?.let(library::roll)
+        val scope=if(activeRoll==null) copy("这里只保存下一次装卷的默认值，装填后整卷冻结。", "These defaults apply when loading a new roll and then stay frozen for that roll.") else
+            copy("当前在机胶卷：${rollName(activeRoll.rollId)} · 已拍 ${activeRoll.exposedCount()}/${activeRoll.capacity}。本页修改只在装入新卷时生效，当前卷不变。",
+                "Loaded: ${rollName(activeRoll.rollId)} · ${activeRoll.exposedCount()}/${activeRoll.capacity} exposed. Changes here apply only to newly loaded rolls; the current roll stays unchanged.")
+        shell.note(panel,scope,scope)
+        val rebate=CheckBox(activity).apply { text=copy("新胶卷保留齿孔与厂印边字","Keep sprockets & factory marks on new rolls");isChecked=preferences.getBoolean("film_rebate",true) };panel.addView(rebate)
+        shell.action(panel,"齿孔与厂印边字：预览…","Sprockets & factory marks: preview…") {
+            showFilmBorderPreview(activity,shell,current?.let(library::roll)?.captureSettings?.get("format")?.toString() ?: preferences.getString("load_format","135").orEmpty(),
+                custom=preferences.getString("film_edge_text","").orEmpty(),marks=preferences.getBoolean("film_factory_marks",true),previewSample=::previewRecipe,
+                factorySettings=RecipeJson.objectMap(preferences.getString("film_factory_pattern_v1","{}").orEmpty()),
+                save={ text,marks,patterns -> preferences.edit().putString("film_edge_text",text).putBoolean("film_factory_marks",marks)
+                    .putString("film_factory_pattern_v1",RecipeJson.text(patterns)).apply() })
+        }
         val label=TextView(activity);panel.addView(label)
         val age=SeekBar(activity).apply { max=100;progress=preferences.getInt("film_age",0) };panel.addView(age)
         panel.addView(TextView(activity).apply { text=copy("自然沿用材料的颗粒强度，细腻或明显相应减弱或加强；关闭同时停用染料颗粒与银粒。仅对新装胶卷生效，扫描不会重新生成颗粒。","Natural keeps the stock's grain strength; Fine and Pronounced reduce or increase it. Off disables dye and silver grain. Applies to new rolls; scanning does not regenerate grain.") })
@@ -1340,22 +1421,15 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             override fun onStartTrackingTouch(s: SeekBar?)=Unit
             override fun onStopTrackingTouch(s: SeekBar?)=Unit
         })
-        val dialog=AlertDialog.Builder(activity).setTitle(copy("胶卷设置","Film settings")).setView(ScrollView(activity).apply { addView(panel) })
+        val dialog=AlertDialog.Builder(activity).setTitle(copy("下一卷默认设置","Next-roll defaults")).setView(ScrollView(activity).apply { addView(panel) })
             .setNegativeButton(copy("取消","Cancel"),null).setPositiveButton(copy("保存","Save"),null).create()
+        dialog.setOnDismissListener { onClosed() }
         dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             if(!available() || running || captureInProgress()) return@setOnClickListener
             val edit=preferences.edit().putBoolean("film_rebate",rebate.isChecked).putInt("film_age",age.progress).putInt("film_grain",grain.selectedItemPosition)
                 .putInt("film_grain_size",grainSize.selectedItemPosition).putInt("film_mtf",mtf.selectedItemPosition).putInt("film_halation",halo.selectedItemPosition)
-            if(manualSensor && isoMode.selectedItemPosition==1) {
-                if(lens==null) { status(copy("先选择可用镜头，再指定 ISO","Choose an available lens before setting ISO"));return@setOnClickListener }
-                val iso=isoInput.text.toString().toIntOrNull()
-                val millis=shutterInput.text.toString().toDoubleOrNull()
-                if(iso==null || isoRange?.contains(iso)!=true) { isoInput.error=copy("ISO 超出当前镜头范围","ISO is outside this lens range");return@setOnClickListener }
-                val ns=if(millis!=null && millis.isFinite() && millis>0) (millis*1e6).toLong() else null
-                if(ns==null || timeRange?.contains(ns)!=true) { shutterInput.error=copy("快门超出当前镜头范围","Shutter time is outside this lens range");return@setOnClickListener }
-                edit.putString("film_iso_mode","manual").putInt("film_iso",iso).putString("film_shutter_ms",shutterInput.text.toString().trim())
-            } else edit.putString("film_iso_mode","auto")
-            edit.apply();dialog.dismiss();onFilmExposure()
+            edit.apply();dialog.dismiss();refresh()
+            status(copy("已保存下一卷默认设置；当前卷和已拍格子不变", "Next-roll defaults saved; the current roll and saved frames are unchanged"))
         } }
         shell.decorate(panel);dialog.show()
     }
@@ -1402,6 +1476,18 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         }
         val material=MaterialPicker(activity,shell,builtin,catalog,runCatching { RecipeDrafts.filmFromRecipe(readRecipe()) }.getOrDefault(emptyMap()))
         panel.addView(material)
+        val rollDefaults=shell.note(panel,"","")
+        fun refreshRollDefaults() {
+            val disabled=material.selected?.id=="current" && runCatching { readRecipe()["enable_grain"]==false }.getOrDefault(false)
+            val grain=if(disabled) copy("当前配方关闭","Off in current recipe") else listOf(copy("关闭","Off"),copy("细腻","Fine"),copy("自然","Natural"),copy("明显","Pronounced"))[preferences.getInt("film_grain",2).coerceIn(0,3)]
+            val size=listOf(copy("细","Small"),copy("标准","Standard"),copy("大","Large"))[preferences.getInt("film_grain_size",1).coerceIn(0,2)]
+            val edges=if(preferences.getBoolean("film_rebate",true)) copy("保留片边","Keep film edges") else copy("无片边","No film edges")
+            val marks=if(preferences.getBoolean("film_factory_marks",true)) copy("厂印开启","Factory marks on") else copy("厂印关闭","Factory marks off")
+            rollDefaults.text=copy("装卷时冻结：颗粒 $grain／$size · 老化 ${preferences.getInt("film_age",0)}% · $edges · $marks",
+                "Frozen on loading: Grain $grain / $size · Age ${preferences.getInt("film_age",0)}% · $edges · $marks")
+        }
+        refreshRollDefaults()
+        shell.action(panel,"微调颗粒／老化／片边…","Adjust grain / ageing / film edges…") { filmDialog(::refreshRollDefaults) }
         val lightweight=CheckBox(activity).apply {
             text=copy("轻量形成（推荐）","Lightweight formation (recommended)")
             isChecked=defaultFormationProfile()==PhoneFormationProfile.LIGHTWEIGHT
@@ -1478,6 +1564,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         }
         lightweight.setOnCheckedChangeListener { _,_->materialCaption() }
         material.onChanged={ item ->
+            refreshRollDefaults()
             pairings.getOrNull(pairing.selectedItemPosition-1)?.let { selected -> if(item?.id!="builtin:"+selected.materialId) pairing.setSelection(0) }
             if(item?.id?.startsWith("builtin:season_")==true) {
                 val index=pairings.indexOfFirst { it.materialId==item.id.removePrefix("builtin:") }
@@ -1632,7 +1719,33 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
     }
     private fun releaseLoading() {
         loadingSession?.cancel();loadingSession=null
-        loadingView?.dispose();loadingView=null;shell.loadingSurface.removeAllViews()
+        loadingView?.dispose();loadingView=null
+        unloadingView?.dispose();unloadingView=null
+        shell.loadingSurface.removeAllViews()
+    }
+    private fun leaveSealed(roll: com.filmfoundry.workflow.Roll?) {
+        if(autoAdvance.isChecked) sounds.play(com.filmfoundry.app.session.CameraSoundSynth.Cue.REWIND)
+        val skip=preferences.getBoolean("skip_unloading",false) || roll==null
+        shell.fadeToBlack(if(skip) 420L else 520L) {
+            if(activity.isDestroyed) return@fadeToBlack
+            if(skip) { shell.select(MobileShell.Page.START,false);shell.liftVeil(280) }
+            else showUnloading(roll)
+        }
+    }
+    private fun showUnloading(roll: com.filmfoundry.workflow.Roll) {
+        releaseLoading()
+        val format=roll.captureSettings["format"]?.toString() ?: "135"
+        lateinit var view: FilmUnloadingView
+        view=FilmUnloadingView(activity,::copy,roll.label.ifBlank { roll.rollId.take(8) },materialLabel(roll),format,roll.filmRecipe,roll.capacity) {
+            if(unloadingView===view && !activity.isDestroyed) {
+                releaseLoading();shell.select(MobileShell.Page.START,false)
+            }
+        }
+        unloadingView=view
+        shell.loadingSurface.addView(view,android.widget.FrameLayout.LayoutParams(-1,-1))
+        shell.select(MobileShell.Page.LOADING)
+        shell.liftVeil()
+        view.begin()
     }
     private fun finderCanAdjust()=shell.selected==MobileShell.Page.CAPTURE && !running && !captureInProgress() && available()
     private fun shutterCaption(ns: Long): String=if(ns<1_000_000_000L) "1/${(1_000_000_000.0/ns).toInt().coerceAtLeast(1)}" else String.format(java.util.Locale.ROOT,"%.1fs",ns/1e9)
@@ -1955,6 +2068,8 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             completedDevelopmentRoll=task.rollId
             shell.developResultBar.apply { removeAllViews();visibility=android.view.View.VISIBLE }
             shell.note(shell.developResultBar,"已保留 ${results.size} 张底片 · ${saved.size} 张照片","${results.size} film images retained · ${saved.size} photos")
+            if(saved.isEmpty()) shell.note(shell.developResultBar,"下一步：扫描本批底片生成照片。扫描保存在软件图库；导出照片后才会出现在系统相册。",
+                "Next: scan this batch to make photos. Scans are saved in the app Library; export photos to show them in the system gallery.")
             if(albumNote.isNotBlank()) shell.note(shell.developResultBar,albumNote.trim(),albumNote.trim())
             else shell.note(shell.developResultBar,"本次未自动导出到系统相册","No automatic system-gallery export this run")
             val actions=LinearLayout(activity);shell.developResultBar.addView(actions)
@@ -2116,6 +2231,8 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         shell.pageTitle(if(batch==null) copy("冲洗结果已移除","Development results removed") else batchLabel(batch.id))
         if(batch==null) { shell.note(batchRows,"本批已无底片记录，已保存的照片仍可在图库查看。","No film records remain in this batch. Saved photos are still available in Library.");return }
         shell.note(batchRows,rollName(id)+copy(" · ${batch.frames.size} 张底片"," · ${batch.frames.size} negatives"),rollName(id)+" · ${batch.frames.size} negatives")
+        shell.note(batchRows,"冲洗已完成，下面是底片母版。点单张底片或扫描本批生成照片；扫描只读取底片。照片先存软件图库，可再导出到系统相册。",
+            "These are developed film masters. Open a frame or scan this batch to make photos; scanning leaves film unchanged. Photos are saved in the app Library and can be exported to the system gallery.")
         detailAction(batchRows,"冲洗配方详情","Development recipe details",readOnly=true) { showNegativeInformation(batch.frames.first()) }
         batchSelection.clearBindings();(batchSelection.parent as? android.view.ViewGroup)?.removeView(batchSelection);batchRows.addView(batchSelection)
         detailAction(batchRows,"调整扫描参数…","Adjust scan settings…",true) {
@@ -2195,8 +2312,8 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
     }
     private fun deleteRoll(roll: Roll) {
         confirm(copy("删除胶卷“${rollName(roll.rollId)}”？","Delete roll “${rollName(roll.rollId)}”?"),
-            copy("胶卷将从列表移除，整卷拍摄原片和潜影一并删除。已有底片、照片和导出文件保留。此操作无法撤销。",
-                "Remove the roll and all of its captures and latents. Negatives, photos and exports remain. This cannot be undone."),copy("删除胶卷","Delete roll")) {
+            copy("将删除整卷拍摄原片与潜影，此后不能用新配方重新冲洗此卷。\n保留：${RollLibraryContents.batches(roll.rollId,library.developedResults()).size} 组已有冲洗底片、所有已保存照片和导出文件。\n此操作无法撤销。",
+                "Delete all captures and latents on this roll; it can no longer be developed with a new recipe.\nRetained: ${RollLibraryContents.batches(roll.rollId,library.developedResults()).size} existing development batches, all saved photos and exports.\nThis cannot be undone."),copy("删除胶卷","Delete roll")) {
             job(copy("正在删除胶卷…","Deleting roll…"),onSuccess={ clearRemovedRollNavigation();shell.select(MobileShell.Page.ROLLS) }) { _->cleanupMessage(resourceSession.removeRoll(roll.rollId)) }
         }
     }
@@ -2269,12 +2386,12 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
     private fun removeSelectedPhotos(items: List<SavedScan>)=removeSelection(items.size,copy("照片","photos"),copy("只删除所选成片。胶卷、底片和已导出的文件保留。","Only selected photos are deleted. Rolls, negatives and exports remain.")) { control ->
         resourceSession.removeSelected(photos=items,control=control)
     }
-    private fun removeSelectedNegatives(items: List<DevelopedResult>)=removeSelection(items.size,copy("底片","negatives"),copy("只删除所选冲洗底片。胶卷曝光和已有照片保留；删除后不能再扫描这些底片。","Only selected negatives are deleted. Roll exposures and photos remain; these negatives cannot be scanned again.")) { control ->
+    private fun removeSelectedNegatives(items: List<DevelopedResult>)=removeSelection(items.size,copy("底片","negatives"),copy("将删除所选底片母版，此后无法再观看或扫描它们。\n保留：原卷的拍摄原片与潜影、已保存照片和系统相册等导出文件。","Delete the selected film masters; they can no longer be viewed or scanned.\nRetained: original roll captures and latents, saved photos and exports, including system-gallery photos.")) { control ->
         val outcome=resourceSession.removeSelected(negatives=items,control=control)
         items.take(outcome.completed).forEach { previewCache.dropResult(it.resultId);opticalProxies.dropResult(it.resultId) }
         outcome
     }
-    private fun removeSelectedRolls(items: List<Roll>)=removeSelection(items.size,copy("卷胶卷","rolls"),copy("所选胶卷将从列表移除，整卷拍摄原片和潜影一并删除。已有底片、照片和导出文件保留。","Remove the selected rolls and all of their captures and latents. Negatives, photos and exports remain.")) { control ->
+    private fun removeSelectedRolls(items: List<Roll>)=removeSelection(items.size,copy("卷胶卷","rolls"),copy("将删除所选胶卷的拍摄原片与潜影，此后无法重新冲洗这些卷。\n保留：已有冲洗底片、已保存照片和系统相册等导出文件。","Delete the selected rolls' captures and latents; they can no longer be developed again.\nRetained: existing developed film, saved photos and exports, including system-gallery photos.")) { control ->
         resourceSession.removeSelected(rolls=items.map { it.rollId },control=control,removeRollCatalog=true)
     }
     private fun catalogConfirm(title: String,message: String,positive: String,action: ()->Unit) {
@@ -2760,8 +2877,20 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         val outstanding=stillQueue.outstanding()
         shoot.isEnabled = available() && !running && !exposureBusy && roll != null && (if(pace == "motion") motionJob || (!motionDraining && shutterOpen) else shutterOpen && outstanding < 3 &&
             outstanding < (if(open == null) roll.capacity-roll.exposedCount() else 1) && (canQueue || outstanding == 0))
-        startSummary.text=if(roll == null) copy("尚未装卷；选择材料与规格后启动拍摄。","Load film and choose a format before starting.") else
-            "${roll.label.ifBlank { roll.rollId.take(8) }} · ${materialLabel(roll)} · ${roll.exposedCount()}/${roll.capacity}\n${rollProgress(roll)}"
+        startHeading.text=if(roll==null) copy("片仓 · 尚未装卷","Camera · no roll loaded") else copy("当前在机胶卷 · 材料已锁定","Loaded roll · material locked")
+        startSummary.text=if(roll == null) copy("尚未装卷；选择材料与规格后启动拍摄。","Load film and choose a format before starting.") else {
+            val rawFormat=roll.captureSettings["format"]?.toString() ?: "—"
+            val format=when {
+                rawFormat=="half" -> copy("135 半格","135 half-frame")
+                com.filmfoundry.interchange.StillFrameFormat.is120(rawFormat) -> "120 / "+rawFormat.replace('x','×')
+                else -> rawFormat
+            }
+            "${roll.label.ifBlank { roll.rollId.take(8) }} · ${materialLabel(roll)} · $format\n"+
+                copy("已拍 ${roll.exposedCount()}/${roll.capacity} · 剩余 ${roll.capacity-roll.exposedCount()} 格", "${roll.exposedCount()}/${roll.capacity} exposed · ${roll.capacity-roll.exposedCount()} frames left")+"\n${rollProgress(roll)}\n"+
+                copy("材料、画幅与张数沿用装填时设置。", "Material, format and capacity retain their settings from loading.")
+        }
+        nextRollScope.text=if(roll==null) copy("下次装填时采用；装填后整卷冻结。","Applied on the next load, then frozen for that roll.") else
+            copy("仅在装入新卷时生效，不改变上方的当前胶卷。","Applies only to newly loaded rolls; the current roll above stays unchanged.")
         startShooting.text=when {
             roll == null -> copy("装填胶卷并开始","Load film to start")
             open != null -> copy("继续拍摄 · 已拍 ${roll.exposedCount()}/${roll.capacity}","Continue · ${roll.exposedCount()}/${roll.capacity} exposed")
@@ -2864,6 +2993,11 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             panorama.isChecked && roll.captureSettings["format"] == "135",cameraSettings())
         val canQueue=autoAdvance.isChecked && !holdFirst && open == null
         if(!stillQueue.offer(shot,if(open == null) roll.capacity-roll.exposedCount() else 1,canQueue)) return
+        val exposureNs=liveNative()?.exposureNs
+        val lead=if(mirrorEnabled()) 90L else 0L
+        if(mirrorEnabled()) sounds.play(com.filmfoundry.app.session.CameraSoundSynth.Cue.MIRROR)
+        sounds.playShutter(exposureNs,lead)
+        if(shot.advance=="auto") sounds.play(com.filmfoundry.app.session.CameraSoundSynth.Cue.MOTOR,windDelayMs(exposureNs))
         val start=!drainingStill
         if(start) drainingStill=true
         refresh()
@@ -2916,7 +3050,9 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         val open=roll.frames.firstOrNull { it.state == FrameState.CAPTURING }
         if(open != null) { status(copy("请先结束当前多曝格再开始过片","Finish the current held frame before motion capture"));return }
         if(roll.exposedCount() >= roll.capacity) { status(copy("已满卷","Roll is full"));return }
-        motionQueue.clear();motionCount=0;motionStarted=System.nanoTime();motionRemaining=roll.capacity-roll.exposedCount();motionJob=true;motionDraining=true;refresh()
+        motionQueue.clear();motionCount=0;motionStarted=System.nanoTime();motionRemaining=roll.capacity-roll.exposedCount();motionJob=true;motionDraining=true
+        if(mirrorEnabled()) sounds.play(com.filmfoundry.app.session.CameraSoundSynth.Cue.MIRROR)
+        sounds.startMotor();refresh()
         status(copy("过片进行中","Motion capture running"))
         val wide=panorama.isChecked && roll.captureSettings["format"] == "135"
         val settings=cameraSettings()
@@ -2936,6 +3072,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
     }
     private fun stopMotion() {
         synchronized(motionLock) { motionJob=false }
+        sounds.stopMotor()
         (camera() as? CameraXCameraAdapter)?.disarmMotion()
     }
     private fun drainMotion(id: String,wide: Boolean,settings: Map<String,Any?>) {
@@ -3156,6 +3293,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
                                 putString("last_formation_timing",RecipeJson.text(timings.mapValues { it.value/1_000_000 }))
                         }.apply()
                     } catch(_: Exception) { /* Diagnostics cannot prevent hardware release. */ }
+                    runCatching { formationCompute.close() }.onFailure { android.util.Log.w("FilmFoundry","Formation compute cleanup",it) }
                     runCatching { pixelCompute.close() }.onFailure { error ->
                     preferences.edit().putString("last_decode_backend","GPU cleanup failed: ${error.message}").apply()
                 };jobGpuEnabled=false }

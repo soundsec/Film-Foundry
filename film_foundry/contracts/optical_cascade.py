@@ -7,6 +7,28 @@ from film_foundry.contracts.data_kernel import OPTICAL_CASCADE_KEY as CASCADE_KE
 
 
 @dataclass(frozen=True)
+class PrintExposureRegion:
+    rect: tuple[float, float, float, float]
+    ev: float
+    feather: float = .25
+    shape: str = "ellipse"
+    angle: float = 0.
+
+    def __post_init__(self):
+        from film_foundry.contracts.scan_framing import rectangle
+        rect = rectangle(self.rect)
+        if rect is None:
+            raise ValueError('A local print exposure needs a region')
+        object.__setattr__(self,'rect',rect)
+        if self.shape not in ('ellipse','rectangle','gradient'):
+            raise ValueError('Unknown print exposure shape')
+        for name,low,high in (('angle',-180,180),('ev',-6,6),('feather',0,1)):
+            value = getattr(self,name)
+            if type(value) not in (int,float) or not math.isfinite(value) or not low <= value <= high:
+                raise ValueError(f'Invalid local print exposure {name}')
+
+
+@dataclass(frozen=True)
 class OpticalRelay:
     model: str = 'relative_rgb_optical_relay_v1'
     mode: str = 'transmission'
@@ -19,6 +41,7 @@ class OpticalRelay:
     background_rgb: tuple[float, float, float] = (0., 0., 0.)
     output_shape: tuple[int, int] | None = None
     flip_horizontal: bool = False
+    local_exposures: tuple[PrintExposureRegion, ...] = ()
 
     def __post_init__(self):
         if self.model != 'relative_rgb_optical_relay_v1' or self.mode not in ('transmission', 'reflection'):
@@ -41,11 +64,26 @@ class OpticalRelay:
             if shape[0] * shape[1] > 100_000_000:
                 raise ValueError('Relay output exceeds 100 million pixels')
             object.__setattr__(self, 'output_shape', tuple(shape))
+        if not isinstance(self.local_exposures,(tuple,list)) or len(self.local_exposures)>64:
+            raise ValueError('Optical relay supports up to 64 local exposures')
+        try:
+            regions = tuple(r if isinstance(r,PrintExposureRegion) else PrintExposureRegion(**r)
+                            for r in self.local_exposures)
+        except TypeError as exc:
+            raise ValueError('Invalid local exposure record') from exc
+        object.__setattr__(self,'local_exposures',regions)
         if type(self.flip_horizontal) is not bool:
             raise ValueError('Relay flip_horizontal must be boolean')
 
     def as_dict(self):
-        return asdict(self)
+        result = asdict(self)
+        if not self.local_exposures:
+            result.pop('local_exposures')
+        else:
+            for region in result['local_exposures']:
+                if region['shape']=='ellipse':region.pop('shape')
+                if not region['angle']:region.pop('angle')
+        return result
 
     @classmethod
     def from_value(cls, value):

@@ -58,6 +58,8 @@ def load_resume_plan(path) -> ResumePlan:
     manifest = Path(path)
     payload = load_session(manifest)
     payload['path_seed_offsets'] = normalize_offsets(payload.get('path_seed_offsets'))
+    from film_foundry.app.workspace_jobs import exposure_offsets
+    payload['frame_exposure_offsets'] = exposure_offsets(payload.get('frame_exposure_offsets'))
     run = payload.get("run")
     if not isinstance(run, dict) or not run.get("actual_output"):
         raise ValueError("Select a batch run record, not a recipe or saved session")
@@ -156,7 +158,7 @@ def run_resume_batch(plan: ResumePlan, *, control=None,on_result=None) -> Resume
             item_config=plan.config
             if plan.command in {'full','develop','expose'} and payload.get('run',{}).get('selection_layout')=='numbered':
                 from film_foundry.app.workspace_jobs import numbered_photo_config
-                item_config=numbered_photo_config(plan.config,index+1)
+                item_config=numbered_photo_config(plan.config,index+1,payload["frame_exposure_offsets"].get(str(item.input_path.resolve()),0.))
             result = run_request(WorkflowRequest(plan.command, item.input_path, request_output,
                 item_config, scaled_override=plan.scaled, frame_identity=identity, control=control,
                 path_seed_offset=offset_for(item.input_path, payload.get('path_seed_offsets'))))

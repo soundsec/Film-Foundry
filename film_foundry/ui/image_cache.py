@@ -14,6 +14,7 @@ class ImagePreviewCache:
         self._images = OrderedDict()
         self._pending = {}
         self._bytes = 0
+        self._generation = 0
         self._lock = RLock()
 
     @staticmethod
@@ -25,6 +26,7 @@ class ImagePreviewCache:
 
     def clear(self):
         with self._lock:
+            self._generation += 1
             self._images.clear()
             self._bytes = 0
 
@@ -44,6 +46,7 @@ class ImagePreviewCache:
         if key is None:
             return QtGui.QImage()
         with self._lock:
+            generation = self._generation
             cached = self.peek(key)
             if cached is not None:
                 return cached
@@ -56,7 +59,7 @@ class ImagePreviewCache:
         try:
             image = decode(path, width, height)
             with self._lock:
-                if self.key(path, width, height) == key and image.sizeInBytes() <= self.max_bytes:
+                if generation == self._generation and self.key(path, width, height) == key and image.sizeInBytes() <= self.max_bytes:
                     # Retain only the current revision at this size.
                     for old in list(self._images):
                         if old[0][0] == key[0][0] and old[1:] == key[1:]:

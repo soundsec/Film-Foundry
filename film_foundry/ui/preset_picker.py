@@ -4,9 +4,9 @@ from film_foundry.ui.curve_editor import text
 
 
 class PresetPicker(QtWidgets.QDialog):
-    def __init__(self, parent, title, labels, current, records=None):
+    def __init__(self, parent, title, labels, current, records=None, *, preview_bank=None, preview_base=None, source=None):
         super().__init__(parent)
-        self.setWindowTitle(title);self.resize(560,460)
+        self.setWindowTitle(title);self.resize(860,560) if preview_bank else self.resize(560,460)
         self.selected_index=None
         layout=QtWidgets.QVBoxLayout(self)
         self.search=QtWidgets.QLineEdit(self)
@@ -31,7 +31,16 @@ class PresetPicker(QtWidgets.QDialog):
             item=QtWidgets.QListWidgetItem(label,self.results)
             item.setData(QtCore.Qt.ItemDataRole.UserRole,index);item.setToolTip(label)
         self.results.setCurrentRow(current)
-        layout.addWidget(self.results,1)
+        from film_foundry.ui.preset_collection import CollectionControls
+        self.collection=CollectionControls(lambda:self.records[self.results.currentItem().data(QtCore.Qt.ItemDataRole.UserRole)] if self.results.currentItem() is not None and not self.results.currentItem().isHidden() else None,bank=preview_bank or 'preset')
+        layout.insertWidget(1,self.collection);self.collection.changed.connect(lambda:self._filter(self.search.text()))
+        content=QtWidgets.QHBoxLayout();content.addWidget(self.results,3);layout.addLayout(content,1)
+        self.preview=None
+        if preview_bank:
+            from film_foundry.ui.selection_preview import SelectionPreview
+            self.preview=SelectionPreview(self,self.results,lambda item:self.records[item.data(QtCore.Qt.ItemDataRole.UserRole)],
+                bank=preview_bank,base=preview_base,source=source)
+            self.preview.setMinimumWidth(230);content.addWidget(self.preview,2)
         self.count=QtWidgets.QLabel(self);layout.addWidget(self.count)
         buttons=QtWidgets.QDialogButtonBox(self)
         self.apply=buttons.addButton(text("使用所选预设","Use selected preset"),QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole)
@@ -44,6 +53,7 @@ class PresetPicker(QtWidgets.QDialog):
         self._filter("")
 
     def _sync_selection(self):
+        self.collection.sync()
         item=self.results.currentItem()
         self.apply.setEnabled(item is not None and not item.isHidden())
 
@@ -53,15 +63,17 @@ class PresetPicker(QtWidgets.QDialog):
             item=self.results.item(row)
             record=self.records[row]
             searchable=(item.text()+' '+record.get('key','')+' '+record.get('name','')).casefold()
-            matches=all(word in searchable for word in words) and all(not combo.currentData() or record.get(key)==combo.currentData() for key,combo in self.filters.items())
+            matches=self.collection.matches(record) and all(word in searchable for word in words) and all(not combo.currentData() or record.get(key)==combo.currentData() for key,combo in self.filters.items())
             item.setHidden(not matches)
             if matches:visible.append(item)
         if self.results.currentItem() not in visible:
             self.results.setCurrentItem(visible[0] if visible else None)
         self._sync_selection()
-        self.count.setText(text(f"{len(visible)} 个预设",f"{len(visible)} presets"))
+        self.count.setText(text('{count} 个预设','{count} presets').format(count=len(visible)))
+        if self.preview:self.preview.selection_changed()
 
     def clear_filters(self):
+        self.collection.scope.setCurrentIndex(0)
         for combo in self.filters.values():combo.setCurrentIndex(0)
         self.search.clear();self._filter('')
 
@@ -69,4 +81,5 @@ class PresetPicker(QtWidgets.QDialog):
         item=self.results.currentItem()
         if item is not None and not item.isHidden():
             self.selected_index=item.data(QtCore.Qt.ItemDataRole.UserRole)
+            self.collection.used(self.records[self.selected_index])
             self.accept()

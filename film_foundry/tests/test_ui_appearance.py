@@ -79,8 +79,8 @@ def test_theme_and_language_switch_preserve_config_curves_preview_and_open_draft
             assert panel.result_view.source.cacheKey() == image_key
             assert asdict(editor._config_from_controls()) == editor_config
         panel.language.set(language_label("en_US"));panel._change_language()
-        assert panel.navigation.item(0).text() == "Task & output"
-        assert panel.theme_display.get() == "Light"
+        assert panel.navigation.item(panel.page_index["film"]).text() == "Material & exposure"
+        assert panel.theme_display.get() == "Ivory"
         assert panel.scanner_preset_source.get() == "Built-in preset"
         assert asdict(panel._config()) == before
         assert panel.result_view.source.cacheKey() == image_key
@@ -109,3 +109,35 @@ def test_new_and_existing_editor_windows_follow_palette_without_rebuilding():
         panel._open_runtime_settings()
         assert panel._editor_windows["runtime"].root.qt.palette().color(QtGui.QPalette.ColorRole.Window).name() == THEMES["ivory"].background
     finally:panel.root.destroy()
+
+
+def test_custom_palette_chooses_black_or_white_and_survives_reopening(tmp_path, monkeypatch):
+    from film_foundry.ui.color_schemes import THEME_KEYS, selection_rule, text_on
+    from film_foundry.ui.desktop_settings_dialog import DesktopSettingsDialog
+    from film_foundry.ui.preferences import load_preferences
+    from film_foundry.ui.qt import QtGui, QtWidgets
+    from film_foundry.ui.theme import colors, current_theme
+    monkeypatch.setenv("FILM_FOUNDRY_DESKTOP_SETTINGS", str(tmp_path / "workspace.json"))
+    assert text_on("#757575") == "#ffffff"
+    assert text_on("#767676") == "#000000"
+    assert selection_rule("#ffffff", "#ffffff") == "#000000"
+    dialog = DesktopSettingsDialog()
+    try:
+        assert tuple(dialog.theme.itemData(i) for i in range(dialog.theme.count())) == THEME_KEYS
+        dialog.theme.setCurrentIndex(dialog.theme.findData("custom"))
+        picks = iter([QtGui.QColor("#fbf4e1"), QtGui.QColor("#402050"), QtGui.QColor()])
+        monkeypatch.setattr(QtWidgets.QColorDialog, "getColor", lambda *_: next(picks))
+        dialog.color_buttons["background"].click()
+        dialog.color_buttons["accent"].click()
+        dialog.color_buttons["accent"].click()  # Cancel the chooser.
+        assert colors().text == "#000000" and text_on(colors().accent) == "#ffffff"
+        dialog.theme.setCurrentIndex(dialog.theme.findData("dark"))
+        dialog.theme.setCurrentIndex(dialog.theme.findData("custom"))
+        assert current_theme() == "custom" and colors().accent == "#402050"
+        assert load_preferences()["custom_colors"] == {"background": "#fbf4e1", "accent": "#402050"}
+        dialog.close()
+        dialog = DesktopSettingsDialog()
+        assert dialog.theme.currentData() == "custom"
+        assert "#402050" in dialog.color_buttons["accent"].text()
+    finally:
+        dialog.close()

@@ -31,7 +31,15 @@ JPEG is the standard capture format. Minimum RAW support primarily covers uncomp
 | Panoramic gate | Adds unexposed bands above and below a 135 frame; switch before advancing, with each exposure retaining its own state |
 | Lenses and flash | Choose the lenses, zoom and flash options offered by the device |
 
-Choose body leaks and gate dirt in camera settings before loading. Film settings contain ageing, sprockets and factory edge lettering. Text imprinting can be adjusted while shooting. Sprockets and edge lettering sit outside the image; 120 uses a border without holes.
+On your first landscape viewfinder visit, a gesture guide appears for about three seconds: hold side EV/shutter and slide vertically, or hold bottom zoom and slide horizontally; double-tap to reset. Advance moves to the next frame; Multi keeps the current frame. Tap anywhere to close the guide without taking a shot or changing a setting. The **?** above the finder reopens it until you tap or go back. Accessibility settings may extend the first display; touch exploration disables automatic dismissal.
+
+Cards use one or two columns according to available width and system font size. Scroll vertically to read longer content. Touching pauses automatic dismissal; dragging keeps the guide open, while a tap closes it. The guide retains ownership of the entire touch sequence.
+
+The 2026-11-16 source UI separates **Loaded roll**, **Camera & capture settings**, and **Next-roll defaults**. The current roll shows its frozen material, format, capacity and exposure progress. Grain, aging, softness, halation and edge defaults apply only to newly loaded rolls. **ISO & shutter** controls subsequent sensor exposures, retaining the existing lock and force-unlock behavior without changing the film material. Older APKs do not include this UI update.
+
+The loading dialog shows grain level/size, ageing and edge settings. **Adjust grain / ageing / film edges…** opens next-roll defaults, then refreshes the summary without losing the selected stock, format or length. Loading freezes these settings into the new roll.
+
+Choose body leaks and gate dirt in camera settings. Next-roll defaults contain ageing, sprockets and factory edge lettering. Text imprinting can be adjusted while shooting. Sprockets and edge lettering sit outside the image; 120 uses a border without holes.
 
 Text imprinting accepts up to **24 uppercase/lowercase English letters, digits, spaces and ASCII punctuation**. Full-width ASCII is converted automatically; CJK and emoji are unsupported. Blank text disables printing. Date-only text keeps the original numeric glyphs; letters or other punctuation select a 5×7 dot font for the whole string. Brightness ranges from 0–200%: 100% retains the original exposure strength and 0% adds no exposure. Choose a corner, then adjust the horizontal and vertical sliders for custom placement. During landscape capture, the sample stays on the left; Content and Placement panels switch on the right. Saving affects future exposures only.
 
@@ -47,7 +55,9 @@ Preparation summarizes bath overrides and enabled incidents. Completion shows re
 
 Free processing displays the current process's base bath sequence immediately. Select a bath horizontally to inspect or edit it. Browsing, canceling or accepting an unchanged bath keeps the original process; a real bath edit creates a custom sequence. Enable Custom bath sequence to add, remove or reorder baths, or replace the draft with a template. Base baths and additional processing settings together form the full development.
 
-The workbench starts with the sequence. Open shared chemistry and conditions, shared agitation, shared reactions, or Adjacency & DIR from that page; Back returns to the sequence first. Select a bath, then open its chemistry, conditions, agitation or reactions. Each bath inherits shared conditions or overrides them. Shared bath duration applies to baths without a local duration; it is not the total process time. Drag a slider or tap its value for precise input. Done in a bath updates the workbench draft; Apply to this development returns it to preparation. Cancel discards the outer draft. Standalone recipe editors retain Apply draft. Automatic program order and expected results come from the actual process resolver.
+Bath details show inherited developer, fixer, duration, temperature and concentration alongside local overrides. Unfinished input is marked for validation. Shared chemistry and conditions is available near the top of the sequence page; secondary shared settings remain below.
+
+The workbench starts with the sequence. Open shared chemistry and conditions, shared agitation, shared reactions, or Adjacency & DIR from that page; system Back returns to the sequence first. Select a bath, then open its chemistry, conditions, agitation or reactions. Each bath inherits shared conditions or overrides them. Shared bath duration applies to baths without a local duration; it is not the total process time. Drag a slider or tap its value for precise input. Done in a bath updates the workbench draft; Cancel discards that bath's current edit. Apply to this development returns the outer draft to preparation. Leaving with pending changes offers Apply & return, Discard, or Keep editing. Incomplete or invalid input also counts as a pending edit; a failed apply keeps the workbench open and shows the reason. Standalone recipe editors retain Apply draft. Automatic program order and expected results come from the actual process resolver.
 
 Phone agitation recording uses the gyroscope; manual values are also available. Each development creates a separate batch, so one roll can be processed with several recipes.
 
@@ -66,6 +76,8 @@ Camera effects use Light leaks / Gate dirt / Imprint tabs with a fixed sample pr
 Processing incidents and Additional base bleaching are separate branches; resetting one keeps the other. Uneven development, chemical stains and reticulation each offer Inherit, Off or Set, and can be combined. Inherit all keeps effects arising from the recipe and bath conditions; Clean process disables these three incidents while retaining grain and other material settings. Incident adjustments have up to 24 in-session undo/redo steps, with a continuous slider gesture treated as one step. History does not modify completed development or base bleaching.
 
 ## Viewing and scanning
+
+Development completion and batch pages guide you to scan one frame or the batch. Scanning reads the film without changing it and saves photos in the app Library. Export photos, or use the existing automatic export option, to place them in the system gallery. Deleting a roll removes its captures and latents, preventing further development; existing film, saved photos and exports remain. Deleting film prevents rescanning it while retaining the original roll exposures and saved photos.
 
 | Mode | View |
 | --- | --- |

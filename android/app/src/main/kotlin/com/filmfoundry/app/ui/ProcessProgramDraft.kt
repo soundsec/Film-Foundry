@@ -13,6 +13,8 @@ class ProcessProgramDraft(source: Map<String,Any?>,resolvedProgram: String?=null
         ?: resolvedProgram?.let(ProcessSteps::template)).orEmpty().map(::frozenRecipe).toMutableList()
     val steps get()=rows.toList()
     var free=this.source["process_steps"]!=null || this.source["program_key"]=="custom";private set
+    private val initialFree=free
+    private val initialRows=rows.toList()
     var selected=if(rows.isEmpty()) -1 else 0;private set
     fun select(index: Int) { require(index in rows.indices);selected=index }
     /** Refresh a native program's presentation after a chemistry change; keep it native. */
@@ -48,6 +50,11 @@ class ProcessProgramDraft(source: Map<String,Any?>,resolvedProgram: String?=null
     fun remove() {
         require(selected in rows.indices);rows.removeAt(selected);selected=if(rows.isEmpty()) -1 else selected.coerceAtMost(rows.lastIndex)
     }
+    /** Compare raw controls too: invalid or blank input must not disappear on Back.
+     * Bath selection and unused native rows are presentation, not pending changes. */
+    fun hasChanges(initialControls: Map<String,Any?>,currentControls: Map<String,Any?>): Boolean =
+        free!=initialFree || (free && !RecipeJson.equivalent(initialRows,rows)) ||
+            !RecipeJson.equivalent(initialControls,currentControls)
     fun build(edits: Map<String,Any?>): Map<String,Any?> {
         val values=source.toMutableMap()
         edits.forEach { (key,value)->if(value==null) values.remove(key) else values[key]=value }

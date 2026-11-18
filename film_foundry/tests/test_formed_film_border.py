@@ -55,7 +55,8 @@ def test_latent_freezes_edges_and_checkpoint_roundtrip_keeps_old_compatibility(t
     assert result.frame_shape[0]>64
     arrays={};record=pack_state(loaded,'latent_',arrays)
     restored=unpack_state(arrays,record,'latent_')
-    assert restored.film_border_snapshot==latent.film_border_snapshot
+    from film_foundry.core.formed_film_border import validate_border_snapshot
+    assert validate_border_snapshot(restored.film_border_snapshot)==validate_border_snapshot(latent.film_border_snapshot)
     record.pop('film_border_snapshot')
     old=unpack_state(arrays,record,'latent_')
     cfg.film_border.enabled=True
@@ -73,6 +74,7 @@ def test_spectral_rebate_survives_public_save_load_scan(tmp_path):
     cfg=config();cfg.film_border.enabled=True
     cfg.film_border.factory_layout='cinema';cfg.film_border.factory_barcode='code128c'
     cfg.film_border.factory_exposure_ev=-1.25;cfg.film_border.factory_exposure_variation=.2
+    cfg.film_border.factory_light_color_rgb=(.2,1.,.05)
     source_path=tmp_path/'source.png';Image.fromarray((source()*255).astype('uint8')).save(source_path)
     latent_path=tmp_path/'frame.darkroom_latent.npz';formed=tmp_path/'film.npz'
     run_request(WorkflowRequest('expose',source_path,latent_path,cfg))
@@ -80,6 +82,7 @@ def test_spectral_rebate_survives_public_save_load_scan(tmp_path):
     medium=load_developed_medium_for_scan(formed)
     record=medium.metadata['developed_medium']['formed_film_rebate']
     assert record['factory_exposure_ev']==-1.25 and record['barcode']['generated_sides']==['bottom']
+    assert record['factory_light_color_rgb']==[.2,1.,.05]
     assert medium.frame_shape[0]==64+2*record['rebate_rows']
     holes=np.all(medium.spectral_medium.component_amounts==0,axis=-1)
     assert holes.any()

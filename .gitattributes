@@ -5,3 +5,4 @@
 *.bin -text
 *.jar -text
 *.dng -text
+*.sqlite3 binary

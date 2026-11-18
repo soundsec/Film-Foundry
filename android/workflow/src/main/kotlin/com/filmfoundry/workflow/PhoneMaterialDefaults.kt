@@ -3,6 +3,20 @@ package com.filmfoundry.workflow
 /** New-roll defaults only; never applied to an existing roll or latent. */
 object PhoneMaterialDefaults {
     const val REVISION="phone_exposure_optics_v1"
+    /** Stock-picker previews describe a newly loaded lightweight roll, never migrate an existing roll. */
+    fun previewCaptureSettings(): Map<String,Any?> = mapOf(
+        "spatial_effects_revision" to REVISION,"material_model" to com.filmfoundry.interchange.PhoneProcessModels.CURRENT,
+        com.filmfoundry.interchange.PhoneFormationProfile.ROLL_SETTING to com.filmfoundry.interchange.PhoneFormationProfile.LIGHTWEIGHT,
+        com.filmfoundry.interchange.PhoneMaterialPhenomena.ROLL_SETTING to com.filmfoundry.interchange.PhoneMaterialPhenomena.CURRENT)
+    /** One captured integration window only; multiple exposures cannot share a made-up shutter time. */
+    fun withCaptureDuration(recipe: Map<String,Any?>,record: Map<String,Any?>): Map<String,Any?> {
+        if(!com.filmfoundry.interchange.PhoneFormationProfile.hasTimeResponse(recipe[com.filmfoundry.interchange.PhoneFormationProfile.OPTION])) return recipe
+        val exposure=(recipe["exposure"] as? Map<*,*>)?.entries?.associate {it.key.toString() to it.value}.orEmpty()
+        if(exposure.containsKey("duration_seconds") || (record["frame_count"] as? Number)?.toInt()!=1) return recipe
+        val ns=(record["exposure_time_ns"] as? Number)?.toLong() ?: return recipe
+        if(ns<=0 || ns>86_400_000_000_000L)return recipe
+        return recipe+("exposure" to (exposure+("duration_seconds" to ns/1_000_000_000.0)))
+    }
     /** Loading controls modify a stock's character; Natural retains its own strength. */
     fun withLevels(film: Map<String,Any?>,grain: Int,mtf: Int,halo: Int,size: Double): Map<String,Any?> {
         require(grain in 0..3 && mtf in 0..2 && halo in 0..2)

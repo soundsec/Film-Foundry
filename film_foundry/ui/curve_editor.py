@@ -9,11 +9,12 @@ from film_foundry.app.preset_catalog import REFERENCE_TONE_PRESETS
 from film_foundry.model.config import normalize_scanner_color_curve_rgb, normalize_scanner_tone_curve
 from film_foundry.ui.i18n import current_language
 from film_foundry.ui.qt import QtCore, QtGui, QtWidgets
-from film_foundry.ui.theme import colors
+from film_foundry.ui.theme import colors, text_on
 
 
 def text(zh, en):
-    return zh if current_language().startswith("zh") else en
+    from film_foundry.ui.language_packs import translate_pair
+    return translate_pair(zh,en)
 
 
 IDENTITY = ((0., 0.), (1., 1.))
@@ -67,7 +68,7 @@ class CurveCanvas(QtWidgets.QWidget):
             f=i/4
             p.drawLine(QtCore.QPointF(rect.left()+f*rect.width(), rect.top()), QtCore.QPointF(rect.left()+f*rect.width(), rect.bottom()))
             p.drawLine(QtCore.QPointF(rect.left(), rect.top()+f*rect.height()), QtCore.QPointF(rect.right(), rect.top()+f*rect.height()))
-        p.setPen(QtGui.QColor(theme.muted))
+        p.setPen(QtGui.QColor(text_on(theme.canvas)))
         p.drawText(4, int(rect.top())+10, "out")
         p.drawText(int(rect.right())-12, self.height()-6, "in")
         p.drawText(int(rect.left()), self.height()-6, "0")

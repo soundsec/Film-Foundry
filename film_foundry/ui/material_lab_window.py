@@ -4,6 +4,7 @@ from dataclasses import fields
 import json
 import math
 from pathlib import Path
+from film_foundry.app.preview_budget import Priority, preview_budget
 from film_foundry.app.material_lab_session import MaterialLabSession
 from film_foundry.core.material_family import ViewingConditions
 from film_foundry.ui.qt import QtCore,QtGui,QtWidgets,_application
@@ -71,9 +72,13 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         self.setMinimumSize(780,560)
         root=QtWidgets.QWidget();self.setCentralWidget(root);layout=QtWidgets.QVBoxLayout(root)
         heading=QtWidgets.QHBoxLayout();layout.addLayout(heading)
-        title=QtWidgets.QLabel(text(*TITLES[kind])+" · "+text("实验中","Experimental"));title.setStyleSheet("font-size:22px;font-weight:600;padding:8px;");heading.addWidget(title)
+        title=QtWidgets.QLabel(text(*TITLES[kind])+" · "+text("实验中","Experimental"));title.setObjectName('materialPageTitle');heading.addWidget(title)
         title.setToolTip(text("工艺时间按步骤推进；导出采用工作尺寸，可选择白边","Process time advances explicitly; export uses working dimensions and optional borders"))
-        heading.addStretch();self.layout_button=QtWidgets.QPushButton();heading.addWidget(self.layout_button)
+        self.install_material_selection(heading)
+        heading.addStretch()
+        from film_foundry.ui.context_guide import install_material_guide
+        install_material_guide(self,heading)
+        self.layout_button=QtWidgets.QPushButton();heading.addWidget(self.layout_button)
         self.layout_button.clicked.connect(lambda:self.set_workspace_layout("studio" if self._workspace_layout=="compact" else "compact"))
         self.file_bar=QtWidgets.QWidget();toolbar=QtWidgets.QHBoxLayout(self.file_bar);toolbar.setContentsMargins(0,0,0,0)
         for zh,en,callback in (("打开图像 / 新建","Open image / New",self.open_image_dialog),('光学来源…','Optical source…',self.open_medium_dialog),("读取材料存档","Open archive",self.load_dialog)):
@@ -120,7 +125,7 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         self.seed=QtWidgets.QDoubleSpinBox();self.seed.setDecimals(0);self.seed.setRange(0,4294967295);form.addRow(text("片张身份","Sheet identity"),self.seed)
         self.process_group,form=self._group("工艺控制","Processing")
         self.process_form=form
-        self.seconds=self._number(form,text("推进秒数","Advance seconds"),30,0,7200)
+        self.seconds=self._number(form,text("推进时间 s","Advance time s"),30,0,7200)
         self.process_controls={}
         if kind!="plate":
             self.direction=QtWidgets.QComboBox()
@@ -128,7 +133,7 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
             form.addRow(text("铺药方向","Spread direction"),self.direction)
             for key,zh,en,value,lo,hi in (("temperature_c","温度 °C","Temperature °C",20,-10,50),
                 ("coverage","药剂覆盖","Reagent coverage",1,0,1),("contact","接触程度","Contact",1,0,1),
-                ("spread_seconds","铺药用时","Spread seconds",2,0,120),("roller_streaks","滚轴条痕","Roller streaks",0,0,1),
+                ("spread_seconds","铺药用时 s","Spread time s",2,0,120),("roller_streaks","滚轴条痕","Roller streaks",0,0,1),
                 ("edge_loss","边缘缺药","Edge loss",0,0,1),("reagent_load","手动药囊载量","Manual paste load",1,0,4)):
                 if key=="temperature_c":continue
                 self.process_controls[key]=self._number(form,text(zh,en),value,lo,hi)
@@ -147,7 +152,6 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
                 self.process_controls[key]=self._number(form,text(zh,en),value,0,1)
             self.process_controls["polish_angle"]=self._number(form,text("抛光方向 °","Polish direction °"),0,-180,180)
         self.defect_group,form=self._group("材料退化与事故","Deterioration and accidents")
-        self.left.removeWidget(self.defect_group);self.left.insertWidget(0,self.defect_group)
         if kind!="plate":self.process_controls["temperature_c"]=self._number(form,text("显影温度 °C","Development temperature °C"),20,-10,50)
         self.defect_controls={}
         defect_parameters=(("reagent_decay","药剂退化","Reagent decay"),("contact_defects","局部接触不良","Contact defects"),
@@ -243,6 +247,7 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
                 'Intent maps linearly to 20–40°C for future intervals, coupling transfer speed, channel loss and reaction stains. RGB is not linear; zero disables warming without undoing formed material.'))
             self.environment_mode.currentIndexChanged.connect(lambda:self._sync())
         self.config_tabs=QtWidgets.QTabWidget();self.left.addWidget(self.config_tabs)
+        self.config_tabs.setTabBarAutoHide(True)
         groups=[(self.material_group,'材料','Material'),(self.process_group,'工艺','Process'),(self.defect_group,'事故','Defects')]
         if kind!='plate':groups.append((self.finish_group,'表面','Surface'))
         else:self.finish_group.hide()
@@ -251,7 +256,9 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
             self.config_tabs.addTab(group,text(zh,en))
         self.view_group=QtWidgets.QGroupBox(text("观看条件（不改材料）","Viewing (read-only)"))
         view_layout=QtWidgets.QHBoxLayout(self.view_group);form=QtWidgets.QFormLayout();second_form=QtWidgets.QFormLayout();view_layout.addLayout(form);view_layout.addLayout(second_form)
-        self.view_ev=self._number(form,text("观看曝光 EV","Viewing EV"),0,-10,10)
+        for view_form in (form,second_form):view_form.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
+        from film_foundry.ui.material_controls import viewing_control
+        self.view_ev=viewing_control(form,text("观看曝光 EV","Viewing EV"),0,-10,10)
         self.border_choice=QtWidgets.QComboBox()
         for zh,en,key in (("纯图像（默认）","Image only (default)","none"),("撕拉片 · 四边等宽","Peel-apart · equal borders","equal"),
                           ("拍立得 · 短边药囊留白","Instant · pod on a short edge","pod_short")):
@@ -259,9 +266,9 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         if kind!="plate":form.addRow(text("输出样式","Output style"),self.border_choice)
         self.view_angle=self.light_angle=self.background=None
         if kind=="plate":
-            self.view_angle=self._number(second_form,text("观看倾角 °","View tilt °"),25,-85,85)
-            self.light_angle=self._number(form,text("光源倾角 °","Light tilt °"),0,-85,85)
-            self.background=self._number(second_form,text("背景亮度","Background level"),.02,0,1)
+            self.view_angle=viewing_control(second_form,text("观看倾角 °","View tilt °"),25,-85,85)
+            self.light_angle=viewing_control(form,text("光源倾角 °","Light tilt °"),0,-85,85)
+            self.background=viewing_control(second_form,text("背景亮度","Background level"),.02,0,1)
         self.left.addStretch()
         right=QtWidgets.QWidget();right_layout=QtWidgets.QVBoxLayout(right);split.addWidget(right);split.setSizes([360,780])
         self.preview_surface=right
@@ -273,10 +280,14 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         self.inspector=MaterialInspector(self,OPERATIONS);right_layout.addWidget(self.inspector)
         right_layout.addWidget(self.view_group)
         self.save_buttons={}
-        save_row=QtWidgets.QGridLayout();right_layout.addLayout(save_row)
+        from film_foundry.ui.material_controls import SaveFooter
+        self.save_footer=SaveFooter();save_row=QtWidgets.QGridLayout(self.save_footer);save_row.setContentsMargins(0,0,0,0)
+        right_layout.addWidget(self.save_footer)
         for i,(key,zh,en) in enumerate((("state","保存材料状态","Save state"),("products","保存全部介质","Save products"),
-            ("body","保存选中片体","Save selected body"),("png","导出观察图像","Export observation"))):
+            ("body","保存选中片体","Save selected body"),("png","导出图像…","Export image…"))):
             button=QtWidgets.QPushButton(text(zh,en));button.clicked.connect(lambda _=False,k=key:self.save_dialog(k));save_row.addWidget(button,i//2,i%2);self.save_buttons[key]=button
+            if key=='png':button.setObjectName('primaryAction')
+        if kind!='peel':save_row.addWidget(self.save_buttons['png'],1,0,1,2)
         self.progress=QtWidgets.QProgressBar();self.progress.setRange(0,0);self.progress.hide();layout.addWidget(self.progress)
         self.preview_timer=QtCore.QTimer(self);self.preview_timer.setSingleShot(True);self.preview_timer.setInterval(180);self.preview_timer.timeout.connect(self.refresh_preview)
         self.body_choice.currentIndexChanged.connect(self.request_preview)
@@ -286,12 +297,21 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         from film_foundry.ui.material_workflow import MaterialWorkflow
         self.workflow=MaterialWorkflow(self,layout,operation_box,OPERATIONS)
         self.set_workspace_layout(load_preferences().get('workspace_layout','compact'))
+        for control in self.material_controls.values():
+            (control.currentIndexChanged if isinstance(control,QtWidgets.QComboBox) else control.valueChanged).connect(self._sync_material_selection)
         self._sync()
+
+        from film_foundry.ui.layout_memory import install_material_layout
+        install_material_layout(self,(1160,800))
 
     def set_workspace_layout(self,mode):
         if mode not in ("compact","studio"):raise ValueError("Unknown workspace layout")
+        if getattr(self,'_workspace_layout',None)==mode:return
         self._workspace_layout=mode
         self.workflow.set_layout(mode)
+        from film_foundry.ui.stage_button import sync_tab_titles
+        sync_tab_titles(self)
+        if hasattr(self,'layout_memory'):self.layout_memory.apply('workspace')
         self.layout_button.setText(text("单侧布局","Compact") if mode=="compact" else text("双侧布局","Studio"))
         self.layout_button.setToolTip(text('切换单侧分页 / 左材料右工艺','Switch compact tabs / materials left, processing right'))
 
@@ -306,8 +326,10 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         self.left.addWidget(box);return box,form
 
     def _number(self,form,label,value,low,high):
-        spin=QtWidgets.QDoubleSpinBox();spin.setRange(low,high);spin.setDecimals(3);spin.setSingleStep(.05 if high<=10 else 1);spin.setValue(value)
-        spin.setKeyboardTracking(False);form.addRow(label,spin);return spin
+        from film_foundry.ui.material_controls import ResetNumber
+        from film_foundry.ui.numeric_units import apply_unit
+        spin=ResetNumber();spin.setRange(low,high);spin.setDecimals(3);spin.setSingleStep(.05 if high<=10 else 1);spin.setValue(value);spin.set_reset_value(value)
+        spin.setKeyboardTracking(False);form.addRow(apply_unit(spin,label),spin);return spin
 
     def conditions(self):
         def direction(control):
@@ -337,6 +359,7 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
 
     def _submit(self,action,label,render=True,body_index=None,restore_controls=False,preview=None):
         if self.busy:return False
+        if not getattr(self,'_observing',False):self._last_observation_key=None
         self.edit_tools.before_submit()
         self._restore_after_load=restore_controls
         self.preview_timer.stop();self.busy=True;self.last_error=None;self._sync();self.progress.show();self.status.setText(label)
@@ -344,20 +367,34 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         if getattr(self,'optical_panel',None) is not None:self.optical_panel.setEnabled(False)
         view=self.conditions();index=max(0,self.body_choice.currentIndex()) if body_index is None else body_index
         self._preview_body_index=index
+        from film_foundry.ui.work_preview_history import prepare_material
+        self._history_preview_request=prepare_material(self,index) if render else None
+        self._render_view_settings=view
         def work():
             action()
-            return (preview() if preview is not None else self.session.preview(view,index)) if render else None
-        future=self.pool.submit(work)
+            from copy import deepcopy
+            scan=deepcopy(self.session.scan_adjustments)
+            image=(preview() if preview is not None else self.session.preview(view,index)) if render else None
+            return image,scan
+        future=self.pool.submit(preview_budget.run, Priority.INTERACTIVE, work)
         def done(task):
-            try:result=task.result();error=None
-            except Exception as exc:result=None;error=str(exc)
+            try:
+                result,scan=task.result();error=None
+                if self._history_preview_request is not None:self._history_preview_request['scan']=scan
+            except Exception as exc:
+                from film_foundry.app.crash_journal import record_exception
+                record_exception('Material operation: '+label,exc)
+                result=None;error=str(exc)
             self.signals.done.emit(result,error,label)
         future.add_done_callback(done);return True
 
     @QtCore.Slot(object,object,str)
     def _completed(self,image,error,label):
+        observing=getattr(self,'_observing',False);self._observing=False
+        stale=observing and getattr(self,'_active_observation_key',None)!=self._observation_key()
+        if image is not None and getattr(self,'_render_view_settings',None)!=self.conditions():stale=True
+        if observing and error is None and not stale:self._last_observation_key=self._active_observation_key
         self.busy=False;self.progress.hide();self.last_error=error
-        self.edit_tools.completed()
         if getattr(self,'optical_panel',None) is not None:self.optical_panel.setEnabled(True)
         if error is None and self._restore_after_load:self._restore_controls()
         self._sync()
@@ -372,22 +409,32 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
                 self._apply_result_view(loaded)
                 self.body_choice.setCurrentIndex(min(self._preview_body_index,self.body_choice.count()-1))
                 self.request_preview()
-        if image is not None:
+        if image is not None and not stale and (self.session.state is not None or self.session.group is not None):
             if self.body_choice.count():
                 self.body_choice.blockSignals(True);self.body_choice.setCurrentIndex(min(self._preview_body_index,self.body_choice.count()-1));self.body_choice.blockSignals(False)
             self.viewer.show_array(image)
+            self.inspector.probe.publish(self._preview_body_index,self._render_view_settings)
+            from film_foundry.ui.work_preview_history import publish_material
+            if not self.edit_tools.restoring and not self._restore_after_load:
+                publish_material(self,getattr(self,'_history_preview_request',None),label)
+        self._history_preview_request=None
+        self.preview_history.synchronize()
         self.inspector.sync()
         draft=getattr(self,'_workspace_restore_draft',None)
         if draft is not None:
             self._workspace_restore_draft=None
             from film_foundry.ui.material_workspace_state import restore_presentation
             restore_presentation(self,draft)
+        self.edit_tools.completed()
         if error:self.status.setText(text("操作失败：","Operation failed: ")+error)
         elif image is None:self.status.setText(self.status.text()+"\n"+text("已保存","Saved"))
         if error is None and getattr(self,'_planning_batch',False):
             from film_foundry.ui.material_batch_io import show_report
             show_report(self)
         if self._closing:self.close()
+        elif stale or getattr(self,'_view_pending',False):
+            self._view_pending=True
+            if self.isVisible():self.preview_timer.start(0)
 
     def _restore_controls(self):
         state=self.session.state
@@ -443,14 +490,19 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         session=self.session;state=session.state;group=session.group
         self.processing_bar.sync()
         self._sync_recipe_actions()
-        self.file_bar.setEnabled(not self.busy);self.controls.setEnabled(not self.busy);self.body_choice.setEnabled(not self.busy);self.view_group.setEnabled(not self.busy)
+        self.file_bar.setEnabled(not self.busy);self.body_choice.setEnabled(not self.busy);self.view_group.setEnabled(not self.busy or getattr(self,'_observing',False))
         self.material_group.setEnabled(not self.busy)
         editable=not self.busy and ((state is None and group is None) or getattr(self,'_planning_batch',False))
+        planning=state is None and group is None
         for control in (*self.material_controls.values(),self.seed):control.setEnabled(editable)
         # QTabWidget owns page visibility; showing its inactive pages directly
         # overlays their group titles and controls on the selected page.
-        self.config_tabs.setVisible(not (state is None and group is not None))
-        for control in self.defect_controls.values():control.setEnabled(("spread" if self.kind!="plate" else "weather") in session.operations)
+        for section in (self.process_group, self.defect_group, self.finish_group):
+            section.setEnabled(not self.busy)
+        for index in range(self.config_tabs.count()):
+            section = self.config_tabs.widget(index)
+            self.config_tabs.setTabVisible(index, section is self.view_group or state is not None or session.group is None)
+        for control in self.defect_controls.values():control.setEnabled((planning and self.kind!='plate') or ("spread" if self.kind!="plate" else "weather") in session.operations)
         if state is not None and state.schema_version==1 and self.kind!="plate":
             for key in ("reagent_leak","spread_unevenness","light_protection","ambient_light","solar_warming"):
                 if key in self.defect_controls:self.defect_controls[key].setEnabled(False)
@@ -461,7 +513,7 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         for control in self.clearing_controls.values():control.setEnabled('clear_negative' in session.operations)
         for operation,controls in self.operation_controls.items():
             for key,control in controls.items():
-                enabled=not self.busy and operation in session.operations
+                enabled=not self.busy and (operation in session.operations or planning and operation in self.workflow.main_operations)
                 if self.kind=='plate' and state is not None and state.schema_version<3 and key!='amount':enabled=False
                 if operation=='environment' and key in ('temperature_c','solar_warming') and self.environment_mode.currentData()=='warm_shift':enabled=False
                 if self.kind=='peel' and (operation=='peel' or (operation=='clean' and key!='strength')):
@@ -469,13 +521,13 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
                 control.setEnabled(enabled)
         for key,control in self.intent_controls.items():
             control.setEnabled(not self.busy and 'environment' in session.operations and (key=='mode' or self.environment_mode.currentData()=='warm_shift'))
-        self.seconds.setEnabled(any(op in session.operations for op in ("advance","develop")))
+        self.seconds.setEnabled(planning or any(op in session.operations for op in ("advance","develop")))
         for key,control in self.process_controls.items():
             allowed=("spread" in session.operations) if self.kind!="plate" else ({"streaks":"polish","polish_angle":"polish","strength":"sensitize","amount":"gild","damage":"surface","tarnish":"surface"}[key] in session.operations)
-            control.setEnabled(allowed)
+            control.setEnabled(allowed or planning and (self.kind!='plate' or key in ('streaks','polish_angle','strength')))
         if self.kind!='plate':
             finite=state is None or state.schema_version>=(5 if self.kind=='peel' else 4)
-            allowed=not self.busy and finite and 'spread' in session.operations
+            allowed=not self.busy and finite and (planning or 'spread' in session.operations)
             self.shortage_enabled.setEnabled(allowed)
             self.shortage_strength.setEnabled(allowed and self.shortage_enabled.isChecked())
             self.process_controls['reagent_load'].setEnabled(allowed and not self.shortage_enabled.isChecked())
@@ -492,7 +544,7 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
             hint=text('本次新增磨损和变色；重复累积，0不改变已有状态，丢失颗粒不可恢复。','Adds abrasion and tarnish. Repeated actions accumulate, zero preserves existing damage, lost particles cannot be restored.') if modern else text('旧材料：直接替换表面场。','Legacy material: replaces the surface fields.')
             for key in ('damage','tarnish'):self.process_controls[key].setToolTip(hint)
         if self.kind=="plate" and state is not None and state.schema_version==1:self.process_controls["polish_angle"].setEnabled(False)
-        if self.kind!="plate":self.direction.setEnabled("spread" in session.operations)
+        if self.kind!="plate":self.direction.setEnabled(planning or "spread" in session.operations)
         if self.kind!="plate":
             # These inputs may have become spatial fields; never display defaults as recovered settings.
             for key in ("coverage","contact"):
@@ -518,7 +570,7 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
                 else:control.setValue(value)
             self.seed.setValue(state.seed)
         if not self.busy:
-            stage=text(STAGES.get(state.stage,state.stage),state.stage) if state else text("已读取介质","Loaded products") if group else text("等待图像","Open an image")
+            stage=text(STAGES.get(state.stage,state.stage),state.stage) if state else text("已读取介质","Loaded products") if group else text('图像已载入 · 尚未曝光','Image loaded · not exposed') if session.image is not None else text("等待图像","Open an image")
             dimensions=next(iter(state.fields.values())).shape[:2] if state else next(iter(group.bodies[0].fields.values())).shape[:2] if group else session.image.shape[:2] if session.image is not None else None
             size=f" · {dimensions[1]}×{dimensions[0]}" if dimensions else ""
             elapsed=f" · {state.elapsed_seconds:g} s" if state else ""
@@ -528,11 +580,12 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         from film_foundry.ui import material_structure_controls
         material_structure_controls.sync(self)
         self.workflow.sync()
+        self._sync_material_selection()
         if not self.busy:self.inspector.sync()
+        from film_foundry.ui.material_controls import sync_source_preview
+        sync_source_preview(self)
 
-    def process(self,operation):
-        if not self.processing_bar.source_ready():return False
-        material={k:c.currentData() if isinstance(c,QtWidgets.QComboBox) else c.value() for k,c in self.material_controls.items()}
+    def _operation_parameters(self,operation):
         params={}
         if operation in self.operation_controls:
             params={k:c.currentData() if isinstance(c,QtWidgets.QComboBox) else c.value() for k,c in self.operation_controls[operation].items()}
@@ -555,7 +608,7 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         elif operation in ("advance","develop"):params={"seconds":self.seconds.value()}
         elif operation=="spread":
             params={k:c.value() for k,c in self.process_controls.items()}|{"direction":self.direction.currentData()}|{k:c.value() for k,c in self.defect_controls.items()}
-            if self.session.state.schema_version<(5 if self.kind=='peel' else 4):params.pop('reagent_load',None)
+            if self.session.state is not None and self.session.state.schema_version<(5 if self.kind=='peel' else 4):params.pop('reagent_load',None)
             elif self.shortage_enabled.isChecked():
                 from film_foundry.app.transfer_intent import reagent_shortage_parameters
                 params.update(reagent_shortage_parameters(strength=self.shortage_strength.value()))
@@ -565,14 +618,59 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
             key={"polish":"streaks","sensitize":"strength","gild":"amount"}[operation];params={key:self.process_controls[key].value()}
             if operation=="polish":params["angle_degrees"]=self.process_controls["polish_angle"].value()
         elif operation=="surface":params={k:self.process_controls[k].value() for k in ("damage","tarnish")}
-        seed=int(self.seed.value())
+        return params
+
+    def process(self,operation):
+        if not self.processing_bar.source_ready():return False
+        material={k:c.currentData() if isinstance(c,QtWidgets.QComboBox) else c.value() for k,c in self.material_controls.items()}
+        params=self._operation_parameters(operation);seed=int(self.seed.value())
         return self._submit(lambda:self.session.process(operation,params,material,seed),text(*OPERATIONS[operation]),body_index=1 if operation=="clear_negative" or params.get('target')=='donor' else 0)
 
+    def run_standard(self):
+        if self.busy or self.session.state is not None or self.session.group is not None or self.session.image is None:return False
+        if not self.processing_bar.source_ready():return False
+        from film_foundry.app.material_reference import reference_operations
+        material={k:c.currentData() if isinstance(c,QtWidgets.QComboBox) else c.value() for k,c in self.material_controls.items()}
+        steps=reference_operations(self.kind,self.session.module,self.session.material_type(**material))
+        overrides={op:self._operation_parameters(op) for op,_ in steps};seed=int(self.seed.value())
+        return self._submit(lambda:self.session.run_standard(material,seed,overrides),text('执行标准步骤…','Running reference steps…'),body_index=0)
+
     def request_preview(self,*_):
-        if not self.busy:self.preview_timer.start()
+        if getattr(self,'_test_strip_dialog',None) is not None:return
+        if not self.isVisible():self._view_pending=True;return
+        if self.busy:
+            if getattr(self,'_observing',False):self._view_pending=True
+        elif not self.preview_timer.isActive():self.preview_timer.start()
 
     def refresh_preview(self):
-        if self.session.state is not None or self.session.group is not None:self._submit(lambda:None,text("更新观看…","Updating view…"))
+        if getattr(self,'_test_strip_dialog',None) is not None:return
+        if self.busy:
+            if getattr(self,'_observing',False):self._view_pending=True
+            return
+        if self.session.state is not None or self.session.group is not None:
+            key=self._observation_key()
+            if key==getattr(self,'_last_observation_key',None):
+                self._view_pending=False;return
+            self._active_observation_key=key
+            self._observing=True;self._view_pending=False
+            self._submit(lambda:None,text("更新观看…","Updating view…"))
+
+    def _observation_key(self):
+        from dataclasses import asdict
+        from copy import deepcopy
+        session=self.session
+        return (id(session.state),id(session.group),id(session.image),asdict(self.conditions()),
+                deepcopy(session.scan_adjustments),max(0,self.body_choice.currentIndex()),
+                self.inspection.currentData() if hasattr(self,'inspection') else 'image')
+
+    def showEvent(self,event):
+        super().showEvent(event)
+        if getattr(self,'_view_pending',False) and not self.busy:self.preview_timer.start(0)
+
+    def hideEvent(self,event):
+        if hasattr(self,'preview_timer') and self.preview_timer.isActive():
+            self.preview_timer.stop();self._view_pending=True
+        super().hideEvent(event)
 
     def _add_recipe_menu(self,layout):
         self.recipe_button=QtWidgets.QToolButton();self.recipe_button.setText(text('材料与配方','Material & recipe'))
@@ -741,6 +839,11 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         self._submit(save_and_index,text("保存中…","Saving…"),render=False)
 
     def closeEvent(self,event):
+        strip=getattr(self,'_test_strip_dialog',None)
+        if strip is not None:
+            if strip.busy:
+                self._closing=True;strip.reject();event.ignore();return
+            strip.reject()
         if self.busy:
             self._closing=True;self.status.setText(text("本次操作完成后关闭","Closing after this operation"));event.ignore();return
         self.processing_bar.reload_timer.stop()

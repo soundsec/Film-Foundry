@@ -21,20 +21,29 @@ class FilmEditTools:
             self.buttons[key]=button;layout.addWidget(button)
         self.comparison=comparison_choice(owner.result_view);layout.addWidget(self.comparison)
         self.comparison.currentIndexChanged.connect(lambda:owner.preview_tabs.setCurrentWidget(owner.result_view))
-        self.quick=QtWidgets.QToolButton();self.quick.setText(text('快速配置','Quick settings'));self.quick.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        from film_foundry.ui.work_preview_history import install_film
+        install_film(owner)
+        from film_foundry.ui.work_shortcuts import annotate
+        annotate(self)
+        self.quick=QtWidgets.QToolButton();self.quick.setText(text('正式质量','Output quality'));self.quick.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         menu=QtWidgets.QMenu(self.quick)
+        self.quality_actions=[]
         for quality,zh,en in (('draft','低质量','Low quality'),('standard','中质量','Medium quality'),('high','高质量','High quality')):
-            menu.addAction(text(zh,en),lambda q=quality:self.set_quality(q))
-        menu.addSeparator()
-        for bank,zh,en in (('film','材料配置','Material settings'),('develop','药水与工艺','Chemistry & process'),('scanner','扫描配置','Scanner settings')):
-            menu.addAction(text(zh,en),lambda b=bank:owner.open_embedded_editor(b))
-        self.quick.setMenu(menu);layout.addWidget(self.quick);layout.addStretch()
+            self.quality_actions.append(menu.addAction(text(zh,en),lambda q=quality:self.set_quality(q)))
+        self.quick.setToolTip(text('正式任务的质量等级。交互预览使用屏幕草稿。','Quality level for formal jobs. Interactive previews use the display draft.'))
+        self.quick.setMenu(menu);layout.addStretch()
+
+    def sync_task(self):
+        mode=self.owner.pipeline_mode.get()
+        for action in self.quality_actions:action.setVisible(mode!='scan')
+        self.quick.setVisible(mode!='scan')
 
     def initialize(self):
-        self.history=SnapshotHistory(self.capture());self.sync()
+        self.owner.preview_history.clear()
+        self.timer.stop();self.history=SnapshotHistory(self.capture());self.sync();self.sync_task()
 
     def capture(self):
-        return {'config':asdict(self.owner._config()),'scan_interpretation':self.owner.scan_interpretation.get(),
+        return {'config':asdict(self.owner._config()),'frame_exposure_offsets':dict(self.owner._frame_exposure_offsets),'scan_interpretation':self.owner.scan_interpretation.get(),
                 'link_scanner':self.owner.link_scanner.get(),'auto_develop':self.owner.auto_develop.get(),
                 'presets':{bank:getattr(self.owner,bank+'_preset').get() for bank in ('film','develop','scanner')}}
 
@@ -43,6 +52,9 @@ class FilmEditTools:
         before=asdict(self.owner._config());after=deepcopy(snapshot['config'])
         before['output']['rotation_quarters']=after['output']['rotation_quarters']
         preview_needed=before!=after or self.owner.scan_interpretation.get()!=snapshot['scan_interpretation']
+        offsets = dict(snapshot.get('frame_exposure_offsets', {}))
+        preview_needed = preview_needed or offsets != self.owner._frame_exposure_offsets
+        self.owner._frame_exposure_offsets = offsets
         ready=self.owner._auto_preview_ready;self.owner._auto_preview_ready=False
         baselines={key:deepcopy(value) for key,value in self.owner.control_resets.baselines.items()}
         try:

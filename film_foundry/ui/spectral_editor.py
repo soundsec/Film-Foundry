@@ -10,7 +10,7 @@ from film_foundry.contracts.spectral_optics import SpectralMaterialProfile, SPEC
 from film_foundry.core.spectral_exposure import compile_spectral_exposure
 from film_foundry.ui.curve_editor import text
 from film_foundry.ui.qt import QtCore, QtGui, QtWidgets
-from film_foundry.ui.theme import colors
+from film_foundry.ui.theme import colors, text_on
 
 
 class SpectrumCanvas(QtWidgets.QWidget):
@@ -48,7 +48,7 @@ class SpectrumCanvas(QtWidgets.QWidget):
                 path.lineTo(point)
         painter.setPen(QtGui.QPen(QtGui.QColor(theme.tone), 2))
         painter.drawPath(path)
-        painter.setPen(QtGui.QColor(theme.muted))
+        painter.setPen(QtGui.QColor(text_on(theme.canvas)))
         painter.drawText(4, 24, f"{peak:.3g}")
         painter.drawText(4, int(rect.bottom()), "0")
         painter.drawText(int(rect.left()), self.height()-8, f"{wave[0]:g} nm")

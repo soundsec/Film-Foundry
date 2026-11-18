@@ -53,13 +53,17 @@ class MaterialLabSession:
         self.optical_reference=None
 
     def open_medium(self,path,*,body_id=None,relay=None,long_edge=1600,preserve_preparation=False):
-        from film_foundry.app.optical_cascade import load_source,project_medium
+        from film_foundry.app.optical_cascade import load_source,project_medium,select_body,receiver_shape,limit_projection
         from film_foundry.contracts.optical_cascade import OpticalRelay
         from film_foundry.core.preview import resize_to_long_edge
         if long_edge<0:raise ValueError('Invalid working size')
         relay=OpticalRelay.from_value(relay);source=load_source(path,reflection=relay.mode=='reflection')
-        image=project_medium(source,relay,body_id=body_id);source_size=list(image.shape[1::-1])
-        image=resize_to_long_edge(image,long_edge or None)
+        body = select_body(source,body_id)
+        source_size = list(reversed(receiver_shape(body,relay)))
+        if relay.local_exposures:
+            image = project_medium(source,limit_projection(body,relay,long_edge),body_id=body_id)
+        else:
+            image = resize_to_long_edge(project_medium(source,relay,body_id=body_id),long_edge or None)
         if preserve_preparation:
             if self.kind not in ('plate','wet') or self.state is None or self.state.stage not in ('blank','polished','coated','sensitized'):
                 raise ValueError('Only an unexposed plate can receive an optical source')
@@ -136,6 +140,24 @@ class MaterialLabSession:
         if self.source_path and Path(path).resolve()==Path(self.source_path).resolve():raise ValueError('Recipe must not overwrite its source')
         save_recipe(path,self.recipe())
 
+    def branch_at_step(self, completed=None, *, control=None):
+        """Fork the captured state, or replay an executed prefix on the retained exposure."""
+        from film_foundry.app.material_history import capture,restore
+        branch=MaterialLabSession(self.kind)
+        restore(branch,capture(self))
+        if completed is None:return branch
+        recipe=self.recipe()
+        total=len(recipe['steps'])
+        if type(completed) is not int or not 0<=completed<=total:
+            raise ValueError('Choose an executed operation boundary')
+        if completed==total:return branch
+        if self.image is None:raise ValueError('Earlier checkpoints require the original working exposure')
+        branch.state=None;branch.group=None
+        if completed:
+            recipe['steps']=recipe['steps'][:completed]
+            branch.replay_recipe(recipe,control=control)
+        return branch
+
     def replay_recipe(self,value,*,control=None):
         from film_foundry.app.material_recipes import bind_recipe
         kind,recipe=bind_recipe(value)
@@ -174,13 +196,17 @@ class MaterialLabSession:
             if self.kind!='plate':border=observation_border(body,next(iter(body.fields.values())).shape,view)
         return render_material_scan(image,self.scan_adjustments,border=border)
 
-    def run_standard(self,material=None,seed=0,overrides=None):
-        """A fresh sheet follows its family's declared reference sequence."""
-        if self.kind not in SHEET_FAMILIES or self.state is not None or self.group is not None:
+    def run_standard(self,material=None,seed=0,overrides=None,*,control=None):
+        """A fresh sheet follows the shared family reference sequence."""
+        if self.image is None or self.state is not None or self.group is not None:
             raise ValueError('Standard processing requires a fresh sheet source')
+        from film_foundry.app.material_reference import reference_operations
         definition=self.material_type(**(material or {}))
-        for operation,parameters in self.module.default_operations(definition):
+        for operation,parameters in reference_operations(self.kind,self.module,definition):
+            if control:control.check_cancel()
+            if operation=='stabilize' and self.state.stage=='stable':continue
             self.process(operation,{**parameters,**(overrides or {}).get(operation,{})},material,seed)
+        if control:control.check_cancel()
 
     def save(self,path,body_index=None,*,precision=None):
         precision=self.storage_precision if precision is None else precision

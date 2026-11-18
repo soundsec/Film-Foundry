@@ -151,6 +151,9 @@ def validate_body(body):
 
 def observe(body,view=ViewingConditions()):
     m=validate_body(body);f=body.fields
+    from .observation_compute import sheet
+    accelerated=sheet(body,m,view,'paper')
+    if accelerated is not None:return s.illuminate(accelerated,body,view)
     silver=f['silver'].mean(axis=-1)[...,None]*m.maximum_density
     density=silver*np.array([1.,1.+.12*m.warmth,1.+.35*m.warmth],np.float32)+f['halide'].mean(axis=-1)[...,None]*.08+f['residue']
     if m.kind=='color':density=density+f['dye']@np.array([[1,.06,.03],[.04,1,.04],[.02,.08,1]],np.float32)*m.maximum_density

@@ -8,6 +8,7 @@ import json
 import math
 import numpy as np
 from film_foundry.core import material_defects as defects
+from film_foundry.core.material_arrays import array_bounds
 
 FIELDS={'transfer_loss','inhibitor'}
 RESIDUE_RGB=np.array([.25,.65,1.1],np.float32)
@@ -16,7 +17,7 @@ RESIDUE_RGB=np.array([.25,.65,1.1],np.float32)
 def validate(fields,shape):
     if fields['transfer_loss'].shape!=shape or fields['inhibitor'].shape!=shape[:2]:
         raise ValueError('Invalid segmented transfer fields')
-    if any((fields[k]<0).any() or (fields[k]>1).any() for k in FIELDS):
+    if any(array_bounds(fields[k])[0]<0 or array_bounds(fields[k])[1]>1 for k in FIELDS):
         raise ValueError('Invalid segmented material amount')
 
 

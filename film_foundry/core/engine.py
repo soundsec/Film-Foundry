@@ -17,6 +17,8 @@ import json
 from pathlib import Path
 
 from film_foundry.core.source_image import load_formation_image
+from .computation_control import checkpoint
+from .formation_observer import begin_exposure, observe_tile_rows
 import numpy as np
 
 from film_foundry.core.accidents import (
@@ -1006,6 +1008,7 @@ def _develop_reduced_material_tiled(
         workers=1
     use_private_collector=workers>1 and grain_response_output is not None
     def calculate_tile(span):
+        checkpoint()
         start,stop=span
         collector=(LocalGrainCollector((stop-start,width),grain_response_output.products)
                    if use_private_collector else grain_response_output)
@@ -1114,7 +1117,7 @@ def _develop_reduced_material_tiled(
         return start,stop,reduced,tile_density,representation,collector if use_private_collector else None
 
     spans=((start,min(start+tile_rows,height)) for start in range(0,height,tile_rows))
-    with ordered_results(spans,calculate_tile,workers=workers) as (active_workers,results):
+    with ordered_results(spans,observe_tile_rows(calculate_tile),workers=workers) as (active_workers,results):
         for start,stop,reduced,tile_density,representation,tile_collector in results:
             if tile_collector is not None:grain_response_output.append_rows(tile_collector,row_offset=start)
             if spectral_component_output is not None:
@@ -1265,7 +1268,13 @@ def develop_negative_from_latent(
     _allow_discarded_history: bool = False,
     process_run=None,
 ) -> DevelopedNegative:
-    """Develop a previously frozen latent through the existing process program."""
+    """Develop an owned latent working state through the existing process program.
+
+    Material coefficients are frozen in its exposure snapshot, but the pool
+    arrays are mutable and may be consumed in place. Pass ``latent_state.copy()``
+    when retaining an in-memory source for another process branch. File-based
+    workflows load a private working state and preserve the source archive.
+    """
     latent_state.validate()
     if config is not None and not _prepared_config and latent_state.material_snapshot is None:
         _validate_develop_runtime(config)
@@ -1365,6 +1374,7 @@ def _freeze_pre_process_latent(
             f"got {tiled_program_kind!r}"
         )
     material = _exposure_material(config.film)
+    begin_exposure(after_halation.shape)
     return freeze_material_latent_state(
         after_halation,
         config.film,
@@ -1526,6 +1536,7 @@ def _develop_silver_halide_pipeline(
         del exposure_occlusion_map
         linear_input = None if discard_history else np.clip(linear, 0.0, 1.0)
 
+        checkpoint()
         # 潜影前：乳剂 MTF，然后边字和漏光。
         if config.enable_mtf:
             # ``linear`` is a private formation buffer and has no consumer after
@@ -1579,6 +1590,7 @@ def _develop_silver_halide_pipeline(
                     leak_rng,
                     template_key=secondary_key,
                 )
+        checkpoint()
         after_light_leak, light_leak_map = apply_light_leak_to_exposure(
             after_mtf,
             config.chemistry,
@@ -1721,6 +1733,7 @@ def _develop_silver_halide_pipeline(
     refresh_fields=preparation.rebuild_fields if preparation is not None else ()
     build_adjacency=prepared_fields is None or 'adjacency' in refresh_fields
     build_dir=prepared_fields is None or 'dir' in refresh_fields
+    checkpoint()
     needs_adjacency_pools = implementation_plan.spatial_chemistry_enabled and tiled_program_kind is not None and build_adjacency and float(config.chemistry.development_adjacency_strength) > 0.0
     needs_dir_pools = (implementation_plan.spatial_chemistry_enabled and build_dir and tiled_program_kind in {"color_negative", "color_reversal"}
             and np.any(np.asarray(config.film.dir_material_response_matrix) > 0.0)
@@ -1845,6 +1858,7 @@ def _develop_silver_halide_pipeline(
     formed_optical_density_rgb: np.ndarray | None = None
     clear_base_optical_density_rgb: np.ndarray | None = None
     reduced_process_payload: dict[str, object] | None = None
+    checkpoint()
     spectral_components = None if material_spectrum is None else np.empty(tuple(frame_shape[:2]) + (9,), dtype=np.float32)
     spectral_base: list[float] = []
     tile_rows = (
@@ -1888,6 +1902,8 @@ def _develop_silver_halide_pipeline(
         ).astype(np.float32, copy=False)
 
     material_image = None if exposed_latent is not None else after_accidents
+    if material_image is not None and tiled_program_kind is not None:
+        begin_exposure(material_image.shape)
     material_addition = (
         None if exposed_latent is not None else latent_layer_exposure_addition
     )
@@ -3263,19 +3279,8 @@ from film_foundry.core.medium_export import (
 )
 
 
-def _process_file_impl(
-    input_path: str | Path,
-    output_path: str | Path,
-    config: DarkroomConfig | None = None,
-    preview: bool = False,
-    *, artifact_paths: dict[str,str] | None = None,
-    resolved_seed_override: int | None = None,
-) -> Path:
-    """读取、处理并保存一张图像文件。
-
-    ``preview=True`` 是旧兼容入口；它开启按目标长边缩放，而不是专门生成
-    某种 GUI 预览产品。缩放不会关闭独立的处理质量或低阶算子开关。
-    """
+def _render_file_frame(input_path, config, preview, resolved_seed_override):
+    """The common formation and observation path up to output encoding."""
     config = config or DarkroomConfig()
     execution_axes = resolve_execution_axes(config, scaled_override=preview)
     # Persist a backward-compatible representation of the orthogonal axes in
@@ -3296,9 +3301,6 @@ def _process_file_impl(
         config.fast_mode = execution_axes.lower_order_enabled
     _validate_output_runtime(config)
     input_path = Path(input_path)
-    output_path = Path(output_path)
-    if input_path.resolve() == output_path.resolve():
-        raise ValueError("Final output path must not overwrite the source input image.")
     long_edge = processing_long_edge(config)
     source_width, source_height = probe_image_dimensions(input_path)
     retain_development_stages = bool(
@@ -3370,8 +3372,37 @@ def _process_file_impl(
         # The source working image has no remaining consumer once formation
         # and observation complete. Release it before output encoding and the
         # developed-medium export allocate their own buffers.
-        del image
+        image = None
     negative.metadata["input_color"] = input_color
+    return result, runtime_config, negative, resolved_seed, execution_axes, stages, image
+
+
+def render_file_pixels(input_path, config, *, scaled_override=False, resolved_seed=None):
+    """Render the formal file image before output encoding and quarter-turn rotation."""
+    from .observation_reuse import observation_reuse_scope
+    budget = 0 if config.processing.memory_budget_mb is not None else 512*1024*1024
+    with observation_reuse_scope(budget):
+        return _render_file_frame(input_path, config, scaled_override, resolved_seed)[0]
+
+
+def _process_file_impl(
+    input_path: str | Path,
+    output_path: str | Path,
+    config: DarkroomConfig | None = None,
+    preview: bool = False,
+    *, artifact_paths: dict[str,str] | None = None,
+    resolved_seed_override: int | None = None,
+) -> Path:
+    """读取、处理并保存一张图像文件。
+
+    ``preview=True`` 是旧兼容入口；它开启按目标长边缩放，而不是专门生成
+    某种 GUI 预览产品。缩放不会关闭独立的处理质量或低阶算子开关。
+    """
+    input_path, output_path = Path(input_path), Path(output_path)
+    if input_path.resolve() == output_path.resolve():
+        raise ValueError("Final output path must not overwrite the source input image.")
+    result, runtime_config, negative, resolved_seed, execution_axes, stages, image = _render_file_frame(
+        input_path, config, preview, resolved_seed_override)
     developed_path = _developed_medium_path(input_path, output_path, negative)
     transaction_targets = [
         output_path,

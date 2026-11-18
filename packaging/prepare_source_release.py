@@ -13,7 +13,7 @@ import shutil
 PUBLIC_DOCS = (
     "README.md", "DESKTOP_GUIDE.md", "REFERENCE.md", "SHOWCASE.md", "CHANGELOG.md",
     "MOBILE_GUIDE.md", "MOBILE_GUIDE.en.md", "MOBILE_SHOWCASE.md", "MOBILE_SHOWCASE.en.md",
-    "DEVELOPMENT_SNAPSHOT.md",
+    "DEVELOPMENT_SNAPSHOT.md", "TRANSLATING.md",
 )
 ROOT_FILES = (
     ".gitignore", ".gitattributes", "README.md", "README.en.md", "LICENSE", "COPYING",
@@ -29,7 +29,7 @@ PUBLIC_BUILD_FILES = (
 
 
 def copy_source_file(source: Path, target: Path) -> None:
-    if source.suffix.lower() in {".png",".jpg",".webp",".ico",".npz",".bin",".jar",".dng"}:
+    if source.suffix.lower() in {".png",".jpg",".webp",".ico",".npz",".bin",".jar",".dng",".sqlite3"}:
         shutil.copy2(source,target)
     else:
         # Stable text diffs across Windows and Unix; no code reformatting.
@@ -105,7 +105,7 @@ def copy_android_sources(source: Path, target: Path) -> int:
                                  for part in path.relative_to(android).parts))
     # Reproducible presets and isolated tests, not local one-off review probes.
     files.extend(android / "tools" / name for name in (
-        "sync_phone_presets.py", "sync_creative_presets.py",
+        "sync_phone_presets.py", "sync_creative_presets.py", "phone_preset_fields.py",
         "sync_seasonal_collection.py", "run_device_tests.py", "collect_runtime_notices.py",
     ))
     for path in sorted(files):
@@ -156,9 +156,10 @@ def prepare(source: Path, target: Path, *, include_packaging: bool = True,
     copied+=copy_public_docs(source,target)
     if include_android:
         copied += copy_android_sources(source, target)
-    resource=source/"film_foundry/assets/finder_resources.bin"
-    if resource.is_file():
-        copy_source_file(resource,target/"film_foundry/assets/finder_resources.bin");copied+=1
+    for name in ("finder_resources.bin", "selection_examples.sqlite3"):
+        resource = Path("film_foundry/assets") / name
+        copy_source_file(source / resource, target / resource)
+        copied += 1
     return copied
 
 

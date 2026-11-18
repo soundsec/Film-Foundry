@@ -28,7 +28,7 @@ class RollStripView(QtWidgets.QScrollArea):
         body=QtWidgets.QWidget();layout=QtWidgets.QVBoxLayout(body);layout.setSpacing(18)
         self.group=QtWidgets.QButtonGroup(body);self.group.setExclusive(True)
         for segment in roll_segments(data,length):
-            strip=QtWidgets.QFrame();strip.setStyleSheet('QFrame {background:#222426;border:1px solid #555;} QToolButton {border:1px solid #484a4c;color:#eee;} QToolButton:checked {border:2px solid #e8b665;}')
+            strip=QtWidgets.QFrame();strip.setObjectName('rollStrip')
             row=QtWidgets.QHBoxLayout(strip);row.setSpacing(3);row.setContentsMargins(12,10,12,10)
             for frame in segment:
                 index=frame['frame_index'];button=QtWidgets.QToolButton();button.setCheckable(True)

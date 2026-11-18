@@ -108,7 +108,10 @@ class DesktopCatalog:
                 record={**deepcopy(prior),'cover':record['cover'],'artifacts':{**prior.get('artifacts',{}),**record['artifacts']}}
         record['assets']=record_assets(record,inspect=True)
         record['family']=next((a['family'] for a in record['assets'] if path_key(a['path'])==path_key(record['medium'])),record.get('family','film'))
-        stack=next((s for s in self.results if s['key']==record['key'] or any(path_key(r['medium'])==path_key(record['medium']) for r in s['runs'])),None)
+        stack=next((s for s in self.results if s['key']==record['key'] or any(
+            path_key(r['medium'])==path_key(record['medium']) or
+            bool(record.get('source') and r.get('source') and path_key(r['source'])==path_key(record['source']))
+            for r in s['runs'])),None)
         if stack is None:
             stack={'id':str(uuid4()),'key':record['key'],'rating':0,'favorite':False,'runs':[]}
             self.results.append(stack)
@@ -175,28 +178,47 @@ class DesktopCatalog:
         return added
 
     def annotate(self, identity, *, rating=None, favorite=None):
+        self.annotate_many([identity],rating=rating,favorite=favorite)
+
+    def annotate_many(self, identities, *, rating=None, favorite=None):
+        """Apply one gallery action to its entire selection in one atomic save."""
         if rating is not None and (type(rating) is not int or not 0 <= rating <= 5):
             raise ValueError('Rating must be 0..5')
         if favorite is not None and type(favorite) is not bool:
             raise ValueError('Favorite must be boolean')
-        if identity.startswith('asset:'):
-            source=next((e for e in self.entries if 'asset:'+path_key(e['path'])==identity),None)
-            if source is not None:return self.annotate(source['id'],rating=rating,favorite=favorite)
-            current=next(e for e in self.assets() if e['id']==identity)
-            previous=deepcopy(self.asset_annotations)
-            annotation=self.asset_annotations.setdefault(identity,{'rating':current['rating'],'favorite':current['favorite']})
-            if rating is not None:annotation['rating']=rating
-            if favorite is not None:annotation['favorite']=favorite
-            try:self.save()
-            except Exception:self.asset_annotations=previous;raise
-            return
-        item = next(e for e in self.entries+self.results if e['id'] == identity)
-        previous = dict(item)
-        if rating is not None: item['rating'] = rating
-        if favorite is not None: item['favorite'] = favorite
-        try: self.save()
+        wanted=set(identities)
+        if not wanted:return
+        targets={item['id']:item for group in (self.entries,self.results) for item in group if item['id'] in wanted}
+        asset_ids={key for key in wanted if key.startswith('asset:')}
+        additions={}
+        if asset_ids:
+            sources={path_key(item['path']):item for item in self.entries}
+            for key in asset_ids:
+                source=sources.get(key[len('asset:'):])
+                if source is not None:targets[key]=source
+            remaining=asset_ids-targets.keys()
+            if remaining:
+                for asset in self.assets(_entries=sources):
+                    key=asset['id']
+                    if key not in remaining:continue
+                    if key in self.asset_annotations:targets[key]=self.asset_annotations[key]
+                    else:
+                        additions[key]={'rating':asset['rating'],'favorite':asset['favorite']}
+                        targets[key]=additions[key]
+        if missing:=wanted-targets.keys():
+            raise ValueError(f'Unknown catalog item: {min(missing)}')
+        # An asset and its indexed source can refer to the same annotation.
+        unique={id(item):item for item in targets.values()}
+        previous=[(item,dict(item)) for item in unique.values()]
+        for item in unique.values():
+            if rating is not None:item['rating']=rating
+            if favorite is not None:item['favorite']=favorite
+        self.asset_annotations.update(additions)
+        try:self.save()
         except Exception:
-            item.clear(); item.update(previous)
+            for key in additions:del self.asset_annotations[key]
+            for item,prior in previous:
+                item.clear();item.update(prior)
             raise
 
     def assets(self, stack=None, *, _entries=None):
@@ -227,14 +249,16 @@ class DesktopCatalog:
 
     def query(self, *, text='', favorites=False, relation='any', rating=0, sort='time', results=False,
               collection=None, kind='', family='', source=''):
+        search=text.casefold()
+        source_term=source.casefold()
         def accepted(item):
             stars=item['rating']
             compare={'any':True,'eq':stars==rating,'gt':stars>rating,'lt':stars<rating,'ge':stars>=rating,'le':stars<=rating}
-            return (path_key(item['path']) not in self.hidden_paths and (not favorites or item['favorite']) and compare[relation]
-                    and text.casefold() in (item.get('label',Path(item['path']).name)+' '+item.get('role','')).casefold()
+            return ((not self.hidden_paths or path_key(item['path']) not in self.hidden_paths) and (not favorites or item['favorite']) and compare[relation]
+                    and (not search or search in (item.get('label',Path(item['path']).name)+' '+item.get('role','')).casefold())
                     and (not kind or kind in item.get('types',('source',)))
                     and (not family or family==item.get('family',''))
-                    and source.casefold() in item.get('source_terms',item['path']).casefold())
+                    and (not source_term or source_term in item.get('source_terms',item['path']).casefold()))
         mode=collection or ('results' if results else 'sources')
         if mode=='assets':result=[a for a in self.assets() if accepted(a)]
         elif mode=='results':

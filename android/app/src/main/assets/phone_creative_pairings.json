@@ -12,8 +12,20 @@
       "recipe": {
         "film": {
           "name": "Vivid High-Contrast Color Reversal",
+          "medium_family": "film",
+          "medium_process": "slide",
           "image_polarity": "positive",
           "color_process": "color",
+          "halation_strength": 0.065,
+          "halation_threshold": 0.8,
+          "halation_softness": 0.12,
+          "halation_core_radius": 0.0024,
+          "halation_outer_radius": 0.01,
+          "halation_color": [
+            1.0,
+            0.46,
+            0.2
+          ],
           "hd_gamma": [
             0.9,
             0.906,
@@ -72,6 +84,16 @@
             0.036,
             0.035,
             0.04
+          ],
+          "grain_scales": [
+            0.00065,
+            0.0016,
+            0.004
+          ],
+          "grain_scale_weights": [
+            0.66,
+            0.25,
+            0.09
           ],
           "cross_process_layer_balance": [
             0.76,
@@ -141,12 +163,27 @@
       "recipe": {
         "film": {
           "name": "Cyan Shadow Warm Highlight Negative",
+          "medium_family": "film",
+          "medium_process": "negative",
           "image_polarity": "negative",
           "color_process": "color",
+          "halation_strength": 0.09,
+          "halation_threshold": 0.76,
+          "halation_softness": 0.18,
+          "halation_core_radius": 0.0035,
+          "halation_outer_radius": 0.016,
+          "halation_core_mix": 0.64,
+          "halation_color": [
+            1.0,
+            0.4,
+            0.16
+          ],
+          "emulsion_mtf_strength": 0.15,
+          "emulsion_blur_radius": 0.0012,
           "hd_gamma": [
-            0.7,
-            0.62,
-            0.5
+            0.77,
+            0.682,
+            0.55
           ],
           "density_max": [
             1.9,
@@ -165,19 +202,19 @@
           ],
           "layer_sensitivity_matrix": [
             [
-              0.86,
-              0.1,
-              0.04
+              0.909,
+              0.065,
+              0.026
             ],
             [
-              0.09,
-              0.8,
-              0.11
+              0.0585,
+              0.87,
+              0.0715
             ],
             [
-              0.04,
-              0.18,
-              0.78
+              0.026,
+              0.117,
+              0.857
             ]
           ],
           "dye_absorption_matrix": [
@@ -217,6 +254,16 @@
             0.08,
             0.07,
             0.06
+          ],
+          "grain_scales": [
+            0.0006,
+            0.0015,
+            0.004
+          ],
+          "grain_scale_weights": [
+            0.78,
+            0.18,
+            0.04
           ]
         },
         "develop": {
@@ -339,8 +386,22 @@
       "recipe": {
         "film": {
           "name": "Standard Color Reversal Transparency",
+          "medium_family": "film",
+          "medium_process": "slide",
           "image_polarity": "positive",
           "color_process": "color",
+          "halation_strength": 0.055,
+          "halation_threshold": 0.82,
+          "halation_softness": 0.13,
+          "halation_core_radius": 0.0026,
+          "halation_outer_radius": 0.01,
+          "halation_core_mix": 0.7,
+          "halation_color": [
+            1.0,
+            0.5,
+            0.24
+          ],
+          "emulsion_mtf_strength": 0.22,
           "hd_gamma": [
             0.82,
             0.826,
@@ -399,6 +460,16 @@
             0.035,
             0.035,
             0.04
+          ],
+          "grain_scales": [
+            0.00055,
+            0.0014,
+            0.0035
+          ],
+          "grain_scale_weights": [
+            0.7,
+            0.23,
+            0.07
           ]
         },
         "develop": {
@@ -521,12 +592,25 @@
       "recipe": {
         "film": {
           "name": "Warm Consumer Negative",
+          "medium_family": "film",
+          "medium_process": "negative",
           "image_polarity": "negative",
           "color_process": "color",
+          "halation_strength": 0.2,
+          "halation_threshold": 0.68,
+          "halation_softness": 0.2,
+          "halation_core_radius": 0.0045,
+          "halation_outer_radius": 0.022,
+          "halation_color": [
+            1.0,
+            0.34,
+            0.12
+          ],
+          "emulsion_mtf_strength": 0.25,
           "hd_gamma": [
-            0.6,
-            0.64,
-            0.58
+            0.66,
+            0.704,
+            0.638
           ],
           "density_max": [
             1.78,
@@ -545,19 +629,19 @@
           ],
           "layer_sensitivity_matrix": [
             [
-              0.84,
-              0.12,
-              0.04
+              0.896,
+              0.078,
+              0.026
             ],
             [
-              0.1,
-              0.77,
-              0.13
+              0.065,
+              0.8505,
+              0.0845
             ],
             [
-              0.06,
-              0.22,
-              0.72
+              0.039,
+              0.143,
+              0.818
             ]
           ],
           "dye_absorption_matrix": [
@@ -597,6 +681,16 @@
             0.08,
             0.07,
             0.06
+          ],
+          "grain_scales": [
+            0.0006,
+            0.0015,
+            0.004
+          ],
+          "grain_scale_weights": [
+            0.78,
+            0.18,
+            0.04
           ]
         },
         "develop": {
@@ -718,12 +812,24 @@
       "recipe": {
         "film": {
           "name": "Red Rich Negative",
+          "medium_family": "film",
+          "medium_process": "negative",
           "image_polarity": "negative",
           "color_process": "color",
+          "halation_strength": 0.16,
+          "halation_threshold": 0.7,
+          "halation_softness": 0.2,
+          "halation_core_radius": 0.0042,
+          "halation_outer_radius": 0.02,
+          "halation_color": [
+            1.0,
+            0.28,
+            0.1
+          ],
           "hd_gamma": [
-            0.64,
-            0.67,
-            0.6
+            0.704,
+            0.737,
+            0.66
           ],
           "density_max": [
             1.84,
@@ -742,19 +848,19 @@
           ],
           "layer_sensitivity_matrix": [
             [
-              0.88,
-              0.09,
-              0.03
+              0.922,
+              0.0585,
+              0.0195
             ],
             [
-              0.11,
-              0.77,
-              0.12
+              0.0715,
+              0.8505,
+              0.078
             ],
             [
-              0.05,
-              0.21,
-              0.74
+              0.0325,
+              0.1365,
+              0.831
             ]
           ],
           "dye_absorption_matrix": [
@@ -794,6 +900,16 @@
             0.08,
             0.07,
             0.06
+          ],
+          "grain_scales": [
+            0.0006,
+            0.0015,
+            0.004
+          ],
+          "grain_scale_weights": [
+            0.78,
+            0.18,
+            0.04
           ]
         },
         "develop": {
@@ -917,8 +1033,15 @@
       "recipe": {
         "film": {
           "name": "Monochrome Push",
+          "medium_family": "film",
+          "medium_process": "negative",
           "image_polarity": "negative",
           "color_process": "monochrome",
+          "halation_strength": 0.05,
+          "halation_threshold": 0.74,
+          "halation_softness": 0.16,
+          "halation_core_radius": 0.003,
+          "halation_outer_radius": 0.012,
           "hd_gamma": [
             0.78,
             0.78,
@@ -948,7 +1071,10 @@
             1.0,
             1.0,
             1.0
-          ]
+          ],
+          "silver_grain_strength": 0.038,
+          "silver_grain_radius": 0.0011,
+          "silver_grain_clump_mix": 0.26
         },
         "develop": {
           "program_key": "bw_negative",

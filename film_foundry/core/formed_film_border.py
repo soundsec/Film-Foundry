@@ -162,6 +162,8 @@ def form_film_border(medium, config, snapshot, program_kind):
     factory_exposure=1.8*2.**border.factory_exposure_ev
     dose_range=1+.45*border.factory_exposure_variation
     exposure = np.repeat(np.linspace(0, factory_exposure*dose_range, count, dtype=np.float32)[None, :, None], 3, axis=2)
+    lamp=np.asarray(border.factory_light_color_rgb,dtype=np.float32)
+    exposure*=lamp
     response = processors[program_kind](exposure, config.film, config.chemistry,
                                        retain_latent_fraction=False, retain_grain_moments=False)
     position = np.clip(dose/dose_range,0,1) * (count - 1)
@@ -186,6 +188,7 @@ def form_film_border(medium, config, snapshot, program_kind):
     kwargs = {name: surround(getattr(medium, name), layer_strip)
               for name in ('density_cmy', 'density_grain')}
     history_strip = np.repeat((dose * factory_exposure)[..., None], 3, axis=2)
+    history_strip*=lamp
     kwargs.update({name: surround(getattr(medium, name), history_strip)
                    for name in ('linear_input', 'after_mtf', 'after_halation')})
     kwargs['optical_density_rgb'] = surround(medium.optical_density_rgb, optical_strip)
@@ -212,6 +215,7 @@ def form_film_border(medium, config, snapshot, program_kind):
         'spatial_reference': 'uniform_material_response_lut_v1',
         'factory_response': 'material_exposure_table_v1',
         'factory_exposure_ev': border.factory_exposure_ev,
+        'factory_light_color_rgb': list(border.factory_light_color_rgb),
         'factory_exposure_variation': border.factory_exposure_variation,
         'placement_model': 'strip_loading_offset_v1',
         'block_pattern_model': 'fixed_motif_sequence_v1' if border.factory_barcode in {'blocks','staggered_blocks','paired_blocks'} else None,

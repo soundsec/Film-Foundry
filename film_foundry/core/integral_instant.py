@@ -6,6 +6,7 @@ Timing and optical clearing are creative parameters, not a manufacturer's fit.
 from film_foundry.core.transfer_inventory import ReagentMaterial
 from film_foundry.core import transfer_inventory as inventory
 from dataclasses import dataclass, asdict, replace, field
+from copy import copy
 import json
 import math
 import numpy as np
@@ -64,7 +65,7 @@ class InstantState(ProcessAnnotations):
         for key in ("opacifier","stabilization"):
             if fields[key].shape!=fields["coverage"].shape or (fields[key]<0).any() or (fields[key]>1).any():
                 raise ValueError("Invalid integral optical/stabilizing layer")
-        transfer.PeelState(self.group_id,self.seed,self.material.transfer_material(),
+        transfer_state=transfer.PeelState(self.group_id,self.seed,self.material.transfer_material(),
             "exposed" if self.stage in ("exposed","ejected") else "contact",self.elapsed_seconds,
             {k:fields[k] for k in transfer.state_fields(_transfer_version(self.schema_version))},self.process_json,schema_version=_transfer_version(self.schema_version))
         if self.schema_version>=4:
@@ -77,6 +78,9 @@ class InstantState(ProcessAnnotations):
             if not np.allclose(fields['stabilization'],expected,atol=1e-6):raise ValueError('Stabilization time mismatch')
             if (self.stage=='stable')!=(expected==1) or self.stage=='finished':raise ValueError('Invalid integral completion state')
         object.__setattr__(self,"fields",fields)
+        # This exact immutable projection was checked above. Reusing it at the
+        # next transfer operation avoids traversing every pool a second time.
+        object.__setattr__(self,"_transfer_source",transfer_state)
 
 
 _TRANSFER_FIELDS=("exposure_response","immobile","remaining","received","coverage","contact","arrival_seconds")
@@ -86,6 +90,15 @@ def _transfer_version(version):return 5 if version==4 else version
 
 
 def _transfer_state(state,stage):
+    from .execution_topology import reference_execution_enabled
+    source=getattr(state,'_transfer_source',None)
+    if source is not None and source.stage==stage and not reference_execution_enabled():
+        if source.process_json==state.process_json:return source
+        # with_annotations changes only validated recipe/source metadata and
+        # preserves the arrays, material and actual processing conditions.
+        result=copy(source)
+        object.__setattr__(result,'process_json',state.process_json)
+        return result
     return transfer.PeelState(state.group_id,state.seed,state.material.transfer_material(),stage,state.elapsed_seconds,
         {k:state.fields[k] for k in transfer.state_fields(_transfer_version(state.schema_version))},state.process_json,schema_version=_transfer_version(state.schema_version))
 
@@ -253,6 +266,15 @@ def _receiver_proxy(body):
 
 def observe(body,view=ViewingConditions()):
     validate_body(body)
+    if body.schema_version>=2:
+        from .observation_compute import run
+        light=np.asarray(view.illuminant_rgb,dtype=np.float64)
+        if light.shape!=(3,) or not np.isfinite(light).all() or (light<0).any():raise ValueError('Invalid illuminant')
+        if not math.isfinite(view.exposure_ev) or not -20<=view.exposure_ev<=20:raise ValueError('Invalid viewing exposure')
+        f=body.fields
+        accelerated=run('observe_instant',[f[k] for k in ('received','density_per_unit','paper','stain_density','coverage','backing_texture','opacifier')],
+                        [*light,2**view.exposure_ev],channels=f['received'].shape[-1])
+        if accelerated is not None:return frame_observation(body,accelerated,view)
     proxy=_receiver_proxy(body)
     # Internal layers retain image geometry; frame the completed observation once.
     image=transfer.observe(proxy,replace(view,include_border=False))

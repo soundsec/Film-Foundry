@@ -132,7 +132,7 @@ def test_actual_cli_and_embedded_bath_editor(tmp_path,monkeypatch,capsys):
     assert page.open_from(cli);wait(lambda:not page.busy)
     assert page.last_error is None and page.edit_bath_button.isEnabled()
     page.edit_bath_button.click();editor=page.bath_editor
-    assert editor is not None and editor.windowType()==QtCore.Qt.WindowType.Widget
+    assert editor is not None and editor.windowType()==QtCore.Qt.WindowType.Dialog
     editor.controls['time_min'].setValue(.35)
     assert editor.controls['agitation_time_s'].value()==21.
     target=tmp_path/'ui.ffprocess.npz'

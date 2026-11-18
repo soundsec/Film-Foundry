@@ -159,6 +159,8 @@ class PreviewRequest:
     long_edge: int = PREVIEW_PROCESS_LONG_EDGE
     reduced_inputs: bool = False
     path_seed_offset: int | None = None
+    cancel: CancelFlag | None = None
+    probe: object = None
 
 
 def labeled_preview_tile(title: str, image: np.ndarray, tile_size: int) -> Image.Image:
@@ -1970,104 +1972,114 @@ class DarkroomPanel:
         self._show_preview(source_name,left,inspector,left_title,inspector_title)
 
     def _render_preview(self, request: PreviewRequest) -> None:
+        from film_foundry.app.preview_budget import Priority, preview_budget
+        check = WorkflowControl(cancel_requested=request.cancel.requested).check_cancel if request.cancel else None
         try:
-            mode = request.mode
-            config = request.config
-            if mode == "full":
-                original, result, _hit = self._preview_session.render(request.source_path, config, long_edge=request.long_edge,
-                    path_seed_offset=request.path_seed_offset)
-                self._post_preview(request.token, lambda: self._show_preview(request.source_path.name, original, result, tr("preview.input_image"), tr("preview.final_positive")))
-                return
-            if mode == "develop_latent":
-                latent, _metadata = load_exposed_latent(request.source_path)
-                if request.reduced_inputs:
-                    from film_foundry.app.preview_inputs import preview_latent
-                    latent = preview_latent(latent, request.long_edge)
-                left = gray_to_rgb(np.mean(latent.developability, axis=-1))
-                medium = develop_negative_from_latent(latent, config, rng=rng_for_develop(request.source_path, config, path_seed_offset=request.path_seed_offset))
-                right = optical_density_visual_preview(medium.optical_density_rgb)
-                self._post_preview(request.token, lambda: self._show_preview(request.source_path.name, left, right, tr("preview.latent"), tr("preview.stage.transmitted_medium")))
-                return
-            if mode in ("develop", "expose"):
-                from film_foundry.core.source_image import load_formation_image, exposure_preview
-                from film_foundry.core.engine import expose_linear_to_latent
-                input_path = request.source_path
-                source, color = load_formation_image(input_path, input_icc_policy=config.input_icc_policy)
-                source = resize_to_long_edge(source, request.long_edge)
-                original = exposure_preview(source, color["encoding"])
-                if mode == "expose":
-                    expose = expose_linear_to_latent if color["encoding"] == "linear_rgb" else expose_image_to_latent
-                    latent = expose(source, config, rng=rng_for_develop(input_path, config, path_seed_offset=request.path_seed_offset))
-                    right = gray_to_rgb(np.mean(latent.developability, axis=-1))
-                    self._post_preview(request.token, lambda: self._show_preview(input_path.name, original, right, tr("preview.input_image"), tr("preview.latent")))
-                    return
-                if mode == "develop":
-                    negative = develop_negative(source, config, input_encoding=color["encoding"], rng=rng_for_develop(input_path, config, path_seed_offset=request.path_seed_offset))
-                    preview = negative_visual_preview(negative.density_grain, config.film)
-                    density = density_preview(negative.density_grain, config)
-                    halo_preview = gray_to_rgb(halation_alpha(negative.after_mtf, negative.after_halation))
-                    halo_linear = gray_to_rgb(halation_alpha_linear(negative.after_mtf, negative.after_halation))
-                    inspector = preview_grid(
-                        [
-                            ("negative visual", preview),
-                            ("density debug", density),
-                            ("cyan density", gray_to_rgb(density[..., 0])),
-                            ("magenta density", gray_to_rgb(density[..., 1])),
-                            ("yellow density", gray_to_rgb(density[..., 2])),
-                            ("halation preview", halo_preview),
-                            ("halation linear", halo_linear),
-                        ],
-                        tile_size=260,
-                        columns=2,
-                    )
-                    formed_view=optical_density_visual_preview(negative.optical_density_rgb) if negative.optical_density_rgb is not None else preview
-                    self._post_preview(request.token, lambda: self._show_stage_preview(input_path.name, original, formed_view, inspector, tr("preview.input_image"), tr("preview.stage.transmitted_medium"), tr("preview.develop_inspector")))
-                return
-
-            negative_path = request.source_path
-            if request.reduced_inputs:
-                scanned, scan_source, preview = scan_from_file(negative_path, config, retain_stages=True, preview_long_edge=request.long_edge)
-            else:
-                scanned, scan_source, preview = scan_from_file(negative_path, config, retain_stages=True)
-            positive_observation = str(scanned.input_polarity).strip().lower() == "positive"
-            if positive_observation:
-                inspector_items = [
-                    (tr("preview.stage.transmitted_medium"), preview),
-                    (tr("preview.stage.scanner_raw"), scanned.scanner_raw),
-                    (tr("preview.stage.positive_tone_input"), scanned.positive_raw),
-                    (tr("preview.stage.final_scan"), scanned.output_srgb),
-                ]
-            else:
-                inspector_items = [
-                    (tr("preview.negative_visual"), preview),
-                    (tr("preview.stage.scanner_raw"), scanned.scanner_raw),
-                    (tr("preview.stage.negative_base_balanced"), scanned.negative_base_balanced),
-                    (tr("preview.stage.negative_positive_raw"), scanned.positive_raw),
-                    (tr("preview.stage.negative_channel_reconstructed"), scanned.negative_channel_reconstructed),
-                    (tr("preview.stage.final_scan"), scanned.output_srgb),
-                ]
-            inspector = preview_grid(
-                inspector_items,
-                tile_size=300,
-                columns=2,
-            )
-            diagnostic = scanner_capture_summary(scanned.metadata)
-            self._post_preview(request.token, lambda: self._show_stage_preview(
-                negative_path.name,
-                preview,
-                scanned.output_srgb,
-                inspector,
-                tr("preview.negative_visual"),
-                tr("preview.stage.final_scan"),
-                f"{tr('preview.scan_inspector')} ({scan_source}) · {diagnostic}",
-            ))
+            from film_foundry.core.formation_observer import observe
+            with preview_budget.slot(Priority.INTERACTIVE, check), observe(request.probe):
+                self._compute_preview(request)
+        except WorkflowCancelled:
+            pass
         except Exception as exc:
             message = str(exc)
+            from film_foundry.app.crash_journal import record_exception
+            record_exception('Film preview',exc)
             self._post_preview(request.token, lambda: self.status.set(f"预览失败：{message}"))
         finally:
             # Completion must release the slot even when a newer edit makes
             # this frame stale. Presentation and lifecycle have separate guards.
             self.root.after(0, lambda: self._finish_preview(request.token))
+
+    def _compute_preview(self, request):
+        mode = request.mode
+        config = request.config
+        if mode == "full":
+            original, result, _hit = self._preview_session.render(request.source_path, config, long_edge=request.long_edge,
+                path_seed_offset=request.path_seed_offset)
+            self._post_preview(request.token, lambda: self._show_preview(request.source_path.name, original, result, tr("preview.input_image"), tr("preview.final_positive")))
+            return
+        if mode == "develop_latent":
+            latent = self._preview_session.latent_copy(request.source_path, request.long_edge if request.reduced_inputs else None)
+            left = gray_to_rgb(np.mean(latent.developability, axis=-1))
+            medium = develop_negative_from_latent(latent, config, rng=rng_for_develop(request.source_path, config, path_seed_offset=request.path_seed_offset))
+            if request.probe:request.probe.medium(medium)
+            right = optical_density_visual_preview(medium.optical_density_rgb)
+            self._post_preview(request.token, lambda: self._show_preview(request.source_path.name, left, right, tr("preview.latent"), tr("preview.stage.transmitted_medium")))
+            return
+        if mode in ("develop", "expose"):
+            from film_foundry.core.source_image import exposure_preview
+            from film_foundry.core.engine import expose_linear_to_latent
+            input_path = request.source_path
+            source, encoding = self._preview_session.photo(input_path, config.input_icc_policy, request.long_edge)
+            if request.probe:request.probe.expected_pixels = source.shape[0]*source.shape[1]
+            original = exposure_preview(source, encoding)
+            if mode == "expose":
+                expose = expose_linear_to_latent if encoding == "linear_rgb" else expose_image_to_latent
+                latent = expose(source, config, rng=rng_for_develop(input_path, config, path_seed_offset=request.path_seed_offset))
+                right = gray_to_rgb(np.mean(latent.developability, axis=-1))
+                self._post_preview(request.token, lambda: self._show_preview(input_path.name, original, right, tr("preview.input_image"), tr("preview.latent")))
+                return
+            if mode == "develop":
+                negative = develop_negative(source, config, input_encoding=encoding, rng=rng_for_develop(input_path, config, path_seed_offset=request.path_seed_offset))
+                if request.probe:request.probe.medium(negative)
+                preview = negative_visual_preview(negative.density_grain, config.film)
+                density = density_preview(negative.density_grain, config)
+                halo_preview = gray_to_rgb(halation_alpha(negative.after_mtf, negative.after_halation))
+                halo_linear = gray_to_rgb(halation_alpha_linear(negative.after_mtf, negative.after_halation))
+                inspector = preview_grid(
+                    [
+                        ("negative visual", preview),
+                        ("density debug", density),
+                        ("cyan density", gray_to_rgb(density[..., 0])),
+                        ("magenta density", gray_to_rgb(density[..., 1])),
+                        ("yellow density", gray_to_rgb(density[..., 2])),
+                        ("halation preview", halo_preview),
+                        ("halation linear", halo_linear),
+                    ],
+                    tile_size=260,
+                    columns=2,
+                )
+                formed_view=optical_density_visual_preview(negative.optical_density_rgb) if negative.optical_density_rgb is not None else preview
+                self._post_preview(request.token, lambda: self._show_stage_preview(input_path.name, original, formed_view, inspector, tr("preview.input_image"), tr("preview.stage.transmitted_medium"), tr("preview.develop_inspector")))
+            return
+
+        negative_path = request.source_path
+        if request.reduced_inputs:
+            scanned, scan_source, preview = scan_from_file(negative_path, config, retain_stages=True, preview_long_edge=request.long_edge)
+        else:
+            scanned, scan_source, preview = scan_from_file(negative_path, config, retain_stages=True)
+        positive_observation = str(scanned.input_polarity).strip().lower() == "positive"
+        if positive_observation:
+            inspector_items = [
+                (tr("preview.stage.transmitted_medium"), preview),
+                (tr("preview.stage.scanner_raw"), scanned.scanner_raw),
+                (tr("preview.stage.positive_tone_input"), scanned.positive_raw),
+                (tr("preview.stage.final_scan"), scanned.output_srgb),
+            ]
+        else:
+            inspector_items = [
+                (tr("preview.negative_visual"), preview),
+                (tr("preview.stage.scanner_raw"), scanned.scanner_raw),
+                (tr("preview.stage.negative_base_balanced"), scanned.negative_base_balanced),
+                (tr("preview.stage.negative_positive_raw"), scanned.positive_raw),
+                (tr("preview.stage.negative_channel_reconstructed"), scanned.negative_channel_reconstructed),
+                (tr("preview.stage.final_scan"), scanned.output_srgb),
+            ]
+        inspector = preview_grid(
+            inspector_items,
+            tile_size=300,
+            columns=2,
+        )
+        diagnostic = scanner_capture_summary(scanned.metadata)
+        self._post_preview(request.token, lambda: self._show_stage_preview(
+            negative_path.name,
+            preview,
+            scanned.output_srgb,
+            inspector,
+            tr("preview.negative_visual"),
+            tr("preview.stage.final_scan"),
+            f"{tr('preview.scan_inspector')} ({scan_source}) · {diagnostic}",
+        ))
 
     def _start_process(self) -> None:
         if self._processing:
@@ -2106,11 +2118,16 @@ class DarkroomPanel:
             daemon=True,
         ).start()
 
-    def _start_resume(self):
+    def _offer_resume(self, path, pending=True):
+        callback = getattr(self, '_mark_resumable', None)
+        if callback is not None:
+            self.root.after(0, lambda: callback(path, pending))
+
+    def _start_resume(self, path=None):
         if self._processing:
             self.status.set(tr("status.resume_busy"))
             return
-        path = file_dialog.askopenfilename(parent=self.root,
+        path = path or file_dialog.askopenfilename(parent=self.root,
             filetypes=[("Film Foundry run JSON", "*.json")])
         if not path:
             return
@@ -2120,6 +2137,7 @@ class DarkroomPanel:
         except Exception as exc:
             self.status.set(f"{tr('status.process_failed')}: {exc}")
             return
+        self._resume_record = plan.manifest
         self._cancel_flag = CancelFlag()
         self._processing = True
         self._set_process_button_mode("cancel")
@@ -2130,6 +2148,7 @@ class DarkroomPanel:
         try:
             from film_foundry.app.replay_batch import run_resume_batch
             result = run_resume_batch(plan, control=self._workflow_control(cancel_flag))
+            self._offer_resume(plan.manifest, result.cancelled or bool(result.failures))
             message = tr("status.resume_complete").format(completed=result.completed,
                 reused=result.reused, failed=len(result.failures), output=plan.output_root)
             if result.failures:
@@ -2141,6 +2160,8 @@ class DarkroomPanel:
                 message += f" {tr('status.session_save_failed')}: {result.record_error}"
             self._post_status(message)
         except Exception as exc:
+            from film_foundry.app.crash_journal import record_exception
+            record_exception('Film processing',exc)
             self._post_status(f"{tr('status.process_failed')}: {exc}")
         finally:
             self.root.after(0, self._finish_process)
@@ -2231,6 +2252,8 @@ class DarkroomPanel:
                     output_root, config, scaled_override=bool(preview), settings=settings_snapshot, control=control,
                     on_result=self._record_generated_result)
                 self.root.after(0, lambda value=str(batch.medium_root): self._set_generated_medium_root(value))
+                if batch.record_error is None:
+                    self._offer_resume(batch.run_root / "film_foundry_run.json", batch.cancelled or bool(batch.failures))
                 message = self._batch_status(mode, batch.completed, batch.failures, batch.run_root)
                 if batch.record_error is not None:
                     message += f" {tr('status.session_save_failed')}: {batch.record_error}"
@@ -2319,6 +2342,8 @@ class DarkroomPanel:
                     started_counter=batch_started_counter,
                     items=item_records,
                 )
+                if record_error is None:
+                    self._offer_resume(manifest_path, bool(failures) or len(item_records) < len(inputs))
                 message = self._batch_status("full", completed, failures, run_root)
                 if record_error is not None:
                     message += f" {tr('status.session_save_failed')}: {record_error}"
@@ -2414,6 +2439,8 @@ class DarkroomPanel:
                     items=item_records,
                 )
                 self.root.after(0, lambda value=str(developed_root): self._set_generated_medium_root(value))
+                if record_error is None:
+                    self._offer_resume(manifest_path, bool(failures) or len(item_records) < len(inputs))
                 message = self._batch_status("develop", completed, failures, run_root)
                 if record_error is not None:
                     message += f" {tr('status.session_save_failed')}: {record_error}"
@@ -2538,6 +2565,8 @@ class DarkroomPanel:
                 started_counter=batch_started_counter,
                 items=item_records,
             )
+            if record_error is None:
+                self._offer_resume(manifest_path, bool(failures) or len(item_records) < len(negative_paths))
             message = self._batch_status("scan", completed, failures, scan_output_root)
             if record_error is not None:
                 message += f" {tr('status.session_save_failed')}: {record_error}"
@@ -2545,6 +2574,8 @@ class DarkroomPanel:
                 message += " " + tr("status.cancelling")
             self._post_status(message)
         except Exception as exc:
+            from film_foundry.app.crash_journal import record_exception
+            record_exception('Film batch processing',exc)
             self._post_status(f"{tr('status.process_failed')}: {exc}")
         finally:
             self.root.after(0, self._finish_process)

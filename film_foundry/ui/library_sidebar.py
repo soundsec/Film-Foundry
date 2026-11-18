@@ -127,7 +127,11 @@ class LibrarySidebar(QtWidgets.QWidget):
         def package():
             path=QtWidgets.QFileDialog.getExistingDirectory(self,text('选择 .fffilm / .ffworkspace 工作目录','Choose .fffilm / .ffworkspace folder'))
             if path and self.open_work:self.open_work(path,'film' if path.lower().endswith('.fffilm') else 'material')
+        def process():
+            path,_=QtWidgets.QFileDialog.getOpenFileName(self,text('打开冲洗存档','Open process checkpoint'),'','Film process (*.ffprocess.npz)')
+            if path and self.open_work:self.open_work(path,'process')
         menu.addAction(text('会话文件…','Session file…'),file)
+        menu.addAction(text('冲洗存档…','Process checkpoint…'),process)
         menu.addAction(text('工作目录包…','Work package…'),package)
         menu.exec(self.mapToGlobal(self.rect().bottomLeft()))
 
@@ -140,7 +144,7 @@ class LibrarySidebar(QtWidgets.QWidget):
         self.refresh();self.index_folders()
 
     def index_folders(self):
-        if self.indexing:return
+        if self.indexing:self._index_pending=True;return
         folders=load_settings()['source_folders']
         if not folders:return
         self.indexing=True;self.library.status.setText(text('正在检索来源文件夹…','Indexing source folders…'))
@@ -155,6 +159,8 @@ class LibrarySidebar(QtWidgets.QWidget):
 
     def finish_index(self,paths,error):
         self.indexing=False
+        if getattr(self,'_index_pending',False):
+            self._index_pending=False;QtCore.QTimer.singleShot(0,self.index_folders)
         if error:self.library.status.setText(error);return
         try:
             # Recheck removals made while the background directory walk ran.

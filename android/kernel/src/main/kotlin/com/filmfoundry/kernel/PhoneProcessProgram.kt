@@ -88,6 +88,21 @@ internal class PhoneProcessProgram private constructor(val key: String,val steps
     }
     class Pools(var halide: Float=0f,var activation: Float=0f,var silver: Float=0f,var coupler: Float=0f,var dye: Float=0f,var bleached: Float=0f)
     class Projection(var firstSilver: Float=0f,var firstColorDye: Float=0f)
+    fun computePlan(color: Boolean): FilmDevelopmentPlan {
+        // Versioned numeric layout shared with GLES; all bath preparation remains here.
+        val values=FloatArray(16+steps.size*8)
+        values[0]=steps.size.toFloat();values[1]=if(interactive) 1f else 0f
+        values[2]=if(activationLedger) 1f else 0f;values[3]=if(mismatch) 1f else 0f
+        values[4]=firstDevelopment.toFloat();values[5]=dyeCoupling;values[6]=maskDyeDamage
+        values[7]=if(color) 1f else 0f
+        for(l in 0..2) values[8+l]=balance[l]
+        for(i in steps.indices) {
+            val k=16+i*8;values[k]=actions[i].toFloat();values[k+1]=fractions[i]
+            values[k+2]=fog[i];values[k+3]=gamma[i];values[k+4]=gammaExponent[i]
+            values[k+5]=compensation[i];values[k+6]=localDyeDamage[i]
+        }
+        return FilmDevelopmentPlan(this,color,values)
+    }
     fun apply(p: Pools,hasDye: Boolean,localRate: Float,layer: Int=0,firstRate: Float=1f,colorRate: Float=1f,projection: Projection?=null) {
         projection?.let { it.firstSilver=0f;it.firstColorDye=0f }
         for(i in steps.indices) {

@@ -12,21 +12,34 @@ from film_foundry.contracts.material_recipe import KEY as RECIPE_KEY,STATUS_KEY
 class MaterialInspector(QtWidgets.QWidget):
     def __init__(self, owner, operation_labels):
         super().__init__();self.owner=owner;self.labels=operation_labels;self._identity=None
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Preferred)
         layout=QtWidgets.QVBoxLayout(self);layout.setContentsMargins(0,0,0,0)
         from film_foundry.ui.material_edit_tools import MaterialEditTools
-        edits=QtWidgets.QHBoxLayout();layout.addLayout(edits)
-        owner.edit_tools=MaterialEditTools(owner,edits)
-        bar=QtWidgets.QHBoxLayout();layout.addLayout(bar)
+        from film_foundry.ui.flow_toolbar import FlowToolbar
+        self.toolbar=bar=FlowToolbar();layout.addLayout(bar)
+        owner.edit_tools=MaterialEditTools(owner,bar,bar)
+        self.view_options=QtWidgets.QToolButton();self.view_options.setText(text('观看工具','View tools'))
+        self.view_options.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu=QtWidgets.QMenu(self.view_options);self.view_options.setMenu(menu);bar.addWidget(self.view_options)
         for label,callback in ((text('适合窗口','Fit'),owner.viewer.fit),('100%',owner.viewer.actual_size)):
-            button=QtWidgets.QToolButton();button.setText(label);button.clicked.connect(callback);bar.addWidget(button)
+            menu.addAction(label,callback)
         bar.addStretch()
-        self.histogram_button=QtWidgets.QToolButton();self.histogram_button.setText(text('直方图','Histogram'));self.histogram_button.setCheckable(True);bar.addWidget(self.histogram_button)
-        self.history_button=QtWidgets.QToolButton();self.history_button.setText(text('工艺记录','Process history'));self.history_button.setCheckable(True);bar.addWidget(self.history_button)
-        self.panels=QtWidgets.QStackedWidget();layout.addWidget(self.panels);self.panels.hide()
-        self.histogram=Histogram();self.histogram.setFixedHeight(150);self.panels.addWidget(self.histogram)
-        self.histogram.setToolTip(text('当前屏幕预览的RGB/亮度分布，包含当前白边或诊断视图；大图均匀抽样至约100万像素。左键切换RGB/亮度，右键切换线性/对数。不表示RAW曝光余量。',
-            'Distribution of the displayed preview, including borders or diagnostic maps. Large previews are uniformly sampled to about 1 MP. Click: RGB/brightness; right-click: linear/log. Not RAW headroom.'))
-        self.history=QtWidgets.QTreeWidget();self.history.setHeaderLabels([text('工序 / 参数','Operation / parameter'),text('已执行值','Executed value')]);self.history.setFixedHeight(170)
+        self.histogram_button=QtWidgets.QToolButton();self.histogram_button.setText(text('直方图','Histogram'));self.histogram_button.setCheckable(True);self.histogram_button.setParent(self);self.histogram_button.hide()
+        self.history_button=QtWidgets.QToolButton();self.history_button.setText(text('工艺记录','Process history'));self.history_button.setCheckable(True);self.history_button.setParent(self);self.history_button.hide()
+        for button in (self.histogram_button,self.history_button):
+            action=menu.addAction(button.text(),button.click);action.setCheckable(True)
+            button.toggled.connect(action.setChecked)
+        from film_foundry.ui.material_probe import MaterialProbe
+        self.probe=MaterialProbe(owner,menu,layout)
+        self.panels=QtWidgets.QStackedWidget();self.panels.setMinimumHeight(112);self.panels.hide()
+        self.panels.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Expanding)
+        self.histogram_slot=QtWidgets.QWidget();slot=QtWidgets.QVBoxLayout(self.histogram_slot);slot.setContentsMargins(0,0,0,0)
+        self.histogram=Histogram();slot.addWidget(self.histogram);self.panels.addWidget(self.histogram_slot)
+        self.histogram.setToolTip(self.histogram.toolTip()+text(' 分布含白边/诊断视图，大图均匀抽样至约100万像素；裁切指示使用全部预览像素。',
+            ' Distribution includes borders/diagnostic views, sampled uniformly to about 1 MP. Clipping indicators use all preview pixels.'))
+        self.histogram.settings_changed.connect(self.sync_placement)
+        owner.viewer.enable_clipping(self.histogram.settings)
+        self.history=QtWidgets.QTreeWidget();self.history.setHeaderLabels([text('工序 / 参数','Operation / parameter'),text('已执行值','Executed value')]);self.history.setMinimumHeight(112)
         self.history.setColumnWidth(0,200);self.panels.addWidget(self.history)
         self.history.setToolTip(text('只读的已执行记录，优先使用完整配方；不会重算、撤销或推进工艺。旧材料仅显示实际保存的历史。',
             'Read-only executed history, preferring the complete recipe. Does not recalculate, undo or advance processing. Older materials show only recorded events.'))
@@ -38,13 +51,31 @@ class MaterialInspector(QtWidgets.QWidget):
         if checked:
             other=self.history_button if index==0 else self.histogram_button
             other.blockSignals(True);other.setChecked(False);other.blockSignals(False)
-            self.panels.setCurrentIndex(index)
-        self.panels.setVisible(self.histogram_button.isChecked() or self.history_button.isChecked())
+        self.sync_placement()
+
+    def sync_placement(self,*_):
+        if not hasattr(self.owner,'histogram_sidebar_host'):return
+        side=self.histogram.settings.values['layout']=='sidebar'
+        shown=self.histogram_button.isChecked();history=self.history_button.isChecked()
+        target=self.owner.histogram_sidebar_host if side else self.histogram_slot
+        if self.histogram.parentWidget() is not target:target.layout().addWidget(self.histogram)
+        self.owner.histogram_sidebar_host.setVisible(side and shown)
+        self.histogram.setVisible(shown)
+        self.panels.setCurrentIndex(1 if history else 0)
+        self.panels.setVisible(history or shown and not side)
+        placement=(side,shown,history)
+        if getattr(self,'_placement',None)!=placement:
+            self._placement=placement
+            if hasattr(self.owner,'layout_memory'):
+                self.owner.layout_memory.apply('histogram_sidebar',force=True)
+                self.owner.layout_memory.apply('inspection')
 
     def set_pixels(self,pixels):
         # Statistics only: never feed this sampling into formation or export.
         stride=max(1,math.ceil(math.sqrt(pixels.shape[0]*pixels.shape[1]/1_000_000)))
-        self.histogram.set_pixels(pixels[::stride,::stride])
+        rgb=pixels.reshape(-1,3)
+        endpoints=(rgb.min(axis=0)==0,rgb.max(axis=0)==255) if rgb.size else ([False]*3,[False]*3)
+        self.histogram.set_pixels(pixels[::stride,::stride],endpoints=endpoints)
 
     def sync(self):
         session=self.owner.session

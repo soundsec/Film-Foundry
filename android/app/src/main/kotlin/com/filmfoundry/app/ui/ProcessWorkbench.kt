@@ -60,16 +60,18 @@ class ProcessProgramEditor(private val activity: ComponentActivity,private val s
         select(0)
         return Sections(panels,entrances,{selected==0},{if(selected==0) false else {select(0);true}})
     }
-    private fun hierarchicalBack(dialog: AlertDialog,pages: Sections) {
+    private fun hierarchicalBack(dialog: AlertDialog,pages: Sections,leave: ()->Unit) {
+        fun back() { if(!pages.up()) leave() }
+        dialog.setCanceledOnTouchOutside(false)
         if(android.os.Build.VERSION.SDK_INT>=33) {
-            val callback=android.window.OnBackInvokedCallback { if(!pages.up()) dialog.cancel() }
+            val callback=android.window.OnBackInvokedCallback { back() }
             val dispatcher=dialog.onBackInvokedDispatcher
             dispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,callback)
             dialog.setOnDismissListener { dispatcher.unregisterOnBackInvokedCallback(callback) }
         }
         dialog.setOnKeyListener { _,key,event ->
-            if(key==android.view.KeyEvent.KEYCODE_BACK && !pages.atRoot()) {
-                if(event.action==android.view.KeyEvent.ACTION_UP) pages.up()
+            if(key==android.view.KeyEvent.KEYCODE_BACK) {
+                if(event.action==android.view.KeyEvent.ACTION_UP && !event.isCanceled) back()
                 true
             } else false
         }
@@ -148,6 +150,8 @@ class ProcessProgramEditor(private val activity: ComponentActivity,private val s
         val draft=ProcessProgramDraft(source,suggested)
         val root=column().apply { setPadding(shell.dp(12),shell.dp(12),shell.dp(12),shell.dp(8)) }
         shell.note(root,"自由冲洗台 · 调整药浴顺序与条件","Free processing · arrange baths and conditions")
+        val draftStatus=shell.note(root,"草稿尚无修改","Draft unchanged")
+        var refreshDraftStatus: ()->Unit={}
         lateinit var dialog: AlertDialog
         shell.resetSection(root,c("冲洗草稿","Process draft")) { dialog.dismiss();open(source,material,apply) }
         val pages=sections(root,listOf("工序" to "Sequence","共用药液与条件" to "Shared chemistry & conditions","共用摇晃" to "Shared agitation","共用反应设置" to "Shared reactions","邻接与 DIR" to "Adjacency & DIR","工艺说明" to "Process guide"),hierarchical=true)
@@ -178,7 +182,23 @@ class ProcessProgramEditor(private val activity: ComponentActivity,private val s
         shell.note(pages[5],"显影、反转激活、漂白和定影各有作用；药液与材料的交互、耗竭、静置和相邻浴温差可以形成事故。主冲洗页的干净冲洗可关闭自动事故。","Development, reversal activation, bleaching and fixing act separately. Material interactions, exhaustion, still baths and temperature changes between baths can produce incidents. Clean processing on the preparation page disables automatic incidents.")
         shell.note(pages[5],"邻接只改变第一次显影，DIR只改变第一次彩显。设置在开始任务时冻结；已完成结果保持不变。","Adjacency affects the first development; DIR affects the first color development. A task freezes its settings; existing results stay unchanged.")
         fun processValues()=draft.build(collect(fields)+mapOf("developer_type" to chemical(chemicals.first),"fixer_type" to chemical(chemicals.second),"chemistry" to if(chemistry.selectedItemPosition==1) "cross" else "native"))
+        fun rawControls(): Map<String,Any?> = fields.mapValues { it.value.text.toString() }+mapOf(
+            "developer_type" to chemical(chemicals.first),"fixer_type" to chemical(chemicals.second),"chemistry" to chemistry.selectedItemPosition)
+        val initialControls=rawControls()
+        fun hasChanges()=draft.hasChanges(initialControls,rawControls())
+        var refreshBathSummary: ()->Unit={}
+        refreshDraftStatus={ draftStatus.text=if(hasChanges()) c("已修改 · 尚未应用，返回时可选择应用或放弃","Modified · not applied. Back lets you apply or discard.") else c("草稿尚无修改","Draft unchanged") }
+        fields.values.forEach { input -> input.addTextChangedListener(object: android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?,start: Int,count: Int,after: Int)=Unit
+            override fun onTextChanged(s: CharSequence?,start: Int,before: Int,count: Int) { refreshDraftStatus();refreshBathSummary() }
+            override fun afterTextChanged(s: android.text.Editable?)=Unit
+        }) }
+        listOf(chemicals.first,chemicals.second).forEach { picker -> picker.onItemSelectedListener=object: AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: AdapterView<*>?)=Unit
+            override fun onItemSelected(parent: AdapterView<*>?,view: View?,position: Int,id: Long) { refreshDraftStatus();refreshBathSummary() }
+        } }
         render={
+            refreshDraftStatus()
             editor.visibility=View.VISIBLE;templatePanel.visibility=if(draft.free) View.VISIBLE else View.GONE
             automatic.visibility=if(draft.free) View.GONE else View.VISIBLE;chemistry.isEnabled=!draft.free
             chemistry.visibility=if(!draft.free && source["program_key"] in listOf(null,"auto","custom")) View.VISIBLE else View.GONE
@@ -194,8 +214,30 @@ class ProcessProgramEditor(private val activity: ComponentActivity,private val s
             else {
                 val title=step["label"] ?: actionNames[ProcessSteps.actions.indexOf(step["action"])]
                 shell.note(detail,"第 ${index+1}/${draft.steps.size} 浴 · $title","Bath ${index+1}/${draft.steps.size} · $title")
-                val overrides=step.keys.count { it in parameters.map { p->p.key } || it in listOf("developer_type","fixer_type") }
-                shell.note(detail,if(overrides==0) "沿用共用药液与条件" else "已单独设置 $overrides 项条件",if(overrides==0) "Uses shared chemistry and conditions" else "$overrides bath-specific settings")
+                val summary=shell.note(detail,"","")
+                refreshBathSummary={
+                    val shared=fields.mapValues { (_,input)->input.text.toString().ifBlank { c("标准条件","Standard") } }+
+                        mapOf("developer_type" to chemical(chemicals.first),"fixer_type" to chemical(chemicals.second))
+                    val values=ProcessBathSummary.resolve(step,shared)
+                    fun describe(value: ProcessBathSummary.Value): String {
+                        val key=value.key;val raw=value.value
+                        val label=when(key) { "developer_type"->c("显影液","Developer");"fixer_type"->c("定影液","Fixer");"strength"->c("作用比例","Reaction fraction")
+                            else->parameters.firstOrNull { it.key==key }?.let { c(it.zh,it.en).substringBefore(" ·") } ?: key }
+                        val display=if(key in listOf("developer_type","fixer_type")) {
+                            val picker=if(key=="developer_type") chemicals.first else chemicals.second
+                            val index=(picker.tag as List<*>).indexOf(raw)
+                            if(index>=0) picker.adapter.getItem(index).toString() else raw.toString()
+                        } else raw.toString()+when(key) { "time_min"->" min";"temperature_c"->" °C";"concentration"->"×";"agitation_time_s"->" s";else->"" }
+                        return "$label $display"
+                    }
+                    val core=setOf("developer_type","fixer_type","time_min","temperature_c","concentration")
+                    val inherited=values.filter { !it.overridden && it.key in core }.joinToString(" · ",transform=::describe)
+                    val local=values.filter { it.overridden }.joinToString(" · ",transform=::describe)
+                    val invalid=fields.values.any { it.text.isNotBlank() && it.text.toString().toDoubleOrNull()?.isFinite()!=true }
+                    summary.text=listOfNotNull(inherited.takeIf { it.isNotEmpty() }?.let { c("沿用共用：","Inherited: ")+it },
+                        local.takeIf { it.isNotEmpty() }?.let { c("本浴覆盖：","Bath overrides: ")+it },
+                        if(invalid) c("共用条件有未完成输入，应用前需校验。","Shared conditions contain unfinished input; validate before applying.") else null).joinToString("\n")
+                };refreshBathSummary()
                 shell.shortcut(detail,"编辑这一浴","Edit this bath","药液、条件与作用比例","Chemistry, conditions and reaction fraction") {
                     runCatching { collect(fields).filterValues { it!=null } }.onSuccess { inherited -> editStep(step,inherited) { edited ->
                         if(draft.edit(index,edited)) free.isChecked=draft.free
@@ -234,12 +276,31 @@ class ProcessProgramEditor(private val activity: ComponentActivity,private val s
             runCatching { draft.setFree(checked,templateKeys[templates.selectedItemPosition]);refreshNative();render() }.onFailure { error.text=errorText(it) }
         };render()
         root.addView(error)
+        fun applyDraft(): Boolean = runCatching { val value=processValues();apply(value);dialog.dismiss() }
+            .onFailure { error.text=errorText(it) }.isSuccess
+        var leavePrompt: AlertDialog?=null
+        fun leave() {
+            if(!hasChanges()) { dialog.dismiss();return }
+            if(leavePrompt?.isShowing==true) return
+            val prompt=AlertDialog.Builder(activity).setTitle(c("冲洗草稿尚未应用","Processing changes not applied"))
+                .setMessage(c("这些修改还没有带回${if(applyToDevelopment) "本次冲洗" else "配置"}。应用后返回，还是放弃本次修改？","These changes have not reached ${if(applyToDevelopment) "this development" else "the configuration"}. Apply them before returning, or discard them?"))
+                .setPositiveButton(c("应用并返回","Apply & return"),null)
+                .setNegativeButton(c("放弃修改","Discard")) { _,_->dialog.dismiss() }
+                .setNeutralButton(c("继续编辑","Keep editing"),null).create()
+            leavePrompt=prompt
+            prompt.setOnDismissListener { leavePrompt=null }
+            prompt.show()
+            prompt.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { applyDraft();prompt.dismiss() }
+        }
         val footer=LinearLayout(activity);root.addView(footer)
-        shell.action(footer,"取消","Cancel") { dialog.dismiss() }.layoutParams=LinearLayout.LayoutParams(0,-2,1f).apply { marginEnd=shell.dp(6) }
+        shell.action(footer,"返回","Back") { leave() }.layoutParams=LinearLayout.LayoutParams(0,-2,1f).apply { marginEnd=shell.dp(6) }
         shell.action(footer,"样张","Sample") { runCatching { onPreviewRecipe(mapOf("film" to material,"develop" to processValues())) }.onFailure { error.text=errorText(it) } }.layoutParams=LinearLayout.LayoutParams(0,-2,1f).apply { marginEnd=shell.dp(6) }
-        shell.action(footer,if(applyToDevelopment) "应用到本次冲洗" else "应用配置",if(applyToDevelopment) "Apply to this development" else "Apply draft",true) { runCatching { processValues() }.onSuccess { apply(it);dialog.dismiss() }.onFailure { error.text=errorText(it) } }.layoutParams=LinearLayout.LayoutParams(0,-2,1.5f)
-        pages.entrances?.let { pages[0].addView(it) }
-        dialog=show(root);hierarchicalBack(dialog,pages)
+        shell.action(footer,if(applyToDevelopment) "应用到本次冲洗" else "应用配置",if(applyToDevelopment) "Apply to this development" else "Apply draft",true) { applyDraft() }.layoutParams=LinearLayout.LayoutParams(0,-2,1.5f)
+        pages.entrances?.let { links ->
+            // Keep the primary shared conditions close to the sequence; secondary settings stay below it.
+            val common=links.getChildAt(0);links.removeView(common);pages[0].addView(common,0);pages[0].addView(links)
+        }
+        dialog=show(root);hierarchicalBack(dialog,pages,::leave)
     }
     private fun editStep(source: Map<String,Any?>,inherit: Map<String,Any?>,apply: (Map<String,Any?>)->Unit) {
         val root=column().apply { setPadding(shell.dp(12),shell.dp(12),shell.dp(12),shell.dp(8)) }

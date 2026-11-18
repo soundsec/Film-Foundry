@@ -18,6 +18,8 @@ class Disclosure(Widget):
         self.body=QtWidgets.QWidget(frame)
         head=QtWidgets.QHBoxLayout();head.setContentsMargins(0,0,0,0);head.setSpacing(0)
         head.addWidget(self.header,1)
+        self.impact_badge=QtWidgets.QLabel(frame);self.impact_badge.setObjectName('sectionNote');self.impact_badge.hide();head.addWidget(self.impact_badge)
+        self.impact_badge.setContentsMargins(6,0,6,0)
         from film_foundry.ui.control_reset import reset_button
         self.reset_button=reset_button(frame)
         self.reset_button.setToolTip('重置这一组 / Reset section');self.reset_button.hide();head.addWidget(self.reset_button)

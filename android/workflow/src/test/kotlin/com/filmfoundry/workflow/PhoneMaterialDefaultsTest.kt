@@ -4,6 +4,17 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class PhoneMaterialDefaultsTest {
+    @Test fun captureDurationUsesSingleRecordedWindowAndKeepsOldRolls() {
+        val key=com.filmfoundry.interchange.PhoneFormationProfile.OPTION
+        val modern=mapOf(key to com.filmfoundry.interchange.PhoneFormationProfile.LIGHTWEIGHT)
+        val capture=mapOf("frame_count" to 1,"exposure_time_ns" to 250_000_000L)
+        assertEquals(.25,(PhoneMaterialDefaults.withCaptureDuration(modern,capture)["exposure"] as Map<*,*>)["duration_seconds"])
+        assertEquals(modern,PhoneMaterialDefaults.withCaptureDuration(modern,capture+("frame_count" to 2)))
+        val old=mapOf(key to com.filmfoundry.interchange.PhoneFormationProfile.PREVIOUS_LIGHTWEIGHT)
+        assertEquals(old,PhoneMaterialDefaults.withCaptureDuration(old,capture))
+        val explicit=modern+("exposure" to mapOf("duration_seconds" to 2.0))
+        assertEquals(explicit,PhoneMaterialDefaults.withCaptureDuration(explicit,capture))
+    }
     @Test fun formationBudgetIsExplicitAndOldRollsHaveNoNewDefault() {
         val key=com.filmfoundry.interchange.PhoneFormationProfile.OPTION
         val setting=com.filmfoundry.interchange.PhoneFormationProfile.ROLL_SETTING

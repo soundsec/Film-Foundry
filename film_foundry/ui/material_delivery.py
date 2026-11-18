@@ -6,6 +6,71 @@ from film_foundry.ui.curve_editor import text
 
 
 class MaterialDeliveryMixin:
+    def install_material_selection(self, layout):
+        self.select_material_button=QtWidgets.QPushButton(text('选择材料…','Choose material…'))
+        layout.addWidget(self.select_material_button)
+        self.select_material_button.clicked.connect(self.choose_material)
+
+    def _sync_material_selection(self, *_):
+        if not hasattr(self,'select_material_button'):return
+        from film_foundry.app.material_selection import material_choices,VARIANTS
+        from film_foundry.ui.material_chooser import choice_name
+        session=self.session
+        editable=not self.busy and ((session.state is None and session.group is None) or getattr(self,'_planning_batch',False))
+        values=asdict(session.material_type(**self.material_values()))
+        if not getattr(self,'_planning_batch',False):
+            if session.state is not None:values=asdict(session.state.material)
+            elif session.group is not None:
+                import json
+                values=json.loads(session.group.provenance_json).get('material',{})
+        record=next((r for r in material_choices(self.kind) if r['material']==values),None)
+        if not values:name=text('定义未记录','Definition not recorded')
+        elif record is None:
+            key=next((key for key,fields in VARIANTS[self.kind] if fields and all(values.get(k)==v for k,v in fields.items())), 'custom')
+            name=choice_name({'family':self.kind,'key':key})
+            if key!='custom':name+=text(' · 自定义',' · Custom')
+        else:name=choice_name(record)
+        self.select_material_button.setText(text('材料 · ','Material · ')+name)
+        self.select_material_button.setEnabled(editable)
+        self.select_material_button.setToolTip(text('选择此材料族的类型；开始形成后材料冻结。数值可在材料页展开调整。',
+            'Choose a type within this family. Material freezes once formation starts. Edit numerical properties in the Material panel.') if editable else text('材料已冻结。另建工作可更换材料；观看与导出不会改变它。','Material is frozen. Create new work to choose another material. Viewing and exporting leave it unchanged.'))
+        if self.busy:self.select_material_button.setToolTip(text('当前操作完成后再选择材料。','Wait for the current operation before choosing a material.'))
+
+    def choose_material(self):
+        if self.busy or (not getattr(self,'_planning_batch',False) and (self.session.state is not None or self.session.group is not None)):return
+        from film_foundry.ui.material_chooser import MaterialChooser
+        from film_foundry.app.material_selection import material_choices
+        values=asdict(self.session.material_type(**self.material_values()))
+        key=next((r['key'] for r in material_choices(self.kind) if r['material']==values),None)
+        path=self.session.source_path
+        paths=[path] if path and self.session.source_info.get('kind')!='optical' and Path(path).suffix.lower()!='.npz' and Path(path).is_file() else []
+        dialog=MaterialChooser(self,paths=paths,family=self.kind,current_key=key,current_material=values,fixed_family=True)
+        self._material_chooser=dialog
+        def apply():
+            try:self.apply_material_definition(dialog.selection['material'])
+            except (ValueError,TypeError,KeyError) as exc:self.status.setText(str(exc))
+        dialog.accepted.connect(apply);dialog.finished.connect(dialog.deleteLater);dialog.open()
+
+    def apply_material_definition(self, values):
+        if self.busy or (not getattr(self,'_planning_batch',False) and (self.session.state is not None or self.session.group is not None)):
+            raise ValueError(text('当前材料已经开始形成，不能替换定义','Material formation has started; the definition is frozen'))
+        definition=self.session.material_type(**values)
+        # Validate before touching any controls, including categorical values.
+        for key,control in self.material_controls.items():
+            value=getattr(definition,key)
+            if isinstance(control,QtWidgets.QComboBox):
+                if control.findData(value)<0:raise ValueError('Unsupported material value: '+key)
+            elif not control.minimum()<=value<=control.maximum():raise ValueError('Value outside editor range: '+key)
+        blockers=[QtCore.QSignalBlocker(c) for c in self.material_controls.values()]
+        for key,control in self.material_controls.items():
+            value=getattr(definition,key)
+            if isinstance(control,QtWidgets.QComboBox):control.setCurrentIndex(control.findData(value))
+            else:
+                control.setValue(value)
+                if hasattr(control,'set_reset_value'):control.set_reset_value(value)
+        del blockers
+        self._sync()
+
     def add_delivery_actions(self, menu):
         self.print_requested.connect(self._standalone_print_source)
         menu.addSeparator()
@@ -52,20 +117,7 @@ class MaterialDeliveryMixin:
             from film_foundry.core.atomic_io import strict_json_load
             data = strict_json_load(path)
             if data.get('model') != 'material_definition_v1' or data.get('family') != self.kind:raise ValueError('Material definition belongs to another family')
-            definition = self.session.material_type(**data['material'])
-            # Validate everything before changing the draft; never silently clamp.
-            for key, control in self.material_controls.items():
-                value = getattr(definition, key)
-                if isinstance(control, QtWidgets.QComboBox):
-                    if control.findData(value) < 0:raise ValueError('Unsupported material value: ' + key)
-                elif not control.minimum() <= value <= control.maximum():raise ValueError('Value outside editor range: ' + key)
-            blockers = [QtCore.QSignalBlocker(c) for c in self.material_controls.values()]
-            for key, control in self.material_controls.items():
-                value = getattr(definition, key)
-                if isinstance(control, QtWidgets.QComboBox):control.setCurrentIndex(control.findData(value))
-                else:control.setValue(value)
-            del blockers
-            self._sync()
+            self.apply_material_definition(data['material'])
             self.status.setText(text('材料定义已载入', 'Material definition loaded'))
         except Exception as exc:self.status.setText(str(exc))
 

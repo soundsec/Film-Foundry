@@ -221,15 +221,22 @@ def source(name, backend):
             body=re.sub(r'\b'+function+r'\(',function+'f(',body)
         body=re.sub(r'(?<![\w.])(\d*\.\d+)(?![\w.])',r'\1f',body)
         return source('dye',backend).split(DYE)[0]+body
-    body = {'dye': DYE, 'spectral': SPECTRAL, 'paper_response':PAPER_RESPONSE, 'rotary_contact':ROTARY_CONTACT,'edge_contact':EDGE_CONTACT,'coordinate_noise':COORDINATE_NOISE,'development_conversion':DEVELOPMENT_CONVERSION}[name]
+    if name.startswith('observe_') or name=='encode_srgb':
+        from .observation_kernels import body as observation_body
+        body=observation_body(name)
+    elif name=='transfer_advance':
+        from .transfer_kernels import TRANSFER_ADVANCE
+        body=TRANSFER_ADVANCE
+    else:
+        body = {'dye': DYE, 'spectral': SPECTRAL, 'paper_response':PAPER_RESPONSE, 'rotary_contact':ROTARY_CONTACT,'edge_contact':EDGE_CONTACT,'coordinate_noise':COORDINATE_NOISE,'development_conversion':DEVELOPMENT_CONVERSION}[name]
     if backend == 'cuda':
         header = '#define INLINE __device__ inline\n#define KERNEL extern "C" __global__\n#define GLOBAL\n#define PIXEL (blockDim.x*blockIdx.x+threadIdx.x)\n'
     elif backend == 'opencl':
         header = ('#pragma OPENCL FP_CONTRACT OFF\n#define INLINE inline\n#define KERNEL __kernel\n'
                   '#define GLOBAL __global\n#define PIXEL get_global_id(0)\n'
                   '#define fmaxf fmax\n#define fminf fmin\n#define powf pow\n#define log10f log10\n'
-                  '#define logf log\n#define expf exp\n#define expm1f expm1\n#define log1pf log1p\n#define fabsf fabs\n')
-        if name in ('spectral','rotary_contact','edge_contact'):
+                  '#define logf log\n#define expf exp\n#define expm1f expm1\n#define log1pf log1p\n#define fabsf fabs\n#define sqrtf sqrt\n')
+        if name in ('spectral','rotary_contact','edge_contact','transfer_advance','observe_plate','observe_instant'):
             header = '#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n' + header
     else:
         raise ValueError('Unsupported kernel backend')

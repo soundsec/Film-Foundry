@@ -61,6 +61,33 @@ def scanner_raw_optical_observation_from_sidecar(
     }
 
 
+def scanner_raw_base_reference(payload):
+    """Recover the material white point in the TIFF capture device's linear RGB."""
+    if not isinstance(payload,dict) or payload.get('kind') not in ('ScannerRawNegative','LightTableRawPositive'):
+        return None
+    from film_foundry.contracts.scan_framing import base_reference_rgb
+    recorded=base_reference_rgb(payload.get('clear_base_reference_rgb'))
+    if recorded is not None:
+        return recorded
+    # Earlier exports include the formed clear density and the device which
+    # captured this TIFF. Current UI sliders describe a different observation.
+    medium=payload.get('developed_medium')
+    density=medium.get('clear_base_optical_density_rgb') if isinstance(medium,dict) else None
+    settings=payload.get('config')
+    scanner=settings.get('scanner') if isinstance(settings,dict) else None
+    if density is None or not isinstance(scanner,dict) or scanner.get('spectral_observation_profile') is not None:
+        return None
+    if not isinstance(density,(list,tuple)) or len(density)!=3 or not all(type(v) in (int,float) and math.isfinite(v) and v>=0 for v in density):
+        raise ValueError('Invalid recorded clear-base optical density')
+    from dataclasses import replace
+    import numpy as np
+    from film_foundry.core.scanner import capture_optical_density,transmission_illuminant_rgb
+    device=DarkroomConfig.from_dict({'scanner':scanner}).scanner
+    lamp=transmission_illuminant_rgb(replace(device,transmission_light_ev=0.))
+    rgb=capture_optical_density(np.asarray(density,np.float32).reshape(1,1,3),device,illuminant_rgb=lamp)
+    return tuple(float(v) for v in rgb.reshape(3))
+
+
 def scanner_raw_border_contract(
     payload: dict[str, Any] | None,
 ) -> tuple[float, int] | None:
@@ -232,10 +259,12 @@ def scanner_raw_sidecar(
     negative: DevelopedMedium,
     provenance: dict[str, Any] | None,
     border_width_px: int = 0,
+    clear_base_reference_rgb=None,
 ) -> dict[str, Any]:
     is_positive = str(getattr(negative, "image_polarity", "")).lower() == "positive"
     return {
         "kind": "LightTableRawPositive" if is_positive else "ScannerRawNegative",
+        **({"clear_base_reference_rgb":[float(v) for v in clear_base_reference_rgb]} if clear_base_reference_rgb is not None else {}),
         "created_at": created_at(),
         "project": PROJECT_NAME,
         "input_path": str(input_path),

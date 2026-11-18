@@ -7,10 +7,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from .scan_framing import base_anchor, frame_scan
+from film_foundry.contracts.scan_framing import pixel_bounds
 from film_foundry.core.spectral_optics import spectral_capture_record
 
 import numpy as np
 
+from film_foundry.core.computation_control import checkpoint
 from film_foundry.core.color import linear_to_srgb
 from film_foundry.core.formed_film_border import image_gate_rows
 from film_foundry.core.electronic_negative import (
@@ -33,6 +36,7 @@ from film_foundry.core.scanner import (
     estimate_negative_base_transmittance,
     invert_negative_image,
     negative_scanner_compensation_matrix,
+    negative_base_reference,
     normalize_scan_rgb,
     reconstruct_negative_channels,
     render_positive_scan,
@@ -100,8 +104,59 @@ def _apply_final_medium_observation(*args, **kwargs):
 def _clear_base_optical_density_rgb(*args, **kwargs):
     return _engine_services['_clear_base_optical_density_rgb'](*args, **kwargs)
 
-def _clear_base_scanner_sample(*args, **kwargs):
-    return _engine_services['_clear_base_scanner_sample'](*args, **kwargs)
+def _clear_base_scanner_sample(config, medium):
+    return _engine_services['_clear_base_scanner_sample'](config, medium)
+
+
+def _manual_base_source(scanner):
+    if scanner.base_reference_rgb is not None:
+        return "eyedropper_rgb"
+    if scanner.base_sample_rect is not None:
+        return "selected_region_median"
+    return None
+
+
+def _raw_base_override(scanner, raw):
+    if scanner.base_reference_rgb is not None:
+        return scanner.base_reference_rgb
+    if scanner.base_sample_rect is not None:
+        return base_anchor(raw,scanner.base_sample_rect)
+    return None
+
+
+def _scan_base_anchor(config, medium):
+    if config.scanner.remove_base_mask and config.scanner.base_reference_rgb is not None:
+        return np.asarray(config.scanner.base_reference_rgb,np.float32).reshape(1,1,3)
+    rect = config.scanner.base_sample_rect
+    if rect is None or not config.scanner.remove_base_mask:
+        return _clear_base_scanner_sample(config, medium)
+    height,width = medium.frame_shape[:2]
+    border = scanner_raw_export_border_width(medium.frame_shape,config.output.scanner_raw_border_percent,
+        config.output.scanner_raw_border_min_px) if config.scanner.include_clear_base_border else 0
+    x0,y0,x1,y1 = pixel_bounds((height+2*border,width+2*border),rect)
+    left,top,right,bottom = max(x0,border),max(y0,border),min(x1,border+width),min(y1,border+height)
+    if left>=right or top>=bottom:
+        return _clear_base_scanner_sample(config,medium)
+    selected = _medium_optical_density_rgb(medium,config.film,slice(top-border,bottom-border),
+                                            scanner=config.scanner)[:,left-border:right-border]
+    if selected.shape[:2] == (y1-y0,x1-x0):
+        density = selected
+    else:
+        density = np.empty((y1-y0,x1-x0,3),np.float32)
+        density[:] = _clear_base_optical_density_rgb(config,medium).reshape(3)
+        density[top-y0:bottom-y0,left-x0:right-x0] = selected
+    from dataclasses import replace
+    lamp = transmission_illuminant_rgb(replace(config.scanner, transmission_light_ev=0.))
+    raw = capture_optical_density(density,config.scanner,illuminant_rgb=lamp)
+    return np.median(raw.reshape(-1,3),axis=0).reshape(1,1,3)
+
+
+def _tile_border_capture(config, medium, default, illuminant):
+    if not _manual_base_source(config.scanner) or not config.scanner.remove_base_mask:
+        return default.reshape(1,1,3).copy()
+    clear = _clear_base_optical_density_rgb(config,medium).reshape(1,1,3)
+    return capture_optical_density(clear,config.scanner,illuminant_rgb=illuminant)
+
 
 def _clip01(*args, **kwargs):
     return _engine_services['_clip01'](*args, **kwargs)
@@ -309,7 +364,7 @@ def _scan_negative_pipeline(
         _force_bw_negative(config, include_scanner=False)
     _validate_scan_runtime(config)
 
-    known_base = _clear_base_scanner_sample(config, negative).reshape(3)
+    known_base = _scan_base_anchor(config, negative).reshape(3)
     # Inspector-only compatibility preview. It intentionally uses the formed
     # layer master because retaining a second full RGB optical master solely
     # for a no-grain diagnostic would be prohibitive at 30--60 MP. It never
@@ -331,6 +386,7 @@ def _scan_negative_pipeline(
         # unavailable and therefore falls back to the rendered positive.
         positive_no_grain = None
         positive_no_grain_source = "scan_optical_only_render_fallback"
+    checkpoint()
     negative_total_density = _medium_optical_density_rgb(negative, config.film, scanner=config.scanner)
     negative_total_density = _optical_density_with_optional_reference_border(
         negative_total_density,
@@ -372,7 +428,7 @@ def _scan_negative_pipeline(
             "medium_process": config_medium_process(config),
             "input_polarity": config.scanner.input_polarity,
             "output_polarity": config.scanner.output_polarity,
-            "base_balance_source": "generated_clear_base",
+            "base_balance_source": "generated_clear_base" if config.scanner.remove_base_mask else "preserved_by_user",
             "positive_no_grain_source": positive_no_grain_source,
         },
         _prepared_config=True,
@@ -402,15 +458,11 @@ def _scan_positive_transparency_pipeline(
         config.scanner,
         illuminant_rgb=transmission_illuminant_rgb(config.scanner),
     )
+    checkpoint()
     interpreted_raw = scanner_raw
     if config.scanner.remove_base_mask:
-        interpreted_raw = balance_negative_base(
-            scanner_raw,
-            known_base_transmittance_rgb=_clear_base_scanner_sample(
-                config,
-                negative,
-            ).reshape(3),
-        )
+        anchor = _scan_base_anchor(config,negative).reshape(3)
+        interpreted_raw = balance_negative_base(scanner_raw,known_base_transmittance_rgb=anchor)
     if reference_execution_enabled():
         positive_linear = render_positive_transparency_scan(
             interpreted_raw,
@@ -484,7 +536,7 @@ def _scan_positive_transparency_pipeline(
         scanner_raw=scanner_raw_snapshot,
         negative_total_density=negative_total_density,
         positive_linear=positive_linear,
-        output_srgb=output_srgb,
+        output_srgb=frame_scan(output_srgb, config.scanner),
         positive_no_grain=positive_linear,
         interpreter_key=str(config.scanner.interpreter_key),
         input_polarity=str(config.scanner.input_polarity),
@@ -494,6 +546,8 @@ def _scan_positive_transparency_pipeline(
             "runtime_config": config,
             "stage": "scanned_positive",
             "scan_source": "density_positive_transparency",
+            **({"base_balance_source":_manual_base_source(config.scanner) or "generated_clear_base",
+                "base_anchor_rgb":[float(v) for v in anchor]} if config.scanner.remove_base_mask else {}),
             "interpreter_key": config.scanner.interpreter_key,
             "medium": config.medium,
             "medium_process": config_medium_process(config),
@@ -532,6 +586,10 @@ def scan_scanner_raw(
     config = _runtime_config(config, prepared=_prepared_config)
     if config.scanner.spectral_observation_profile is not None:
         raise ValueError("Spectral observation requires final material components, not captured RGB scanner raw.")
+    if config.scanner.remove_base_mask:
+        picked = _raw_base_override(config.scanner,scanner_raw)
+        if picked is not None:
+            known_base_transmittance_rgb,known_base_density_rgb = picked,None
     return _scan_scanner_raw_array(
         scanner_raw,
         config,
@@ -563,6 +621,7 @@ def scan_scanner_raw_direct(
     known_base_density_rgb: np.ndarray | None = None,
     source_path: str | Path | None = None,
     raw_source_kind: str | None = None,
+    captured_border_rgb=None,
 ) -> ScannedPositive:
     """Directly interpret raw transmission data as negative or positive."""
     if config.scanner.spectral_observation_profile is not None:
@@ -589,7 +648,7 @@ def scan_scanner_raw_direct(
     _validate_scan_runtime(runtime)
     raw_input = np.asarray(scanner_raw, dtype=np.float32)
     if runtime.scanner.include_clear_base_border:
-        border_reference = known_base_transmittance_rgb
+        border_reference = known_base_transmittance_rgb if captured_border_rgb is None else captured_border_rgb
         if border_reference is None and base_samples is not None:
             samples = np.asarray(base_samples, dtype=np.float32)
             if (
@@ -647,6 +706,9 @@ def scan_scanner_raw_direct(
         raw = np.clip(raw_input, 1e-6, 1.0)
         interpreted_raw = raw
         if bool(runtime.scanner.remove_base_mask):
+            picked = _raw_base_override(runtime.scanner,raw_input)
+            if picked is not None:
+                known_base_transmittance_rgb,known_base_density_rgb = picked,None
             if (
                 known_base_transmittance_rgb is not None
                 and known_base_density_rgb is not None
@@ -672,12 +734,12 @@ def scan_scanner_raw_direct(
                     runtime.scanner,
                     illuminant_rgb=transmission_illuminant_rgb(runtime.scanner),
                 ).reshape(3)
-            interpreted_raw = balance_negative_base(
-                raw,
-                base_percentile=runtime.scanner.scan_base_percentile,
-                base_samples=base_samples,
-                known_base_transmittance_rgb=known_base,
-            )
+            source = _manual_base_source(runtime.scanner) or (
+                "known_base_density" if known_base_density_rgb is not None else
+                "known_base_transmittance" if known_base is not None else
+                "explicit_clear_base_samples" if base_samples is not None else "image_percentile_fallback")
+            anchor = negative_base_reference(raw,runtime.scanner.scan_base_percentile,base_samples,known_base)
+            interpreted_raw = balance_negative_base(raw,known_base_transmittance_rgb=anchor)
         positive_linear = render_positive_transparency_scan(
             interpreted_raw,
             runtime.scanner,
@@ -704,7 +766,7 @@ def scan_scanner_raw_direct(
             scanner_raw=raw,
             negative_total_density=(-np.log10(raw)).astype(np.float32, copy=False),
             positive_linear=positive_linear,
-            output_srgb=_encode_scan_output(positive_linear, runtime.scanner),
+            output_srgb=frame_scan(_encode_scan_output(positive_linear, runtime.scanner),runtime.scanner),
             positive_no_grain=positive_linear,
             interpreter_key=str(runtime.scanner.interpreter_key),
             input_polarity=str(runtime.scanner.input_polarity),
@@ -727,6 +789,8 @@ def scan_scanner_raw_direct(
     scanned.metadata["interpretation_selection"] = "manual_direct"
     scanned.metadata["requested_interpretation"] = requested
     scanned.metadata["resolved_interpretation"] = selected
+    if not invert_selected and runtime.scanner.remove_base_mask:
+        scanned.metadata.update(base_balance_source=source,base_anchor_rgb=[float(v) for v in anchor])
     scanned.metadata["scan_source"] = physical_kind
     return scanned
 
@@ -786,6 +850,9 @@ def _scan_scanner_raw_array(
         if base_removal_enabled
         else "preserved_by_user",
     )
+    manual = _manual_base_source(config.scanner)
+    if base_removal_enabled and manual:
+        metadata["base_balance_source"] = manual
     metadata.setdefault("capture_model", "transmission_illuminant_sensor_v2")
     metadata.setdefault(
         "scanner_color_response",
@@ -819,6 +886,7 @@ def _scan_scanner_raw_array(
     metadata["scanner_floor_fraction"] = float(
         np.mean(np.any(scanner_raw <= 1e-6 * 1.01, axis=-1))
     )
+    checkpoint()
     estimated_base = None
     if base_removal_enabled and known_base is None and base_samples is None:
         estimated_base = estimate_negative_base_transmittance(
@@ -1008,7 +1076,7 @@ def _scan_scanner_raw_array(
         scanner_raw=scanner_raw_snapshot,
         negative_total_density=np.asarray(negative_total_density, dtype=np.float32),
         positive_linear=positive_linear,
-        output_srgb=output_srgb,
+        output_srgb=frame_scan(output_srgb, config.scanner),
         positive_no_grain=positive_no_grain_snapshot,
         interpreter_key=str(config.scanner.interpreter_key),
         input_polarity=str(config.scanner.input_polarity),
@@ -1109,7 +1177,10 @@ def _scan_rows(shape, tile_rows, config, work):
     workers = (1 if (config.processing.memory_budget_mb is not None
                      or config.scanner.spectral_observation_profile is not None) else
                min(thread_count(), resolve_native_thread_limit(config.processing.native_thread_limit)))
-    run_rows(shape[0], shape[1], work, chunk_pixels=tile_rows*shape[1], workers=workers)
+    def checked(start, stop):
+        checkpoint()
+        work(start, stop)
+    run_rows(shape[0], shape[1], checked, chunk_pixels=tile_rows*shape[1], workers=workers)
 
 
 def _scan_negative_output_tiled(
@@ -1119,7 +1190,7 @@ def _scan_negative_output_tiled(
 ) -> np.ndarray:
     """Observe row tiles using one oracle base anchor fixed for the full frame."""
     height, width = medium.frame_shape[:2]
-    known_base = _clear_base_scanner_sample(config, medium).reshape(3)
+    known_base = _scan_base_anchor(config, medium).reshape(3)
     illuminant = transmission_illuminant_rgb(config.scanner)
     border = (
         scanner_raw_export_border_width(
@@ -1139,7 +1210,7 @@ def _scan_negative_output_tiled(
         border : border + width,
     ]
     if border > 0:
-        clear_raw = known_base.reshape(1, 1, 3).copy()
+        clear_raw = _tile_border_capture(config,medium,known_base,illuminant)
         if config.scanner.remove_base_mask:
             clear_raw = balance_negative_base(
                 clear_raw,
@@ -1216,7 +1287,7 @@ def _scan_positive_output_tiled(
     """Observe a positive transparency in exact bounded tiles."""
     height, width = medium.frame_shape[:2]
     illuminant = transmission_illuminant_rgb(config.scanner)
-    clear_base_raw = _clear_base_scanner_sample(config, medium).reshape(3)
+    clear_base_raw = _scan_base_anchor(config, medium).reshape(3)
     known_base = (
         clear_base_raw
         if config.scanner.remove_base_mask
@@ -1240,7 +1311,7 @@ def _scan_positive_output_tiled(
         border : border + width,
     ]
     if border > 0:
-        border_raw = clear_base_raw.reshape(1, 1, 3).copy()
+        border_raw = _tile_border_capture(config,medium,clear_base_raw,illuminant)
         if config.scanner.remove_base_mask:
             border_raw = balance_negative_base(
                 border_raw,
@@ -1311,7 +1382,8 @@ def _scan_negative_output_only(
     if tile_rows is not None and config.enable_subtractive:
         return _scan_negative_output_tiled(medium, config, tile_rows)
 
-    known_base = _clear_base_scanner_sample(config, medium).reshape(3)
+    checkpoint()
+    known_base = _scan_base_anchor(config, medium).reshape(3)
     total_density = _medium_optical_density_rgb(medium, config.film, scanner=config.scanner)
     total_density = _optical_density_with_optional_reference_border(
         total_density,
@@ -1325,6 +1397,7 @@ def _scan_negative_output_only(
     )
     del total_density
 
+    checkpoint()
     legacy_mapping = (
         config.enable_subtractive
         and str(config.scanner.scan_method).lower() == "legacy_density_mapping"
@@ -1377,6 +1450,7 @@ def _scan_negative_output_only(
             )
         del reconstructed
 
+    checkpoint()
     if config.scanner.scan_normalize:
         positive_linear = normalize_scan_rgb(
             positive_linear, measurement_region=image_gate_rows(medium, config),
@@ -1404,6 +1478,7 @@ def _scan_positive_output_only(
     )
     if tile_rows is not None:
         return _scan_positive_output_tiled(medium, config, tile_rows)
+    checkpoint()
     total_density = _medium_optical_density_rgb(medium, config.film, scanner=config.scanner)
     total_density = _optical_density_with_optional_reference_border(
         total_density,
@@ -1419,12 +1494,13 @@ def _scan_positive_output_only(
     if config.scanner.remove_base_mask:
         scanner_raw = balance_negative_base(
             scanner_raw,
-            known_base_transmittance_rgb=_clear_base_scanner_sample(
+            known_base_transmittance_rgb=_scan_base_anchor(
                 config,
                 medium,
             ).reshape(3),
             consume_input=True,
         )
+    checkpoint()
     positive_linear = render_positive_transparency_scan(
         scanner_raw,
         config.scanner,
@@ -1433,6 +1509,7 @@ def _scan_positive_output_only(
         consume_input=True,
     )
     del scanner_raw
+    checkpoint()
     if config.scanner.scan_normalize:
         positive_linear = normalize_scan_rgb(
             positive_linear, measurement_region=image_gate_rows(medium, config),
@@ -1466,9 +1543,8 @@ def _scan_medium_output_only(
         runtime = _runtime_config(config)
         configure_scan_interpretation(runtime, normalized)
 
-    if bool(runtime.scanner.invert_transmission):
-        return _scan_negative_output_only(medium, runtime), runtime
-    return _scan_positive_output_only(medium, runtime), runtime
+    render = _scan_negative_output_only if runtime.scanner.invert_transmission else _scan_positive_output_only
+    return frame_scan(render(medium,runtime),runtime.scanner),runtime
 
 
 def scan_medium_output(
@@ -1508,6 +1584,10 @@ def scan_medium_output(
             "stage": "scanned_positive",
             "scan_source": "developed_optical_medium",
             "execution_profile": "output_only_exact_v1",
+            "base_balance_source": (_manual_base_source(runtime.scanner) or "generated_clear_base")
+                                   if runtime.scanner.remove_base_mask else "preserved_by_user",
+            **({"base_anchor_rgb":list(runtime.scanner.base_reference_rgb)}
+               if runtime.scanner.remove_base_mask and runtime.scanner.base_reference_rgb is not None else {}),
             "interpretation_selection": (
                 "automatic_medium_contract"
                 if requested in {"", "auto"}

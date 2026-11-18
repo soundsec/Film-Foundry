@@ -253,6 +253,9 @@ def validate_body(body):
 
 def observe(body,view=ViewingConditions()):
     m=validate_body(body);f=body.fields
+    from .observation_compute import sheet
+    accelerated=sheet(body,m,view,'wet')
+    if accelerated is not None:return s.illuminate(accelerated,body,view)
     varnish=f['varnish'][...,None]*np.array([.002,.006,.018],np.float32)
     silver=f['silver']+f.get('external_deposit',0)+f.get('enhancement_deposit',0)
     density=(silver*m.maximum_density+(f['halide']+f.get('external_silver',0)+f.get('enhancement_silver',0))*.12)[...,None]+f['residue']+varnish

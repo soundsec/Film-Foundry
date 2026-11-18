@@ -696,6 +696,11 @@ def _validate_developed_medium_state(medium: DevelopedNegative) -> None:
 
 def _validate_scan_runtime(config: DarkroomConfig) -> None:
     """Reject malformed scan settings before they can create silent NaN output."""
+    from film_foundry.contracts.scan_framing import rectangle, straighten_angle, base_reference_rgb
+    rectangle(config.scanner.crop_rect)
+    rectangle(config.scanner.base_sample_rect)
+    base_reference_rgb(config.scanner.base_reference_rgb)
+    straighten_angle(config.scanner.straighten_degrees)
     normalize_color_mixer(config.scanner.color_mixer)
     if config.scanner.spectral_observation_profile is not None:
         SpectralObservationProfile.from_value(config.scanner.spectral_observation_profile)

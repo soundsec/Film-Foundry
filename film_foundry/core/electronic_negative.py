@@ -673,6 +673,7 @@ def split_scanner_raw_border(
     border_min_px: int = 32,
     *,
     border_width_px: int | None = None,
+    collect_samples: bool = True,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """把带片基边框的电子负片拆成画面区域和边框采样区域。"""
     scanner_raw = np.asarray(scanner_raw, dtype=np.float32)
@@ -698,6 +699,8 @@ def split_scanner_raw_border(
         return scanner_raw, None
 
     inner = scanner_raw[border : height - border, border : width - border]
+    if not collect_samples:
+        return inner,None
     top = scanner_raw[:border, :, :].reshape(-1, 3)
     bottom = scanner_raw[height - border :, :, :].reshape(-1, 3)
     left = scanner_raw[border : height - border, :border, :].reshape(-1, 3)

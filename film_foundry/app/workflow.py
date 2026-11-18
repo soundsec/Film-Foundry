@@ -73,6 +73,7 @@ from film_foundry.core.sidecar import (
     load_scanner_raw_sidecar,
     scanner_raw_border_width_from_sidecar,
     scanner_raw_optical_observation_from_sidecar,
+    scanner_raw_base_reference,
     transmission_raw_source_kind,
 )
 from film_foundry.core.states import DevelopedNegative
@@ -473,6 +474,22 @@ def prepare_develop_runtime_config(
     return runtime_config, execution_axes
 
 
+def load_formal_photo(input_path, runtime_config, execution_axes, long_edge):
+    """Load the same decoded pixels and colour encoding for all photo endpoints."""
+    if execution_axes.scaling_enabled:
+        image, input_color = load_formation_image(
+            input_path,
+            decode_long_edge=long_edge,
+            input_icc_policy=runtime_config.input_icc_policy,
+        )
+    else:
+        image, input_color = load_formation_image(
+            input_path,
+            input_icc_policy=runtime_config.input_icc_policy,
+        )
+    return resize_to_long_edge(image, long_edge), input_color
+
+
 def develop_image_file(
     input_path: Path,
     developed_root: Path,
@@ -491,18 +508,7 @@ def develop_image_file(
     )
     long_edge = processing_long_edge(config, scaled_override=scaled_override)
     _workflow_stage(control, "develop", "loading")
-    if execution_axes.scaling_enabled:
-        image, input_color = load_formation_image(
-            input_path,
-            decode_long_edge=long_edge,
-            input_icc_policy=runtime_config.input_icc_policy,
-        )
-    else:
-        image, input_color = load_formation_image(
-            input_path,
-            input_icc_policy=runtime_config.input_icc_policy,
-        )
-    image = resize_to_long_edge(image, long_edge)
+    image, input_color = load_formal_photo(input_path, runtime_config, execution_axes, long_edge)
     develop_rng, resolved_seed = rng_and_resolved_seed_for_develop(input_path, runtime_config, path_seed_offset=path_seed_offset)
     _workflow_stage(control, "develop", "developing")
     medium = develop_negative(image, runtime_config, rng=develop_rng, input_encoding=input_color["encoding"])
@@ -553,18 +559,7 @@ def expose_image_file(
     )
     long_edge = processing_long_edge(config, scaled_override=scaled_override)
     _workflow_stage(control, "expose", "loading")
-    if execution_axes.scaling_enabled:
-        image, _input_color = load_formation_image(
-            input_path,
-            decode_long_edge=long_edge,
-            input_icc_policy=runtime_config.input_icc_policy,
-        )
-    else:
-        image, _input_color = load_formation_image(
-            input_path,
-            input_icc_policy=runtime_config.input_icc_policy,
-        )
-    image = resize_to_long_edge(image, long_edge)
+    image, _input_color = load_formal_photo(input_path, runtime_config, execution_axes, long_edge)
     expose_rng, _resolved_seed = rng_and_resolved_seed_for_develop(
         input_path, runtime_config, path_seed_offset=path_seed_offset
     )
@@ -895,8 +890,10 @@ def _observe_transmission_raw(
     config: DarkroomConfig,
     interpretation: str,
     preview_long_edge: int | None = None,
+    *,
+    raw_sidecar,
+    reference,
 ):
-    raw_sidecar = load_scanner_raw_sidecar(path)
     apply_optical_observation_snapshot(
         config,
         scanner_raw_optical_observation_from_sidecar(raw_sidecar),
@@ -904,10 +901,11 @@ def _observe_transmission_raw(
     scanner_raw = load_linear_rgb_tiff(path)
     source_kind = transmission_raw_source_kind(path, raw_sidecar)
     border_width = scanner_raw_border_width_from_sidecar(raw_sidecar, scanner_raw.shape)
+    collect = reference is None or config.scanner.include_clear_base_border
     if border_width is not None:
         inner, border_samples = split_scanner_raw_border(
             scanner_raw,
-            border_width_px=border_width,
+            border_width_px=border_width,collect_samples=collect,
         )
     elif source_kind == "light_table_raw_tiff":
         inner, border_samples = scanner_raw, None
@@ -915,7 +913,7 @@ def _observe_transmission_raw(
         inner, border_samples = split_scanner_raw_border(
             scanner_raw,
             border_percent=config.output.scanner_raw_border_percent,
-            border_min_px=config.output.scanner_raw_border_min_px,
+            border_min_px=config.output.scanner_raw_border_min_px,collect_samples=collect,
         )
     if preview_long_edge is not None:
         inner = resize_to_long_edge(inner, preview_long_edge)
@@ -925,9 +923,14 @@ def _observe_transmission_raw(
         config,
         interpretation,
         base_samples=border_samples,
+        known_base_transmittance_rgb=reference,
+        captured_border_rgb=(np.median(border_samples,axis=0) if reference is not None
+                             and config.scanner.include_clear_base_border and border_samples is not None else None),
         source_path=path,
         raw_source_kind=source_kind,
     )
+    if reference is not None and scanned.metadata.get('base_balance_source')=='known_base_transmittance':
+        scanned.metadata['base_balance_source']='recorded_clear_base'
     return scanned, source_kind, path, scanner_raw
 
 
@@ -957,14 +960,18 @@ def observe_medium_file(
         if config.scanner.spectral_observation_profile is not None:
             raise ValueError("Spectral observation requires a material NPZ, not an already captured RGB TIFF.")
         _workflow_stage(control, "scan", "scanning")
-        return _observe_transmission_raw(path, config, interpretation, preview_long_edge)
+        sidecar=load_scanner_raw_sidecar(path)
+        return _observe_transmission_raw(path,config,interpretation,preview_long_edge,
+                                         raw_sidecar=sidecar,reference=scanner_raw_base_reference(sidecar))
     if path.suffix.lower() in SUPPORTED_EXTENSIONS:
         from film_foundry.core.color import srgb_to_linear, linear_to_srgb
         pixels, input_color = load_formation_image(path, decode_long_edge=preview_long_edge,
                                                    input_icc_policy=config.input_icc_policy)
         linear = pixels if input_color['encoding']=='linear_rgb' else srgb_to_linear(pixels)
         if interpretation in ('auto',''):
-            interpretation='direct';config.scanner.remove_base_mask=False
+            explicit_base = config.scanner.remove_base_mask and (config.scanner.base_reference_rgb is not None or config.scanner.base_sample_rect is not None)
+            interpretation = 'manual' if explicit_base else 'direct'
+            config.scanner.invert_transmission = False
         _workflow_stage(control, 'scan', 'scanning')
         scanned=scan_scanner_raw_direct(linear,config,interpretation,source_path=path,raw_source_kind='image_rgb')
         scanned.metadata['input_color']=input_color
@@ -972,8 +979,14 @@ def observe_medium_file(
         return scanned,'image_rgb',path,preview
     scanner_raw_path = transmission_raw_path_for_medium(path)
     if scanner_raw_path.exists() and config.scanner.spectral_observation_profile is None:
-        _workflow_stage(control, "scan", "scanning")
-        return _observe_transmission_raw(scanner_raw_path, config, interpretation, preview_long_edge)
+        sidecar=load_scanner_raw_sidecar(scanner_raw_path)
+        reference=scanner_raw_base_reference(sidecar)
+        # A bare companion TIFF cannot supply the selected archive's known
+        # material base. Observe the archive directly when calibration needs it.
+        if reference is not None or not path.is_file() or not config.scanner.remove_base_mask:
+            _workflow_stage(control,"scan","scanning")
+            return _observe_transmission_raw(scanner_raw_path,config,interpretation,preview_long_edge,
+                                             raw_sidecar=sidecar,reference=reference)
     if path.suffix.lower() != ".npz":
         raise ValueError(
             f"不支持的扫描来源：{path}。请选择介质 .npz 或受支持的图像文件，不要选择 sidecar .json。"
@@ -993,6 +1006,9 @@ def observe_medium_file(
     if preview_long_edge is not None:
         from film_foundry.app.preview_inputs import preview_medium
         negative = preview_medium(negative, preview_long_edge)
+    from film_foundry.core.formation_observer import observer
+    if observer.get() is not None:
+        observer.get().medium(negative)
     scan = scan_medium_direct if retain_stages else scan_medium_output
     _workflow_stage(control, "scan", "scanning")
     scanned = scan(negative, config, interpretation)

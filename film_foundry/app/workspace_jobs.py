@@ -1,5 +1,6 @@
 """Explicit source selections and result records over the public workflow API."""
 from copy import deepcopy
+import math
 from pathlib import Path
 from uuid import uuid4
 from dataclasses import asdict, replace
@@ -17,6 +18,8 @@ def workflow_result_record(source,result,*,output_path=None):
     artifacts={k:str(Path(v).resolve()) for k,v in result.extra.get('paths',{}).items() if v is not None}
     cover=str(written) if result.command in ('full','scan') else next((p for k,p in artifacts.items() if 'visual_preview' in k),'')
     if result.command in ('full','scan'):artifacts['scan:'+written.stem]=str(written)
+    scan_metadata=written.with_suffix(written.suffix+'.json')
+    if result.command in ('full','scan') and scan_metadata.is_file():artifacts['scan_metadata:'+written.stem]=str(scan_metadata)
     record={'key':'photo:'+str(source),'source':str(source),'label':source.name,'family':'film',
             'command':result.command,'medium':str(medium),'cover':cover,'artifacts':artifacts}
     manifest=written.with_name(written.name+'.result.json')
@@ -45,19 +48,51 @@ def scan_record(record, config, *, control=None, output=None):
     return record
 
 
-def numbered_photo_config(config,index):
-    """A user-defined sequence label, independent of roll/frame identity."""
-    if config.film_border.frame_number is None:return config
-    result=deepcopy(config);result.film_border.frame_number+=index-1
+def validate_exposure_offset(value):
+    if type(value) not in (int,float) or not math.isfinite(value) or abs(value)>20:
+        raise ValueError('Frame exposure offset must be finite and within ±20 EV')
+    return float(value)
+
+
+def exposure_offsets(value):
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError('Frame exposure offsets must be an object')
+    result = {}
+    for path, ev in value.items():
+        if not isinstance(path,str) or not path:
+            raise ValueError('Frame exposure requires a source path')
+        ev=validate_exposure_offset(ev)
+        key = str(Path(path).resolve())
+        if key in result and result[key] != ev:
+            raise ValueError('Conflicting exposure offsets for one source')
+        result[key] = ev
+    return {key: ev for key, ev in result.items() if ev}
+
+
+def apply_frame_settings(config, index, exposure_offset):
+    """Set exposure and frame numbering on a recipe owned by the current job."""
+    if config.film_border.frame_number is not None:
+        config.film_border.frame_number += index - 1
+    config.exposure_ev += exposure_offset
+
+
+def numbered_photo_config(config,index,exposure_offset=0.):
+    if config.film_border.frame_number is None and not exposure_offset:
+        return config
+    result = deepcopy(config)
+    apply_frame_settings(result,index,exposure_offset)
     return result
 
 
-def process_photos(paths, output, config, *, control=None, on_result=None,scaled_override=False,on_run=None,path_seed_offsets=None,command="full"):
+def process_photos(paths, output, config, *, control=None, on_result=None,scaled_override=False,on_run=None,path_seed_offsets=None,command="full",frame_exposure_offsets=None):
     """No selection limit; one full-resolution image is resident at a time."""
     if command not in {"full","develop","expose","scan"}:raise ValueError("Photo jobs require an image-source workflow")
     paths=list(dict.fromkeys(str(Path(p).resolve()) for p in paths))
     from film_foundry.app.source_seed import normalize_offsets,offset_for
     path_seed_offsets=normalize_offsets(path_seed_offsets)
+    offsets=exposure_offsets(frame_exposure_offsets) if command != "scan" else {}
     config=deepcopy(config)
     from film_foundry.app.workflow import create_run_directory
     root,run_id=create_run_directory(Path(output),command)
@@ -69,6 +104,7 @@ def process_photos(paths, output, config, *, control=None, on_result=None,scaled
     payload['run']={'id':run_id,'directory':str(root),'actual_output':str(root),'status':'running','inputs':paths,'selection_layout':'numbered'}
     payload['ui_options']={'run_as_preview':scaled_override}
     payload['path_seed_offsets']=path_seed_offsets
+    payload['frame_exposure_offsets']={p:offsets[p] for p in paths if p in offsets}
     from film_foundry.app.workflow import planned_developed_path
     from film_foundry.core.media import developed_medium_contract
     def destination(index,path):
@@ -85,7 +121,7 @@ def process_photos(paths, output, config, *, control=None, on_result=None,scaled
         item_start=perf_counter();target=Path(records[index-1]['output'])
         try:
             if control:control.check_cancel()
-            item_config=numbered_photo_config(config,index) if command!='scan' else config
+            item_config=numbered_photo_config(config,index,offsets.get(str(path),0.)) if command!='scan' else config
             result=run_request(WorkflowRequest(command,path,target,item_config,control=control,scaled_override=scaled_override,
                 path_seed_offset=offset_for(path,path_seed_offsets)))
             if command=='scan':

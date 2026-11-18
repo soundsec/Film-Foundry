@@ -10,8 +10,11 @@ _active_language: str | None = None
 
 
 _ZH: dict[str, str] = {
-    'theme.dark': '深色',
-    'theme.ivory': '米白',
+    'theme.dark': '黑橙',
+    'theme.slate': '灰蓝',
+    'theme.silver': '浅灰',
+    'theme.custom': '自定义',
+    'theme.ivory': '象牙白',
     'label.theme': '外观',
     'status.ui_preferences_failed': '外观已切换，但偏好保存失败',
     'help.ui_language': '主界面即时切换。已打开的专业编辑器保留原语言与草稿，重新打开采用当前语言。',
@@ -405,8 +408,11 @@ _ZH: dict[str, str] = {
 }
 
 _EN: dict[str, str] = {
-    'theme.dark': 'Dark',
-    'theme.ivory': 'Light',
+    'theme.dark': 'Charcoal & amber',
+    'theme.slate': 'Slate blue',
+    'theme.silver': 'Cool gray',
+    'theme.custom': 'Custom',
+    'theme.ivory': 'Ivory',
     'label.theme': 'Appearance',
     'status.ui_preferences_failed': 'Appearance changed, but preferences could not be saved',
     'help.ui_language': 'The main window switches immediately. Open editors retain their language and drafts; reopen them to use the current language.',
@@ -806,7 +812,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
 
 
 def available_languages() -> tuple[str, ...]:
-    return tuple(_MESSAGES)
+    from film_foundry.ui.language_packs import installed
+    return tuple(_MESSAGES)+tuple(installed())
 
 
 def normalize_language(value: str | None) -> str:
@@ -817,7 +824,7 @@ def normalize_language(value: str | None) -> str:
         return "zh_CN"
     if normalized.lower() in {"en", "en_us", "english"}:
         return "en_US"
-    return normalized if normalized in _MESSAGES else DEFAULT_LANGUAGE
+    return normalized if normalized in available_languages() else DEFAULT_LANGUAGE
 
 
 def current_language() -> str:
@@ -836,6 +843,8 @@ def set_language(language: str) -> str:
 
 def language_label(language: str, *, display_language: str | None = None) -> str:
     code = normalize_language(language)
+    from film_foundry.ui.language_packs import installed
+    if code in installed():return installed()[code]['name']+' ['+code+']'
     return tr(f"language.{code}", language=display_language)
 
 
@@ -852,4 +861,8 @@ def language_from_label(label: str, *, display_language: str | None = None) -> s
 
 def tr(key: str, *, language: str | None = None) -> str:
     lang = normalize_language(language) if language is not None else current_language()
+    from film_foundry.ui.language_packs import installed
+    pack=installed().get(lang) if lang not in _MESSAGES else None
+    if pack:
+        return pack['translations'].get('key:'+key) or _MESSAGES[pack['fallback']].get(key) or _ZH.get(key) or key
     return _MESSAGES.get(lang, {}).get(key) or _MESSAGES[DEFAULT_LANGUAGE].get(key) or key

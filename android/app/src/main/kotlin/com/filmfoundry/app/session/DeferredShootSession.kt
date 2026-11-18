@@ -111,11 +111,12 @@ class DeferredShootSession(private val library: FilmLibrary,private val medium: 
                 if(!medium.hasRecoverableCameraLatent(path,identity,control)) {
                     withExposureRows(frame.capturePath!!,receipt,control) { rows ->
                         val io=rowIo ?: medium.rowExecutionIo() ?: error("deferred capture requires row storage")
-                        val exposure=PhoneMaterialDefaults.exposureRecipe(receipt.film,roll.captureSettings)+
-                            (grainModel?.let { mapOf(PhoneGrainModels.EXPOSURE_OPTION to it) } ?: emptyMap())
+                        val captureRecord=record(receipt)
+                        val exposure=PhoneMaterialDefaults.withCaptureDuration(PhoneMaterialDefaults.exposureRecipe(receipt.film,roll.captureSettings)+
+                            (grainModel?.let { mapOf(PhoneGrainModels.EXPOSURE_OPTION to it) } ?: emptyMap()),captureRecord)
                         val request=WorkflowRequest(Command.EXPOSE,MediumRef("stored_camera"),MediumRef(path),
                             exposure,frameIdentity=identity,control=control,rowIo=io,rgbRows=rows,
-                            captureRecord=record(receipt),rowBudgetBytes=rowBudget(),rowHandoff=rowHandoff)
+                            captureRecord=captureRecord,rowBudgetBytes=rowBudget(),rowHandoff=rowHandoff)
                         check(facade.run(request).mediumCommitted)
                     }
                 }

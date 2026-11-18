@@ -75,7 +75,9 @@ class FilmBorderDialog(QtWidgets.QDialog):
         form.addRow(text('图案组合号','Pattern sequence'),self.seed)
         self.shuffle=QtWidgets.QPushButton(text('换一组条码','New bar sequence'));self.shuffle.clicked.connect(self.shuffle_blocks);form.addRow(self.shuffle)
         self.seed.setToolTip(text('固定条组按组合号、批号和片序排列；同一配置保持不变。装饰条码不是标准机器码。自定义点阵优先。','Fixed bar groups are sequenced by this number, batch and frame. The result is stable. Decorative bars are not standard machine codes. Custom stencils take precedence.'))
-        self.exposure=QtWidgets.QDoubleSpinBox();self.exposure.setRange(-4,4);self.exposure.setDecimals(2);self.exposure.setSingleStep(.25);self.exposure.setSuffix(' EV');self.exposure.setValue(config.factory_exposure_ev);form.addRow(text('出厂预曝光','Factory exposure'),self.exposure)
+        from film_foundry.ui.exposure_color import ExposureColor
+        self.light_color=ExposureColor(config.factory_light_color_rgb);form.addRow(text('边字曝光颜色','Lettering lamp colour'),self.light_color)
+        self.exposure=QtWidgets.QDoubleSpinBox();self.exposure.setRange(-4,4);self.exposure.setDecimals(2);self.exposure.setSingleStep(.25);self.exposure.setSuffix(' EV');self.exposure.setValue(config.factory_exposure_ev);form.addRow(text('边字亮度（曝光）','Lettering brightness (exposure)'),self.exposure)
         self.variation=QtWidgets.QDoubleSpinBox();self.variation.setRange(0,100);self.variation.setSuffix(' %');self.variation.setValue(config.factory_exposure_variation*100);form.addRow(text('曝光不均','Exposure variation'),self.variation)
         self.spread=QtWidgets.QDoubleSpinBox();self.spread.setRange(0,3);self.spread.setSingleStep(.1);self.spread.setValue(config.factory_mark_spread if config.factory_mark_type=='laser' else 0);form.addRow(text('曝光柔边','Exposure diffusion'),self.spread)
         self.exposure.setToolTip(text('在同一材料、药浴的曝光响应前改变剂量，影响实际形成密度；不是输出透明度。曝光不均模拟厂标曝光灯的不匀，不代表局部冲洗事故。','Changes exposure before the stock/bath response, affecting formed density, not output opacity. Variation describes the factory lamp, not spatial processing accidents.'))
@@ -115,6 +117,7 @@ class FilmBorderDialog(QtWidgets.QDialog):
         self.count.valueChanged.connect(self.refresh);self.width.valueChanged.connect(self.refresh);self.marks.toggled.connect(self.refresh);self.label.textChanged.connect(self.refresh)
         self.template.currentIndexChanged.connect(self.change_template);self.batch.valueChanged.connect(self.refresh);self.number.valueChanged.connect(self.refresh);self.direction.currentIndexChanged.connect(self.refresh)
         self.barcode.currentIndexChanged.connect(self.refresh)
+        self.light_color.changed.connect(self.refresh)
         self.seed.valueChanged.connect(self.refresh);self.marker.currentIndexChanged.connect(self.refresh);self.loading.valueChanged.connect(self.refresh)
         for controls in self.position_controls.values():
             for control in controls:control.valueChanged.connect(self.refresh)
@@ -131,6 +134,7 @@ class FilmBorderDialog(QtWidgets.QDialog):
         result.factory_layout=self.template.currentData();result.factory_batch=self.batch.value()
         result.frame_number=None if self.number.value()<0 else self.number.value();result.advance_direction=self.direction.currentData()
         result.factory_barcode=self.barcode.currentData();result.factory_exposure_ev=self.exposure.value();result.factory_exposure_variation=self.variation.value()/100
+        result.factory_light_color_rgb=self.light_color.value()
         result.factory_barcode_seed=self.seed.value();result.loading_offset=self.loading.value()/100;result.advance_marker_style=self.marker.currentData()
         for name,controls in self.position_controls.items():setattr(result,name,tuple(control.value()/100 for control in controls))
         result.factory_mark_type='laser' if self.spread.value()>0 else 'hard';result.factory_mark_spread=self.spread.value()
@@ -174,7 +178,7 @@ class FilmBorderDialog(QtWidgets.QDialog):
         if layout is not None:
             marks,holes=_strip_masks(config,layout,config.stock_label or 'FILM FOUNDRY')
             exposure=marks*2.**config.factory_exposure_ev
-            strip=np.array([.50,.29,.13],dtype=np.float32)[None,None,:]*np.exp(-1.6*exposure[...,None])
+            strip=np.array([.50,.29,.13],dtype=np.float32)[None,None,:]*np.exp(-1.6*exposure[...,None]*np.asarray(config.factory_light_color_rgb,np.float32))
             strip=strip*(1-holes[...,None])+holes[...,None]*.96
             rows=layout.image_rect[1];pixels=np.concatenate((strip[:rows],pixels,strip[rows:]))
             self.preview.rebate_fraction=rows/pixels.shape[0]

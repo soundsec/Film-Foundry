@@ -17,9 +17,9 @@ ACTIONS={'develop_silver':('银显影','Silver development'),'develop_color':('�
 
 
 class RollProcessDialog(QtWidgets.QDialog):
-    def __init__(self,config,parent=None,*,principle_only=True):
+    def __init__(self,config,parent=None,*,principle_only=True,peek=None):
         super().__init__(parent);self.setWindowTitle(text('折腾模式 · 药浴与步骤','Darkroom · Baths & steps'));self.resize(1080,720);self.setMinimumSize(900,620)
-        self.principle_only=principle_only
+        self.principle_only=principle_only;self.peek=peek;self._peek_dialog=None
         self.custom_contains_native_damage=False
         self.actions=BATH_ACTIONS if principle_only else (*BATH_ACTIONS,'destroy_dye')
         self.config=condition_driven_config(config) if principle_only else deepcopy(config);recipe=self.config.chemistry
@@ -77,6 +77,8 @@ class RollProcessDialog(QtWidgets.QDialog):
         capability.setToolTip(text('编辑所选药浴的独立反应能力和硬化组分；未启用时沿用旧配方。','Edit the selected bath reaction and hardener capabilities; disabled baths retain legacy kinetics.'))
         self.native_button=QtWidgets.QPushButton(text('单浴条件…','Individual bath…'));self.native_button.clicked.connect(self.edit_native_bath);bar.addWidget(self.native_button)
         bar.addStretch();self.status=QtWidgets.QLabel();self.status.setWordWrap(True);outer.addWidget(self.status)
+        self.peek_button=QtWidgets.QPushButton(text('作弊预览…','Cheat preview…'));self.peek_button.setVisible(peek is not None)
+        self.peek_button.clicked.connect(self.open_peek);outer.addWidget(self.peek_button)
         buttons=QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok|QtWidgets.QDialogButtonBox.StandardButton.Cancel);buttons.accepted.connect(self.apply);buttons.rejected.connect(self.reject);outer.addWidget(buttons)
         from film_foundry.core.film_process.recipe import program_from_develop_recipe
         native=program_from_develop_recipe(recipe,mode=self.config.mode,material_process=self.config.film.medium_process)
@@ -242,25 +244,52 @@ class RollProcessDialog(QtWidgets.QDialog):
         for row in rows:self.add_row(row)
         self.table.setCurrentCell(target,0)
 
+    def read_config(self):
+        config=deepcopy(self.config)
+        recipe=config.chemistry
+        recipe.formation_history_model=self.formation_history.currentData()
+        recipe.program_key=self.program.currentData()
+        for key in self.controls:setattr(recipe,key,self.condition_value(key))
+        for key,control in self.chemistry.items():setattr(recipe,key,control.currentText())
+        recipe.process_steps=validate_process_steps(self.rows()) if self.custom.isChecked() else None
+        if self.custom.isChecked() and self.custom_contains_native_damage:
+            recipe.dye_damage_strength=0.  # The converted native stage now owns this request.
+        if self.custom.isChecked():recipe.bath_overrides=None  # Resolved conditions are now owned by the custom rows.
+        recipe.process_events=self.operations.read()
+        recipe.latent_wait=self.latent_wait.read();recipe.post_process_light=self.post_light.read()
+        from film_foundry.contracts.film_time import validate_config as validate_time_config
+        validate_time_config(config)
+        if self.principle_only:config=condition_driven_config(config)
+        from film_foundry.core.film_process.recipe import program_from_develop_recipe
+        program_from_develop_recipe(config.chemistry,mode=config.mode,material_process=config.film.medium_process)
+        from film_foundry.core.process_operations import BathContactRate
+        BathContactRate(config,(1,1))  # Validate bath targets without rendering.
+        return config
+
     def apply(self):
-        try:
-            recipe=self.config.chemistry
-            recipe.formation_history_model=self.formation_history.currentData()
-            recipe.program_key=self.program.currentData()
-            for key in self.controls:setattr(recipe,key,self.condition_value(key))
-            for key,control in self.chemistry.items():setattr(recipe,key,control.currentText())
-            recipe.process_steps=validate_process_steps(self.rows()) if self.custom.isChecked() else None
-            if self.custom.isChecked() and self.custom_contains_native_damage:
-                recipe.dye_damage_strength=0.  # The converted native stage now owns this request.
-            if self.custom.isChecked():recipe.bath_overrides=None  # Resolved conditions are now owned by the custom rows.
-            recipe.process_events=self.operations.read()
-            recipe.latent_wait=self.latent_wait.read();recipe.post_process_light=self.post_light.read()
-            from film_foundry.contracts.film_time import validate_config as validate_time_config
-            validate_time_config(self.config)
-            if self.principle_only:self.config=condition_driven_config(self.config)
-            from film_foundry.core.film_process.recipe import program_from_develop_recipe
-            program_from_develop_recipe(self.config.chemistry,mode=self.config.mode,material_process=self.config.film.medium_process)
-            from film_foundry.core.process_operations import BathContactRate
-            BathContactRate(self.config,(1,1))  # Validate bath targets without rendering.
-            self.accept()
+        try:self.config=self.read_config();self.accept()
         except (ValueError,TypeError) as exc:self.status.setText(str(exc))
+
+    def open_peek(self):
+        if self.peek is None or self._peek_dialog is not None:return
+        try:
+            config=self.read_config()
+            from film_foundry.ui.roll_peek import RollPeekDialog
+            dialog=RollPeekDialog(self.peek(config),self)
+        except Exception as exc:self.status.setText(str(exc));return
+        self._peek_dialog=dialog
+        self.tabs.setEnabled(False);self.peek_button.setEnabled(False)
+        def finished(*_):
+            self._peek_dialog=None;self.tabs.setEnabled(True);self.peek_button.setEnabled(True)
+        dialog.finished.connect(finished)
+        dialog.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
+        dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose,True)
+        dialog.show()  # QDialog.open() would downgrade ApplicationModal to WindowModal.
+
+    def done(self,result):
+        if self._peek_dialog is not None:return
+        super().done(result)
+
+    def closeEvent(self,event):
+        if self._peek_dialog is not None:event.ignore();return
+        super().closeEvent(event)

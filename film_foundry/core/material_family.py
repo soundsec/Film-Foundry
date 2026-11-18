@@ -6,7 +6,7 @@ from types import MappingProxyType
 from typing import Mapping, Protocol, Any
 import json
 import numpy as np
-from film_foundry.core.material_arrays import freeze_array
+from film_foundry.core.material_arrays import freeze_array,array_bounds
 
 
 def cached_body_validation(validate):
@@ -25,10 +25,16 @@ def cached_body_validation(validate):
 
 def frozen_fields(fields: Mapping[str, np.ndarray]):
     result = {}
+    aliases = {}
     shape = None
     for key, value in fields.items():
-        array = freeze_array(value)
-        if array.ndim not in (2, 3) or 0 in array.shape or not np.isfinite(array).all():
+        # Several states expose the same pool under two semantic field names.
+        # Detach a mutable caller buffer once while preserving that identity.
+        array = aliases.get(id(value))
+        if array is None:
+            array = freeze_array(value)
+            aliases[id(value)] = array
+        if array.ndim not in (2, 3) or 0 in array.shape or not all(np.isfinite(array_bounds(array))):
             raise ValueError(f"Invalid material field: {key}")
         if shape is not None and array.shape[:2] != shape:
             raise ValueError("Material fields must share spatial geometry")

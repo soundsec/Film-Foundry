@@ -1,12 +1,29 @@
 # 开发中源码快照 / Development source snapshot
 
+## 2026-11-18 · 非正式源码快照
+
+首次使用可在安装根目录依赖后运行 `python run_film_foundry_launcher.py`，从图库打开「第一次暗房工作」，用随附示例照片完成一次曝光、冲洗和扫描。本次沿用桌面 0.4.0、Android 0.1.0 的显示版本，已有 EXE 和 APK 对应此前发行的代码。[桌面安装与启动](DESKTOP_GUIDE.md#start) · [Android 源码与编译](../android/README.md)
+
+- **比较配方。** 胶片试条可用曝光和冲洗时间等两轴生成矩阵，并排同步缩放，直接采用选中的一格。密度探针支持多点和可选孔径，特性曲线使用当前配方形成的灰阶。局部正式尺度预览按设定尺寸整幅计算后裁出选区，切到 100% 可检查单个像素和颗粒。
+- **保存和续作。** 自动保险默认单槽，可选 3 或 5 份并设置轮转间隔。异常退出后可从图库恢复，直接开始新工作则先归档旧记录。保险记录保存来源引用和参数，移动工作请使用工作包。七类实验材料可保存工序检查点，在有完整曝光与工序记录时可从先前步骤另开分支。
+- **调整与观看。** 可钉住常用控件、按张调整批次曝光、沿边拉直并裁切扫描。去片基可用材料参考或手动滴管。印相支持局部遮挡、加光与纸面预估。图库按可见范围请求缩略图，试条窗口共用图像转换，连续调整时预览可取消。桌面可自定义配色并导入界面语言包。[桌面指南](DESKTOP_GUIDE.md) · [翻译指南](TRANSLATING.md)
+- **手机源码。** 轻量胶片更新感光响应和预设。连续药浴可在设备自检通过且计入传输仍有收益时使用 GLES 3.1。设置内的实验单张相机可试拍七类材料，使用独立流程；已有胶卷继续使用冻结的形成版本。设备端速度仍待实测。[Android 功能与试拍入口](../android/README.md)
+
+### English summary
+
+Install the root requirements and run `python run_film_foundry_launcher.py` to try the gallery’s guided sample. Compare recipes in a two-axis test strip, pin density readings, or inspect grain at 100% in a full-scale crop. Recovery keeps source references and parameters. Use a workspace to move a job or branch from a saved material checkpoint. Android adds updated film responses and an experimental one-shot camera for seven materials. The desktop and Android version displays still read 0.4.0 and 0.1.0. This snapshot is distributed as source. [Desktop guide](DESKTOP_GUIDE.md) · [Android build instructions](../android/README.md)
+
+---
+
+## 历史快照 · 2026-11-10 / Previous checkpoint
+
 **2026-11-10 · 中间留档，未发布新安装包。** 本页描述 0.4.0 之后的源码工作，不改写历史版本的发布说明。项目内显示版本暂时仍为桌面 0.4.0、Android 0.1.0；此前下载的 EXE／APK 不包含这里全部新增内容。
 
 **2026-11-10 · Source checkpoint, no new binary release.** These changes follow the 0.4.0 baseline. Display versions remain Desktop 0.4.0 and Android 0.1.0; previously distributed binaries do not contain all features listed here.
 
 [当前桌面指南](DESKTOP_GUIDE.md) · [更新记录](CHANGELOG.md) · [构建入口](../packaging/README.md)
 
-## 从图库开始，在同一窗口工作
+### 从图库开始，在同一窗口工作
 
 - 图库索引来源文件夹和单独导入的图片；不需要复制原文件。双击进入只读浏览，缩略图之后加载高清原图，可查看关联底片、扫描与附属材料，评级和收藏独立保存。
 - 选择一张或多张图像，再选择材料进入工作区。普通图像可完整处理、只曝光、只冲洗或只扫描；潜影、已冲洗介质按已有阶段继续。执行时选择输出位置，默认工作区下的 `outputs/日期/`。
@@ -16,7 +33,7 @@
 
 The gallery is the entry point. Select images to create work; double-click to browse without opening an editor. Workspaces and full editors share one window, while small configuration dialogs remain available. Output location is chosen when execution begins. Single- and dual-sidebar layouts, comparison views, rotation, undo/redo, curves and HSL support daily editing. Persistent automatic recovery is not yet implemented.
 
-## 胶片：曝光、冲洗与扫描继续分开
+### 胶片：曝光、冲洗与扫描继续分开
 
 普通、期望、原理三种控制方式共用胶片形成管线。期望模式将已支持的目标映射到材料与工艺条件；原理模式直接编辑药浴、时间、温度、搅拌与操作。效果可能耦合，界面提供关联影响说明，不承诺所有滑块只改变一种外观。
 
@@ -30,7 +47,7 @@ The gallery is the entry point. Select images to create work; double-click to br
 
 Film exposure, processing and scanning remain separate. Normal, expected-effect and principle controls use the same film pipeline. Processes retain ordered baths, embedded solution capabilities and supported physical interactions. Scanning is read-only. Film-edge marks are formed and frozen with the medium, using a uniform reference response rather than full spatial simulation of the rebate.
 
-## 预设管理与 FFC2
+### 预设管理与 FFC2
 
 入口：**材料与预设 → 预设管理**。按类型、来源和名称筛选，支持多选分享、编辑副本和移除用户项。
 
@@ -52,7 +69,7 @@ Film exposure, processing and scanning remain separate. Normal, expected-effect 
 
 The preset library separates materials, solutions, processes, scanners and exposure/edge settings. Receivers independently choose what to keep and what to apply. Processes embed their solutions and do not depend on matching local filenames. Old recipe codes remain readable; new collections require updated consumers. Android and CLI do not yet select from collections. Legacy-compatible codes remain available, without extending mobile processing capabilities. External mask images are not embedded.
 
-## 七类实验材料
+### 七类实验材料
 
 一体式即显、撕拉片、达盖尔银版、相纸、湿版、蓝晒、铂钯已有各自的形成、观看与保存流程，可从同一主窗口进入。共享任务、保存、扫描输出等接口，不要求各族使用同一个内部反应程序。
 
@@ -60,7 +77,7 @@ The preset library separates materials, solutions, processes, scanners and expos
 
 Integral instant, peel-apart, daguerreotype, photographic paper, wet plate, cyanotype and platinum/palladium are experimental. They retain family-specific processes, with shared workspace and delivery interfaces. Their default formation limit is 1600 pixels and can be disabled. A usable peel-apart negative depends on the declared donor material.
 
-## 输入、保存与性能
+### 输入、保存与性能
 
 - JPEG、PNG、TIFF 等普通图像继续支持；DNG 经 rawpy／LibRaw 解码，Ultra HDR JPEG 经真实增益图解码后进入共通管线。当前证据包含合成验证，不保证所有相机 DNG 或厂商 HDR 变体。
 - 中间介质仍使用标准 NPZ／NPY 和图像格式。按字段用途与胶片档位分配保存精度，权威光学和化学状态保留所需精度；可明确选择全高精度保存。保存量化不能恢复已经丢失的信息。
@@ -70,7 +87,7 @@ Integral instant, peel-apart, daguerreotype, photographic paper, wet plate, cyan
 
 Standard image formats remain supported, with DNG and Ultra HDR JPEG ingestion added to the common pipeline. Intermediates use standard formats. Scaling, reduced mechanisms and processing quality are separate controls. Shared computation and encoding have been optimized; selected GPU operators retain CPU fallbacks. This checkpoint makes no new timing or device-coverage claim.
 
-## 手机与验证边界
+### 手机与验证边界
 
 Android 源码同时保留到本快照：轻量形成保留随明暗变化的颗粒和主要显影反应，简化细碎空间机制；新增中性自动扫描，并减少扫描暂存读写。旧卷与任务按其冻结版本处理。手机仍是独立降阶运行时，未搬入七类实验材料，也未接新版桌面 FFC2 合集。
 

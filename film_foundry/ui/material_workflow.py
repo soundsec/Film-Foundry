@@ -8,17 +8,15 @@ from film_foundry.ui.curve_editor import text
 
 
 FLOWS = {
-    'peel': (('曝光', 'Exposure', ('expose', 'light_leak')),
-             ('铺药', 'Spreading', ('spread','contaminate','clean')), ('转移', 'Transfer', ('advance','environment')),
-             ('分离与整理', 'Separate & finish', ('peel', 'clear_negative', 'clean', 'handling'))),
-    'integral': (('曝光与出片', 'Expose & eject', ('expose', 'eject', 'light_leak')),
-                 ('铺药与环境', 'Spread & environment', ('spread','contaminate','clean')),
-                 ('显影与稳定', 'Develop & stabilize', ('advance','environment','stabilize','finish')),
-                 ('表面整理', 'Finishing', ('handling',))),
+    'peel': (('曝光', 'Exposure', ('expose',)),
+             ('铺药与接触', 'Spread & contact', ('spread',)), ('推进时间', 'Advance time', ('advance',)),
+             ('撕开成片', 'Separate', ('peel',))),
+    'integral': (('曝光与出片', 'Expose & eject', ('expose', 'eject')),
+                 ('铺药与接触', 'Spread & contact', ('spread',)),
+                 ('显影与中和', 'Develop & neutralize', ('advance','stabilize'))),
     'plate': (('备版与抛光', 'Prepare & polish', ('prepare', 'polish', 'sensitize')),
-              ('曝光', 'Exposure', ('expose', 'light_leak')), ('显影', 'Development', ('develop',)),
-              ('定影与镀金', 'Fix & gild', ('fix', 'load_gilding', 'gild','rinse_gilding','finish')),
-              ('表面质感', 'Surface', ('surface', 'weather'))),
+              ('曝光', 'Exposure', ('expose',)), ('显影', 'Development', ('develop',)),
+              ('定影', 'Fixing', ('fix',))),
 }
 MATERIAL_SECTIONS = {
     'peel': (('感光与转移', 'Exposure & transfer', ('transfer', 'donor_mode', 'half_exposure', 'response_contrast', 'reaction_seconds')),
@@ -61,11 +59,18 @@ def form_page():
     return page, form
 
 
-def section_box():
-    from film_foundry.ui.theme import colors
-    palette=colors();box=QtWidgets.QToolBox()
-    box.setStyleSheet(f'QToolBox::tab {{background:{palette.surface};border:0;border-bottom:1px solid {palette.border};padding:0 8px;min-height:26px;text-align:left;}} QToolBox::tab:selected {{background:{palette.selected};color:{palette.text};font-weight:600;}}')
-    return box
+def step_requirement(session,operation,flows):
+    if operation in session.operations:
+        return text('● 当前可执行。下划线标出正在查看的步骤。','● Available now. The underline marks the step being inspected.')
+    if session.state is None and session.group is None:
+        if session.image is None:return text('先载入图像或光学来源。','Load an image or optical source first.')
+        index=next((i for i,(_,ops) in enumerate(flows) if operation in ops),None)
+        if index:
+            prior=' → '.join(f'{i+1} {label}' for i,(label,_) in enumerate(flows[:index]))
+            return text('正在预设参数；执行前需先完成：','Preconfiguring; complete these steps first: ')+prior
+    available=[name for name,ops in flows if any(op in session.operations for op in ops)]
+    return (text('当前阶段不能执行此步。可先进行：','Unavailable at this stage. Available steps: ')+' / '.join(available)) if available else text(
+        '此操作在当前阶段不可执行；请查看材料状态或可选干预。','This action is unavailable at the current stage. Review the material state or optional actions.')
 
 
 class MaterialWorkflow:
@@ -80,7 +85,7 @@ class MaterialWorkflow:
         # Material definitions have their own short, material-specific sections.
         owner.material_group = QtWidgets.QGroupBox(text('材料', 'Material'))
         material_layout = QtWidgets.QVBoxLayout(owner.material_group)
-        owner.material_sections = section_box();material_layout.addWidget(owner.material_sections)
+        owner.material_sections = QtWidgets.QToolBox();material_layout.addWidget(owner.material_sections)
         used = set()
         sections=list(MATERIAL_SECTIONS[owner.kind])
         if owner.kind!='plate':sections.append(('药剂与中和层','Reagent & neutralization',
@@ -108,12 +113,19 @@ class MaterialWorkflow:
         owner.process_group = QtWidgets.QGroupBox(text('处理步骤', 'Processing'))
         process_layout = QtWidgets.QVBoxLayout(owner.process_group)
         self.choice = QtWidgets.QComboBox();process_layout.addWidget(self.choice)
-        self.pages = QtWidgets.QStackedWidget();process_layout.addWidget(self.pages)
+        self.action_scope = QtWidgets.QLabel();self.action_scope.setWordWrap(True)
+        self.action_scope.setObjectName('sectionNote');process_layout.addWidget(self.action_scope)
+        from film_foundry.ui.current_page_stack import CurrentPageStack
+        self.pages = CurrentPageStack();process_layout.addWidget(self.pages)
         self.forms = {};self.indices = {};self.flow_buttons = []
-        for operation, button in owner.operation_buttons.items():
+        self.main_operations = tuple(op for _,_,ops in FLOWS[owner.kind] for op in ops)
+        self.optional_operations = tuple(op for op in owner.operation_buttons if op not in self.main_operations)
+        for operation in (*self.main_operations, *self.optional_operations):
             page, form = form_page();self.forms[operation] = form
             self.indices[operation] = self.pages.addWidget(page)
-            self.choice.addItem(text(*labels[operation]), operation)
+            if operation==self.optional_operations[0]:self.choice.insertSeparator(self.choice.count())
+            prefix=text('可选 · ', 'Optional · ') if operation in self.optional_operations else ''
+            self.choice.addItem(prefix+text(*labels[operation]), operation)
         self._populate()
         for operation, button in owner.operation_buttons.items():
             button.setParent(self.pages.widget(self.indices[operation]))
@@ -126,12 +138,29 @@ class MaterialWorkflow:
         # restoration paths remain valid, including schema-1 restrictions.
         if owner.kind != 'plate':owner.process_form = self.spread_form
         self.choice.currentIndexChanged.connect(self.selected)
-        self.flow = QtWidgets.QWidget();bar = QtWidgets.QHBoxLayout(self.flow);bar.setContentsMargins(0,0,0,0)
+        self.flow = QtWidgets.QWidget();flow_layout=QtWidgets.QVBoxLayout(self.flow);flow_layout.setContentsMargins(0,0,0,0)
+        start=QtWidgets.QHBoxLayout();flow_layout.addLayout(start)
+        owner.standard_button=QtWidgets.QPushButton(text('按当前参数执行标准步骤','Run reference steps'))
+        owner.standard_button.setObjectName('primaryAction');owner.standard_button.clicked.connect(owner.run_standard)
+        owner.standard_button.setToolTip(text('仅用于尚未开始的片张。按主干顺序使用各步当前参数，不自动清理负片、镀金或施加事故；处理不足时保留真实阶段，可继续单步操作。',
+            'For a fresh source. Uses current controls in the reference sequence, excluding negative clearing, gilding and accidents. Incomplete processing retains its actual stage for further steps.'))
+        start.addWidget(owner.standard_button)
+        self.progress_note=QtWidgets.QLabel();self.progress_note.setWordWrap(True);self.progress_note.setObjectName('sectionNote')
+        start.addWidget(self.progress_note,1)
+        bar=QtWidgets.QHBoxLayout();flow_layout.addLayout(bar)
+        from film_foundry.ui.stage_button import StageButton,StageStrip
+        self.stage_strip=StageStrip();bar.addWidget(self.stage_strip,1)
         for index, (zh, en, operations) in enumerate(FLOWS[owner.kind]):
-            button = QtWidgets.QPushButton(f'{index+1}  '+text(zh,en));button.setCheckable(True)
-            button.setToolTip(text('查看本工序参数；执行按钮只在材料允许时启用。', 'View this stage. Execute only when the material permits it.'))
+            button = StageButton(index+1,compact=True);button.set_stage(text(zh,en),'')
             button.clicked.connect(lambda checked=False, ops=operations:self.select_flow(ops))
-            bar.addWidget(button);self.flow_buttons.append((button, operations))
+            self.stage_strip.add_stage(button);self.flow_buttons.append((button, operations))
+        self.optional_button=QtWidgets.QToolButton();self.optional_button.setText(text('可选干预…','Optional actions…'))
+        self.optional_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu=QtWidgets.QMenu(self.optional_button);self.optional_actions={}
+        for operation in self.optional_operations:
+            action=menu.addAction(text(*labels[operation]),lambda op=operation:self.select_flow((op,)))
+            self.optional_actions[operation]=action
+        self.optional_button.setMenu(menu);bar.addWidget(self.optional_button)
         root_layout.insertWidget(root_layout.indexOf(owner.workspace_splitter), self.flow)
         owner.right_scroll = QtWidgets.QScrollArea();owner.right_scroll.setWidgetResizable(True)
         owner.right_scroll.setMinimumWidth(300)
@@ -176,7 +205,7 @@ class MaterialWorkflow:
                     'After v4 separation, clean the selected sheet. Abrasion removes its present image layers without changing the other sheet; removed material cannot be restored. Before contact, only residue cleaning is available.'))
                 self.forms['clear_negative'].parentWidget().setToolTip(text('v4负片清理可以累积；刷痕同时使清理不匀并磨掉当地成像层，接收片保持原状。残片能否作负片仍取决于材料声明。',
                     'V4 negative clearing accumulates. Brush marks make removal uneven and abrade local image layers, leaving the receiver unchanged. A usable negative still requires a declared material.'))
-            sections=section_box();self.forms['spread'].addRow(sections)
+            sections=QtWidgets.QToolBox();self.forms['spread'].addRow(sections)
             for zh,en,controls in (
                 ('铺展与接触','Spread & contact',[w.direction,*[w.process_controls[key] for key in ('coverage','contact','spread_seconds','roller_streaks','edge_loss')]]),
                 ('药剂与瑕疵','Reagent & defects',[w.process_controls['reagent_load'],w.shortage_enabled,w.shortage_strength,*[w.defect_controls[key] for key in ('reagent_decay','contact_defects','reagent_leak','spread_unevenness')]]),
@@ -197,8 +226,11 @@ class MaterialWorkflow:
 
     def selected(self):
         operation = self.choice.currentData()
+        if operation not in self.indices:return
         self.pages.setCurrentIndex(self.indices[operation])
         for button, operations in self.flow_buttons:button.setChecked(operation in operations)
+        self.action_scope.setText(text('可选干预；只在材料允许的阶段执行。', 'Optional action; execute only when the material permits it.')
+            if operation in self.optional_operations else step_requirement(self.owner.session,operation,[(text(zh,en),ops) for zh,en,ops in FLOWS[self.owner.kind]]))
 
     def select_flow(self, operations):
         available = self.owner.session.operations
@@ -210,6 +242,32 @@ class MaterialWorkflow:
     def sync(self):
         w = self.owner;session = w.session
         w.process_group.setEnabled(not w.busy);self.flow.setEnabled(not w.busy)
+        fresh=session.state is None and session.group is None and session.image is not None
+        w.standard_button.setEnabled(not w.busy and fresh)
+        for operation,action in self.optional_actions.items():action.setEnabled(operation in session.operations and not w.busy)
+        state=session.state
+        if state is None:
+            note=text('来源已就绪。可先设置各步参数，再执行标准步骤或逐步操作。','Source ready. Configure the steps, then run the reference sequence or work step by step.') if fresh else text(
+                '先载入图像或光学来源，再执行标准步骤或逐步操作。','Load an image or optical source, then run the reference steps or work step by step.') if session.group is None else text(
+                '已载入最终介质；观看只读。重新形成需另从原始来源开始。','Final medium loaded; viewing is read-only. Start from an original source to form another medium.')
+        elif w.kind=='peel' and state.stage=='contact':
+            note=text(f'已推进 {state.elapsed_seconds:g} s · 可继续推进或撕开；撕开后停止转移。',
+                f'{state.elapsed_seconds:g} s elapsed · advance further or separate; separation stops transfer.')
+        elif w.kind=='integral' and state.stage=='reacting':
+            note=text(f'已推进 {state.elapsed_seconds:g} s · 尚未稳定。可继续推进 / 中和，或在可选干预中明确保留当前成片。',
+                f'{state.elapsed_seconds:g} s elapsed · still reacting. Advance / neutralize, or explicitly keep the current print under optional actions.')
+        elif w.kind=='plate' and state.stage in ('fixing','gilding'):
+            note=text('药浴尚未完成，可继续本浴；延长时间不会补充已耗尽的药剂。','Bath incomplete; continue this bath. More time does not replenish exhausted reagents.')
+        elif session.group is not None:
+            note=text('已形成可观察介质；可选干预仍按材料阶段开放。观看与导出不推进反应。','A viewable medium is formed. Optional actions follow its stage; viewing and export never advance chemistry.')
+        else:
+            note=text('按编号查看主干工序；当前可执行的步骤已标出，材料开始后冻结。','Browse the numbered process. Available steps are marked; material freezes once started.')
+        self.progress_note.setText(note)
+        from film_foundry.ui.stage_button import visited_operations, operation_status
+        visited=visited_operations(session)
+        for index,((button,operations),(zh,en,_)) in enumerate(zip(self.flow_buttons,FLOWS[w.kind]),1):
+            available=any(op in session.operations for op in operations)
+            button.set_stage(text(zh,en), operation_status(visited,operations,available), available=available, visited=bool(visited and visited.intersection(operations)))
         identity = session.state if session.state is not None else session.group if session.group is not None else session.image
         if identity is not self._identity:
             self._identity = identity
@@ -229,9 +287,9 @@ class MaterialWorkflow:
             index = w.config_tabs.indexOf(w.process_group)
             if index >= 0:w.config_tabs.removeTab(index)
             w.right_layout.addWidget(w.process_group);w.process_group.show();w.right_scroll.show()
-            w.workspace_splitter.setSizes([310,700,320])
+            w.workspace_splitter.setSizes([350,500,350])
         else:
             w.right_layout.removeWidget(w.process_group)
             if w.config_tabs.indexOf(w.process_group)<0:w.config_tabs.addTab(w.process_group,text('工艺','Process'))
-            w.right_scroll.hide();w.workspace_splitter.setSizes([340,850,0])
+            w.right_scroll.hide();w.workspace_splitter.setSizes([440,720,0])
         w.workspace_splitter.setStretchFactor(0,0);w.workspace_splitter.setStretchFactor(1,1);w.workspace_splitter.setStretchFactor(2,0)

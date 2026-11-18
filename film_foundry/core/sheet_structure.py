@@ -110,13 +110,18 @@ def paper_reflectance(paper,absorption,scatter):
     return paper[...,None]/(1+k+np.sqrt(k*(k+2)))
 
 
-def view_gloss(view,roughness):
+def gloss_factors(view):
     vectors=[]
     for value in (view.light_direction,view.view_direction):
         vector=np.asarray(value,np.float32)
         if vector.shape!=(3,) or not np.isfinite(vector).all() or np.linalg.norm(vector)<1e-6:raise ValueError('Invalid viewing direction')
         vectors.append(vector/np.linalg.norm(vector))
     light,eye=vectors;half=light+eye
-    if np.linalg.norm(half)<1e-6:return np.zeros_like(roughness)
+    if np.linalg.norm(half)<1e-6:return (0.,0.,0.)
     cosine=max(0,float(half[2]/np.linalg.norm(half)))
-    return np.power(cosine,8+120*(1-roughness))*max(0,float(light[2]))*max(0,float(eye[2]))
+    return cosine,max(0,float(light[2])),max(0,float(eye[2]))
+
+
+def view_gloss(view,roughness):
+    cosine,light,eye=gloss_factors(view)
+    return np.power(cosine,8+120*(1-roughness))*light*eye

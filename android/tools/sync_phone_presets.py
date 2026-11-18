@@ -42,24 +42,8 @@ definitions = {
         ("red_cobalt_scan", "钴蓝红光", "Cobalt & red"),
     ],
 }
-allowed = {
-    "film": {"grain_strength", "grain_scales", "grain_scale_weights", "name", "color_process", "image_polarity", "contrast", "film_base_density_rgb",
-             "retained_halide_density_rgb", "layer_sensitivity_matrix", "dye_absorption_matrix",
-             "hd_gamma", "log_exposure_toe", "log_exposure_shoulder", "density_max", "clear_support_density_rgb",
-             "dir_material_response_matrix", "dir_diffusion_radius",
-             "silver_grain_strength", "silver_grain_radius", "silver_grain_clump_mix",
-             "light_piping_strength", "light_piping_depth", "light_piping_edge_mode", "light_piping_layer_weights",
-             "halation_return_model", "halation_layer_return_weights", "halation_spread_scale_weights",
-             "emulsion_highlight_spread_strength", "emulsion_highlight_spread_radius", "emulsion_highlight_spread_threshold",
-             "emulsion_highlight_spread_softness", "emulsion_highlight_spread_layer_radius_scales", "emulsion_highlight_spread_layer_strengths",
-             "auxiliary_layer_amount", "auxiliary_layer_density_rgb", "experimental_mask_bleach_susceptibility", "experimental_mask_bleach_dye_damage",
-             "cross_process_silver_development", "cross_process_dye_coupling", "cross_process_activation", "cross_process_silver_bleach",
-             "cross_process_halide_fixing", "cross_process_silver_removal", "cross_process_dye_stability", "cross_process_auxiliary_removal", "cross_process_layer_balance"},
-    "scanner": {"scanner_light_color", "transmission_light_ev", "transmission_light_temperature_k", "print_mapping_mode",
-                "remove_base_mask", "invert_transmission", "scan_saturation", "scan_normalize",
-                "scan_normalize_strength", "scan_normalize_mode", "scan_black_percentile",
-                "scan_white_percentile", "tone_curve", "color_curve_rgb"},
-}
+from phone_preset_fields import allowed
+
 output = json.loads(destination.read_text(encoding='utf-8')) if args.scanners_only or args.catalog_only else {"model": "phone_builtin_recipes_v1"}
 for group, items in definitions.items():
     if args.catalog_only and group != 'materials':
@@ -81,9 +65,36 @@ for group, items in definitions.items():
             recipe[section]['print_mapping_mode'] = 'sigmoid'
             recipe[section]['scan_normalize_strength'] = 1.0
         entries.append(dict(id=key, label_zh=zh, label_en=en, source=source.as_posix(), recipe=recipe))
+    if args.catalog_only:
+        entries += [entry for key,entry in previous.items() if key not in {e[0] for e in items}]
     output[group] = entries
 if not args.scanners_only:
     output['daily_material_ids'] = [item[0] for item in definitions['materials'] if item[0] not in {'blue_highlight_negative', 'red_rich_negative', 'high_contrast_push'}]
+
+# New optional RGB proxies; no claim of measured spectral sensitivity or infrared support.
+if not args.scanners_only and not args.catalog_only:
+    from copy import deepcopy
+    base=next(e for e in output['materials'] if e['id']=='monochrome_fine_negative')
+    for key,zh,en,weights in [
+        ('monochrome_ortho_negative','黑白负片 · 正色响应','B&W negative · Orthochromatic response',[.02,.68,.30]),
+        ('monochrome_blue_sensitive_negative','黑白负片 · 蓝敏响应','B&W negative · Blue-sensitive response',[.01,.09,.90])]:
+        entry=deepcopy(base);entry.update(id=key,label_zh=zh,label_en=en,source='phone_rgb_response_approximation_v1')
+        entry['recipe']['film'].update(name=en,layer_sensitivity_matrix=[weights[:] for _ in range(3)])
+        output['materials'].append(entry);output['daily_material_ids'].append(key)
+if args.catalog_only:
+    known={item[0] for item in definitions['materials']}
+    output['daily_material_ids'] += [entry['id'] for entry in output['materials'] if entry['id'] not in known]
+if not args.catalog_only and not args.scanners_only:
+    output['revision']='phone_reduced_materials_v3'
+
+# Embedded creative materials must follow the same catalog as newly loaded rolls.
+pair_path=destination.parent/'phone_creative_pairings.json'
+if not args.scanners_only and not args.catalog_only and pair_path.exists():
+    pairs=json.loads(pair_path.read_text(encoding='utf-8'))
+    materials={e['id']:e['recipe']['film'] for e in output['materials']}
+    for pair in pairs['entries']:
+        pair['recipe']['film']=materials[pair['material_id']]
+    pair_path.write_text(json.dumps(pairs,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
 
 destination.parent.mkdir(parents=True, exist_ok=True)
 destination.write_text(json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

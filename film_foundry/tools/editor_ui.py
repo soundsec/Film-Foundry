@@ -8,12 +8,13 @@ from film_foundry.ui.i18n import current_language, tr
 
 
 def local_text(zh: str, en: str) -> str:
-    return en if current_language() == "en_US" else zh
+    from film_foundry.ui.language_packs import translate_pair
+    return translate_pair(zh,en)
 
 
 def localize_widget_tree(widget, english: dict[str, str]) -> None:
     """Translate static widget text after an editor builds its controls."""
-    if current_language() != "en_US":
+    if current_language() == "zh_CN":
         return
     try:
         value = str(widget.cget("text"))
@@ -21,7 +22,7 @@ def localize_widget_tree(widget, english: dict[str, str]) -> None:
         value = ""
     if value in english:
         try:
-            widget.configure(text=english[value])
+            widget.configure(text=local_text(value,english[value]))
         except (AttributeError, RuntimeError):
             pass
     for child in widget.winfo_children():

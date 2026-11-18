@@ -66,6 +66,8 @@ def test_gallery_double_click_browses_and_batch_creation_is_explicit(desktop,tmp
     assert browser.target_family.isHidden() and browser.open_button.isHidden()
     asset=browser.selected_asset();assert asset['rating']==5 and asset['favorite']
     panel.open_library();library.select_all();library.open_selected()
+    assert panel.workspace_host.currentWidget() is library
+    chooser=panel._material_chooser;assert chooser.isVisible();chooser.confirm()
     assert set(panel._selected_photos)==set(paths) and len(panel._selected_photos)==3
     assert panel.workspace_host.currentWidget() is panel.film_workspace
 

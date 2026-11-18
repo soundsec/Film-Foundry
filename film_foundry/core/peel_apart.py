@@ -13,6 +13,7 @@ from film_foundry.core.material_family import MediumBody, ProductGroup, ViewingC
 from film_foundry.core import material_defects as defects
 from film_foundry.core.material_metadata import ProcessAnnotations
 from film_foundry.core.material_family import cached_body_validation
+from film_foundry.core.material_arrays import array_bounds
 from film_foundry.core import transfer_environment as segmented, material_structure as ms, scaled_structure as scaled, peel_separation as separation, layer_ownership as layers
 
 FAMILY = "peel_apart_transfer_v1"
@@ -87,8 +88,8 @@ class PeelState(ProcessAnnotations):
             if fields[key].shape!=shape:raise ValueError("Incorrect pool geometry")
         for key in ("coverage","contact","arrival_seconds"):
             if fields[key].shape!=shape[:2]:raise ValueError("Incorrect process field geometry")
-        if any((v<0).any() for v in fields.values()):raise ValueError("Negative material amounts")
-        if any((fields[k]>1).any() for k in BASE_FIELDS-{"arrival_seconds"}):raise ValueError("Invalid material fraction")
+        if any(array_bounds(v)[0]<0 for v in fields.values()):raise ValueError("Negative material amounts")
+        if any(array_bounds(fields[k])[1]>1 for k in BASE_FIELDS-{"arrival_seconds"}):raise ValueError("Invalid material fraction")
         if self.schema_version>=2:
             validate_chemistry(fields,shape)
             if (fields["developed_donor"]>fields["immobile"]+1e-6).any():raise ValueError("Donor silver exceeds its exposed pool")
@@ -117,8 +118,8 @@ def validate_chemistry(fields,shape):
     for key in CHEMISTRY_FIELDS:
         expected=shape if key in ("channel_activity","transfer_yield","developed_donor") else shape[:2]+(3,) if key=="stain_density" else shape[:2]
         if fields[key].shape!=expected:raise ValueError("Invalid chemistry field geometry")
-    if any((fields[k]>1).any() for k in ("transfer_yield","paper_texture","backing_texture")):raise ValueError("Invalid chemistry fraction")
-    if (fields["channel_activity"]>4).any():raise ValueError("Invalid chemical activity")
+    if any(array_bounds(fields[k])[1]>1 for k in ("transfer_yield","paper_texture","backing_texture")):raise ValueError("Invalid chemistry fraction")
+    if array_bounds(fields["channel_activity"])[1]>4:raise ValueError("Invalid chemical activity")
 
 
 def expose(image_linear, material=PeelMaterial(), *, group_id, seed=0,schema_version=5):
@@ -411,6 +412,13 @@ def observe(body, view=ViewingConditions()):
     light=np.asarray(view.illuminant_rgb,dtype=np.float32)
     if light.shape!=(3,) or not np.isfinite(light).all() or (light<0).any():raise ValueError("Invalid illuminant")
     if not math.isfinite(view.exposure_ev) or not -20<=view.exposure_ev<=20:raise ValueError("Invalid viewing exposure")
+    if body.schema_version>=2 and body.role!='silver_negative':
+        from .observation_compute import run
+        f=body.fields;receiver='transferred' in f
+        amount=f['transferred'] if receiver else f['immobile']
+        accelerated=run('observe_peel',[amount,amount if receiver else f['remaining'],f['density_per_unit'],f['paper'],f['stain_density']],
+                        [0.],kind=0 if receiver else 1,channels=amount.shape[-1])
+        if accelerated is not None:return frame_observation(body,accelerated*light*(2**view.exposure_ev),view)
     if body.role=="silver_negative":
         density=body.fields["density"]
         if body.schema_version>=4:density=density+body.fields["stain_density"]

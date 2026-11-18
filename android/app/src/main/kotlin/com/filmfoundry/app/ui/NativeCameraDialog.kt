@@ -55,12 +55,12 @@ fun showNativeCameraDialog(activity: ComponentActivity,shell: MobileShell,lenses
         target=previousTarget
         shell.note(body,when {
             !manualSupported -> "这颗镜头不能手动指定 ISO，保持自动锁定。"
-            shooting -> "平常在胶卷设置里指定 ISO。这里默认锁定；勾选强制手动解锁后，只在这次拍摄中临时生效。"
-            else -> "ISO 在胶卷设置里指定，这里不能改。"
+            shooting -> "平常在拍摄首页的「感光度与快门」里指定 ISO。这里默认锁定；勾选强制手动解锁后，只在这次拍摄中临时生效。"
+            else -> "ISO 在拍摄首页的「感光度与快门」里指定，这里不能改。"
         },when {
             !manualSupported -> "This lens cannot set ISO manually. It stays automatic and locked."
-            shooting -> "ISO is normally set in film settings and stays locked here. Force-unlock applies only for this shoot."
-            else -> "ISO is set in film settings and cannot be changed here."
+            shooting -> "Set ISO in ISO & shutter on Camera home. It stays locked here; force-unlock applies only for this shoot."
+            else -> "Set ISO in ISO & shutter on Camera home; it cannot be changed here."
         })
         shell.note(body,"自动对焦与自动白平衡由相机负责。点按取景画面对焦测光；MF、手动白平衡暂不可用。","The camera controls autofocus and automatic white balance. Tap the viewfinder to focus and meter. MF and manual white balance are temporarily unavailable.")
         val expert=check("专业控制","Pro controls",initial.lockAe)

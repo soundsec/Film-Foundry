@@ -5,6 +5,7 @@ import copy
 from film_foundry.core.frame_identity import normalize_frame_identity
 from film_foundry.ui.config_fields import add_apply_button
 from film_foundry.ui.i18n import tr, current_language
+from film_foundry.ui.language_packs import translate_pair as text
 from film_foundry.ui.qt import ui, QtCore, QtWidgets
 from film_foundry.ui.widgets import VerticalScrolledFrame
 from film_foundry.ui.precision_labels import PRECISION_TOOLTIP
@@ -83,7 +84,7 @@ class RuntimeSettings:
             pages[key].columnconfigure(1, weight=1)
             pages[key]._ensure_grid_layout().setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
             rows[key] = 0
-            self.tabs.addTab(page.qt, zh if current_language() == "zh_CN" else en)
+            self.tabs.addTab(page.qt, text(zh,en))
         self.controls = pages["input"]
         for bank, key, kind, choices, zh, en in SETTINGS:
             section = "input" if bank in ("input", "look") else "output" if bank == "output" else "performance"
@@ -94,12 +95,12 @@ class RuntimeSettings:
             value = getattr(group, key)
             variable = ui.BoolValue(value=value) if kind == "bool" else ui.TextValue(value="" if value is None else str(value))
             self.values[key] = variable
-            label = zh if current_language() == "zh_CN" else en
+            label = text(zh,en)
             caption = label.split("（")[0].split(" (")[0]
             if key == "material_storage_precision":
-                label += '\n' + PRECISION_TOOLTIP[0 if current_language() == "zh_CN" else 1]
+                label += '\n' + text(*PRECISION_TOOLTIP)
             if key == "render_long_edge":
-                caption = "处理长边" if current_language() == "zh_CN" else "Processing long edge"
+                caption = text('处理长边','Processing long edge')
             if kind == "bool":
                 entry = ui.Toggle(controls, text=caption, variable=variable)
                 entry.grid(row=row, column=0, columnspan=2, sticky="w", pady=6)
@@ -111,7 +112,7 @@ class RuntimeSettings:
                 if choices:
                     labels = CHOICE_LABELS.get(key)
                     if labels:
-                        display = tuple(pair[0 if current_language() == "zh_CN" else 1] for pair in labels)
+                        display = tuple(text(*pair) for pair in labels)
                         entry = ui.Choice(controls, values=display, state="readonly")
                         def select(value, combo=entry.qt, options=choices):
                             blocker = QtCore.QSignalBlocker(combo)

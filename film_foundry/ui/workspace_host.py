@@ -102,16 +102,20 @@ class WorkspaceHost(QtWidgets.QTabWidget):
         return saved
 
     def refresh_activity(self):
-        for page, (title, _, _) in tuple(self._pages.items()):
+        shortcut_hint=text('\nCtrl+Tab 切换；右键查看全部页面。切换保留草稿。','\nCtrl+Tab to switch; right-click lists all pages. Switching preserves drafts.')
+        for index in range(self.count()):
+            page=self.widget(index)
+            title=self._pages[page][0]
             busy = bool(getattr(page, 'busy', False) or getattr(page, 'exporting', False) or page.property('workspaceBusy'))
-            index = self.indexOf(page)
             source=getattr(getattr(page,'session',None),'source_name','')
             label=title
             if source and source not in title:label+=' · '+(source[:18]+'…' if len(source)>18 else source)
-            self.setTabText(index, label + (' …' if busy else ''))
+            caption=label+(' …' if busy else '')
+            if self.tabText(index)!=caption:self.setTabText(index,caption)
             hint=title+(' · '+source if source and source not in title else '')
-            self.setTabToolTip(index, hint + (text(' · 后台处理中', ' · Processing in background') if busy else '')
-                + text('\nCtrl+Tab 切换；右键查看全部页面。切换保留草稿。','\nCtrl+Tab to switch; right-click lists all pages. Switching preserves drafts.'))
+            if busy:hint+=text(' · 后台处理中',' · Processing in background')
+            hint+=shortcut_hint
+            if self.tabToolTip(index)!=hint:self.setTabToolTip(index,hint)
 
     def busy_pages(self):
         return [page for page in self._pages

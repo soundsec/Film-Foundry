@@ -2,7 +2,23 @@
 
 当前版本0.1.0。Android 8.0及以上，当前以ARM64手机进行实机测试。提供arm64-v8a、armeabi-v7a、x86和x86_64分架构APK，以及包含四种ABI的universal通用包；其他架构尚未实机验证。
 
-**2026-11-10 源码留档说明**：当前源码包含轻量形成和中性自动扫描等后续开发，本次没有生成新 APK，显示版本仍为 0.1.0。旧卷按冻结版本处理；七类实验材料和新版桌面 FFC2 预设合集未移植。具体范围见[源码快照](../docs/DEVELOPMENT_SNAPSHOT.md)，不要把本树与早期 0.1.0 安装包视为完全相同。
+**2026-11-16 源码说明**：当前源码包含轻量形成和中性自动扫描等后续开发，本次没有生成新 APK，显示版本仍为 0.1.0。胶片新轻量内核为 `phone_formation_fast_v3`；旧卷、潜影和任务继续使用冻结版本。七类实验材料已有基础降阶内核和设置页隐藏单张相机，未进入主导航、胶卷库或图库；新版桌面 FFC2 预设合集仍未移植。不要把本树与早期 0.1.0 安装包视为完全相同。
+
+v3 补上普通 RGB 黑白材料的感光矩阵响应，新增正色／蓝敏近似预设；不是测量光谱或红外模拟。普通材料、六个组合与八套隐藏材料已按手机实际支持字段更新，包含材料光晕、乳剂柔化和时间响应。旧卷和自定义配方不自动改写。
+
+轻量胶片连续药浴已接 GLES 3.1：主池在单次上传内按顺序反应，随后接回原有明暗颗粒、简化事故及光学形成。独立队列协调两个行生产线程，实际参数与 CPU 对照合格、且包括打包／上传／读回的测速有收益才选 GPU；失败完整回退 CPU。设置的硬件自动测试新增连续药浴，最近记录区区分显影与扫描。颗粒、空间场、统计、预览和七类实验材料形成仍为 CPU。已通过主机编译和小样本数值检查，手机驱动及整卷速度尚未实测。
+
+精度分开处理：计算、胶片潜影／化学库存／权威光学母版保持 FP32；标准 NPZ 可用 IEEE FP16 保存部分实验材料的独立外观字段，`MaterialStoragePrecision.Policy.FULL` 保留现有值的 FP32 保存。相纸和蓝晒的当前外观字段因保守误差门限保留 FP32，FP8 未启用。全精度另存不能恢复旧文件已丢失的精度。手机胶片没有桌面的冗余外观层，因此这项不会自动把胶片存档减半。
+
+胶片 v2 增加材料储存失速／生雾、单次曝光互易律、潜影等待和冲洗后残盐受光；只推进显式记录的时间，扫描不推进反应。单次拍摄可使用相机记录的快门时间，多重曝光不推断统一时长。明暗相关颗粒、简化药痕及原有药浴顺序保留，复杂空间运输、逐浴颗粒历史和表面残盐反应不搬入基础手机档。
+
+开发接口 `PhoneMaterialKernel` 提供七类材料的 `expose → process → finish`，`PhoneMaterialObserve` 独立只读观察。当前形成模型是 `phone_material_reduced_v3`，只保留各族最容易辨认的形成：撕拉／即显的有限转移、受光残色和封闭褪白；银版的定向金属反射、镀金和锈色；相纸的影调、彩色染料、冷暖、纤维／RC 干湿和光泽；湿版的浇注流向和正片眩光；蓝晒的笔刷与结合；铂钯的双金属上限。边缘损失、针孔、划伤、漏光、污染、碱洗和局部水洗不再执行，导入字段仍保留在溯源里。工作图不再设 4MP 上限，只拒绝无法装进一个数组的尺寸。外观和几何场默认按 binary16 舍入，守恒的化学池仍是 Float32；与全精度观察的差由测试限制在 5e-4 以内。七族形成仍是 CPU，不出现在主导航。设置页可以打开一台隐藏的单张相机：正式包要在 FFC2 栏输入 `FFC2:OPEN-MATERIALS`，可调试安装包直接显示入口。拍一张、选择材料、处理得到一张图，不写入胶卷库或系统相册。撕拉结果要向上揭开负片。设置页可为快门、反光板、过片上弦、卷片马达和倒片马达五条音效分别试听、更换或恢复内置合成音。自动过片播马达，手动过片播上弦声；快门跟随已知快门速度，反光板可在相机设置关闭。封卷后可看退出取景器、开盖和取卷，或跳过这段只保留渐黑；自动过片此时播放倒片马达。应用进入后台会取消未播放的快门尾音；停止连续过片会释放循环音轨。隐藏相机离开前台时取消绑定重试，过期相机回调不会重新占用相机。
+
+最终产物沿用 `.ffmaterial.npz` 产品封装，可单独保存、读取、复用与传给桌面。撕拉片保留关联双片，只有声明黑白可用负片并执行清理才输出透射负片；其他族各一片。新产物使用桌面已能观察的版本：相纸和湿版 v2，蓝晒和铂钯 v3，撕拉、即显、银版维持 v2。旧的 v1 产物仍按原观察读取。手机不能据此续算桌面完整工艺存档。银版保留角度反射；相纸／湿版／铁盐印相的负正关系由材料形成决定，不自动翻转输入。
+
+The source-only mobile update adds versioned reduced film time responses and headless experimental kernels for seven material families. Existing rolls retain their frozen implementation. Experimental formation is `phone_material_reduced_v3`: each family keeps its recognizable process, while generic defects are preserved but not applied. There is no 4MP working-image cap. Appearance and geometry fields default to binary16; conserved chemical pools stay Float32. Observation against the full-precision path stays within 5e-4. The main navigation does not list these materials. A hidden one-shot camera appears on Settings after entering `FFC2:OPEN-MATERIALS` in the recipe field; debuggable builds show that entry directly. The picture is not added to a roll or the system album. A peel-apart result stays covered until the negative is dragged upward. Settings can preview, replace, or restore all five cues: shutter, mirror, advance, motor, and rewind. Auto advance uses the motor cue; manual advance uses the wind cue. The shutter follows a known shutter speed, and the mirror cue can be disabled in camera settings. Sealing can show the exit, back opening and roll removal, or skip that scene after a fade to black. Auto advance plays the rewind motor then. Backgrounding cancels pending shutter sounds; stopping continuous transport releases its looping audio track. Leaving the hidden camera cancels binding retries and invalidates stale provider callbacks. This is not a new APK release.
+
+Film fast v3 adds monochrome RGB sensitivity and refreshed built-in/seasonal materials. Ordered lightweight film baths can use qualified GLES 3.1 with transfer-inclusive CPU fallback; the hardware self-test includes this operation. Critical film arrays and arithmetic remain FP32. Selected experimental appearance fields use standard FP16 NPZ storage, with a full-precision opt-out; paper/cyanotype remain FP32 under the stricter mobile error bound. Device compatibility and end-to-end speed remain unmeasured.
 
 [中文使用说明](../docs/MOBILE_GUIDE.md) · [English guide](../docs/MOBILE_GUIDE.en.md)
 

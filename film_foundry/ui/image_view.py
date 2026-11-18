@@ -13,6 +13,7 @@ class ImageView(QtWidgets.QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.source = None
+        self._displayed_key = None
         self._fit_mode = True
         self.setMinimumSize(180, 160)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Expanding)
@@ -32,12 +33,36 @@ class ImageView(QtWidgets.QGraphicsView):
         self.setAccessibleName(text("图像预览", "Image preview"))
         self.setToolTip(text("滚轮缩放 · 拖动平移 · 双击适合窗口", "Scroll to zoom · drag to pan · double-click to fit"))
 
-    def show_array(self, array):
-        # Same display conversion as the previous label viewer.
-        pixels = np.ascontiguousarray(np.clip(array, 0, 1)*255, dtype=np.uint8)
+    def contextMenuEvent(self,event):
+        menu=QtWidgets.QMenu(self)
+        for label,en,color in [('黑','Black','#000000'),('中灰','Middle gray','#777777'),('白','White','#ffffff'),('纸白','Paper white','#f3eddd')]:
+            action=menu.addAction(text(label,en))
+            action.setData(color)
+        choice=menu.exec(event.globalPos())
+        if choice:
+            color=choice.data()
+            from film_foundry.ui.color_schemes import text_on
+            self.setStyleSheet(f'QGraphicsView {{background:{color}; border:0;}}')
+            self.setBackgroundBrush(QtGui.QColor(color))
+            self._empty.setDefaultTextColor(QtGui.QColor(text_on(color)))
+
+    @staticmethod
+    def display_pixels(array):
+        return np.ascontiguousarray(np.clip(array, 0, 1)*255, dtype=np.uint8)
+
+    @staticmethod
+    def rgb_pixmap(pixels):
         h, w = pixels.shape[:2]
-        image = QtGui.QImage(pixels.data, w, h, pixels.strides[0], QtGui.QImage.Format.Format_RGB888).copy()
-        pixmap = QtGui.QPixmap.fromImage(image)
+        image = QtGui.QImage(pixels.data, w, h, pixels.strides[0], QtGui.QImage.Format.Format_RGB888)
+        return QtGui.QPixmap.fromImage(image.copy())
+
+    @classmethod
+    def pixmap(cls, array):
+        return cls.rgb_pixmap(cls.display_pixels(array))
+
+    def show_array(self, array):
+        pixels = self.display_pixels(array)
+        pixmap = self.rgb_pixmap(pixels)
         preserve = self.source is not None and self.source.size() == pixmap.size() and not self._fit_mode
         self.source = pixmap
         self.pixels_changed.emit(pixels)
@@ -70,15 +95,25 @@ class ImageView(QtWidgets.QGraphicsView):
 
     def _sync_source(self):
         present = self.source is not None
+        self._displayed_key = self.source.cacheKey() if present else None
         self._empty.setVisible(not present)
         self._image.setVisible(present)
         if present:
             self._image.setPixmap(self.source)
             self.setSceneRect(self._image.boundingRect())
+        if hasattr(self,'clipping_overlay'):self.clipping_overlay.sync()
+
+    def enable_clipping(self,settings):
+        from film_foundry.ui.clipping_overlay import ClippingOverlay
+        self.clipping_overlay=ClippingOverlay(self,settings);self.clipping_overlay.sync()
+
+    def clipping_region(self):
+        return self.source,QtCore.QPointF(),QtCore.QRectF(self.source.rect())
 
     def fit(self):
         self._fit_mode = True
-        self._sync_source()
+        if (self.source.cacheKey() if self.source is not None else None) != self._displayed_key:
+            self._sync_source()
         if self.source is not None:
             self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -95,13 +130,13 @@ class ImageView(QtWidgets.QGraphicsView):
     def zoom(self, factor):
         self._set_scale(self.transform().m11()*factor)
 
-    def _set_scale(self, scale):
+    def _set_scale(self, scale, *, maximum=16.0):
         if self.source is None:
             return
         self._fit_mode = False
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scale = min(16.0, max(.02, scale))
+        scale = min(maximum, max(.02, scale))
         self.scale(scale/self.transform().m11(), scale/self.transform().m22())
         self.zoom_changed.emit(self.zoom_percent)
 

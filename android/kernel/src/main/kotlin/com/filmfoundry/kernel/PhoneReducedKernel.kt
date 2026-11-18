@@ -18,7 +18,7 @@ import kotlin.math.pow
  * exposure, ordered baths (or frozen legacy development), then optical pools.
  * The source binds its film parameters; observation reads the formed medium.
  */
-class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
+class PhoneReducedKernel(private val formationCompute: FilmDevelopmentCompute?=null) : RowReducedKernel, ObservationPreparingKernel {
     override fun prepareObservation(optical: OpticalMaster,recipe: Map<String,Any?>,checkCancel: ()->Unit): PreparedObservation =
         PhoneObserve.capture(optical,recipe,baseDensity(recipe),checkCancel=checkCancel,retainTransport=true)
     fun usesScannerDeviceResponse(recipe: Map<String,Any?>): Boolean {
@@ -55,6 +55,13 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
         val metadata = latentMetadata(recipe, layers, subtractive).toMutableMap()
         PhoneFormationProfile.validate(recipe[PhoneFormationProfile.OPTION])?.let { metadata[PhoneFormationProfile.OPTION]=it }
         val film=mapOf(recipe,"film").orEmpty()
+        val time=if(PhoneFormationProfile.hasTimeResponse(recipe[PhoneFormationProfile.OPTION]))
+            PhoneFilmTime(film,mapOf(recipe,"exposure").orEmpty(),emptyMap(),layers) else null
+        if(time!=null) metadata["phone_exposure_time"]=time.record
+        // RGB proxy for declared mono sensitivity. Old captures retain equal-channel averaging.
+        val monoWeights=if(layers==1 && spectral==null && recipe[PhoneFormationProfile.OPTION]==PhoneFormationProfile.LIGHTWEIGHT)
+            FloatArray(3) { c -> sensitivity.sumOf { it[c].toDouble() }.toFloat()/3f } else null
+        if(monoWeights!=null) metadata["phone_monochrome_sensitivity"]=mapOf("model" to "rgb_layer_projection_v1","weights" to monoWeights.toList())
         val boundFilm=film.toMutableMap().apply {
             putIfAbsent("image_polarity",metadata["image_polarity"])
             putIfAbsent("medium_family",metadata["medium_family"])
@@ -67,7 +74,7 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
         val optics=PhoneExposureOptics(opticsRecipe,width,fullHeight,gain)
         val referencePixels=geometry?.let { it.referenceShortEdgeMm*max(width,fullHeight)/it.longEdgeMm }?.toFloat() ?: min(width,fullHeight).toFloat()
         val layerOptics=if(extended) PhoneLayerExposure(recipe,width,fullHeight,layers,referencePixels,gain) { r,g,b,l ->
-            if(layers==1) { if(spectral==null) (r+g+b)/3f else max(spectral.exposure(r,g,b,0),1e-6f) }
+            if(layers==1) { if(spectral==null) monoWeights?.let { max(0f,r*it[0]+g*it[1]+b*it[2]) } ?: ((r+g+b)/3f) else max(spectral.exposure(r,g,b,0),1e-6f) }
             else if(spectral==null) max(0f,r*sensitivity[l][0]+g*sensitivity[l][1]+b*sensitivity[l][2]) else max(spectral.exposure(r,g,b,l),1e-6f)
         } else null
         val response=if(com.filmfoundry.interchange.PhoneProcessModels.interactive(recipe[com.filmfoundry.interchange.PhoneProcessModels.OPTION]) && film["hd_gamma"]!=null) PhoneLayerResponse(film,layers,contrast) else null
@@ -79,7 +86,7 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
         if (spectral != null) metadata[DataKernel.SPECTRAL_EXPOSURE_PROFILE_KEY] = spectral.metadata
         if (materialSpectrum != null) metadata[SpectralOptics.MATERIAL_KEY] = materialSpectrum.metadata
         val setup = ExposureSetup(width, fullHeight, layers, subtractive, half, gain, sensitivity,
-            spectral, preparedValues(metadata),response)
+            spectral, preparedValues(metadata),response,time,monoWeights)
         return object: PreparedRowExposure {
             override fun exposeRows(linearRgb: RgbVolume): LatentState {
                 if(!optics.enabled && layerOptics?.enabled!=true) return exposePrepared(linearRgb,setup)
@@ -112,6 +119,7 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
         val width: Int, val fullHeight: Int, val layers: Int, val subtractive: Boolean,
         val half: Float, val gain: Float, val sensitivity: Array<FloatArray>,
         val spectral: PhoneSpectralExposure?, val metadata: Map<String, Any?>,val response: PhoneLayerResponse?,
+        val time: PhoneFilmTime?,val monoWeights: FloatArray?,
     )
 
     private fun exposePrepared(linearRgb: RgbVolume, setup: ExposureSetup,startRow: Int=0,additions: PhoneLayerExposure.Binding?=null): LatentState {
@@ -139,17 +147,21 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
             val g = max(sourceValues[i * 3 + 1] * gain, 0f)
             val b = max(sourceValues[i * 3 + 2] * gain, 0f)
             if (layers == 1) {
-                var e = if (spectral == null) (r + g + b) / 3f else
+                var e = if (spectral == null) setup.monoWeights?.let { max(0f,r*it[0]+g*it[1]+b*it[2]) } ?: ((r + g + b) / 3f) else
                     max(spectral.exposure(r, g, b, 0), 1e-6f)
                 if(additions!=null) e+=additions.addition(i%width,startRow+i/width,0)
-                developability[i] = response?.activation(e,0) ?: (e / (e + half))
+                e*=setup.time?.speed?.get(0) ?: 1f
+                val activation=response?.activation(e,0) ?: (e / (e + half))
+                developability[i] = setup.time?.exposed(activation,0) ?: activation
             } else {
                 for (layer in 0 until 3) {
                     val e = if (spectral == null) r * sensitivity[layer][0] + g * sensitivity[layer][1] + b * sensitivity[layer][2]
                         else spectral.exposure(r, g, b, layer)
                     var exposure = max(e, if (spectral == null) 0f else 1e-6f)
                     if(additions!=null) exposure+=additions.addition(i%width,startRow+i/width,layer)
-                    developability[i * 3 + layer] = response?.activation(exposure,layer) ?: (exposure / (exposure + half))
+                    exposure*=setup.time?.speed?.get(layer) ?: 1f
+                    val activation=response?.activation(exposure,layer) ?: (exposure / (exposure + half))
+                    developability[i * 3 + layer] = setup.time?.exposed(activation,layer) ?: activation
                 }
             }
         }
@@ -234,6 +246,7 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
         val retained: FloatArray, val baseAmounts: DoubleArray?, val cross: Boolean,
         val effects: PhoneFormationEffects,val dyeOpticalScale: FloatArray,
         val program: PhoneProcessProgram?,val spatial: PhoneDevelopmentSpatial?,val silverGrain: PhoneSilverGrain?,
+        val time: PhoneFilmTime?,val computePlan: FilmDevelopmentPlan?,
     )
 
     private fun developmentSetup(latent: LatentState, requestedRecipe: Map<String, Any?>, fullHeight: Int): DevelopmentSetup {
@@ -243,7 +256,7 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
         require(fullHeight >= shape[0]) { "fullHeight must contain the row block" }
         val sourceMetadata = preparedValues(latent.metadata)
         val formationProfile=PhoneFormationProfile.resolve(recipe,sourceMetadata)
-        val lightweight=formationProfile==PhoneFormationProfile.LIGHTWEIGHT
+        val lightweight=PhoneFormationProfile.isLightweight(formationProfile)
         val geometry = if (DataKernel.MATERIAL_GEOMETRY_KEY in sourceMetadata)
             PhoneMaterialGeometry.from(sourceMetadata[DataKernel.MATERIAL_GEOMETRY_KEY], fullHeight, shape[1]) else null
         val spectral = if (DataKernel.SPECTRAL_EXPOSURE_PROFILE_KEY in sourceMetadata)
@@ -265,6 +278,9 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
         val program=PhoneProcessProgram.from(develop,subtractive,sourceMetadata["image_polarity"]=="positive",material,interactive,
             com.filmfoundry.interchange.PhoneProcessModels.activationLedger(processModel),
             processModel==com.filmfoundry.interchange.PhoneProcessModels.CURRENT)
+        val time=if(PhoneFormationProfile.hasTimeResponse(formationProfile))
+            PhoneFilmTime(material,emptyMap(),develop,layers) else null
+        require(time?.hasProcessing!=true || program!=null) { "Film time processing requires an ordered material-pool program" }
         val timeMin = numberOf(mapOf(recipe, "develop")?.get("time_min"), 8f).coerceAtLeast(0f)
         val completion = if(develop.keys.any { it in listOf("temperature_c","concentration","agitation","agitation_time_s") }) PhoneProcessProgram.completion(develop)
             else (1.0 - exp((-timeMin / CHARACTERISTIC_TIME).toDouble())).toFloat().coerceIn(0f, 1f)
@@ -312,6 +328,7 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
         @Suppress("UNCHECKED_CAST")
         val process = (metadata["film_process_model"] as Map<String, Any?>).toMutableMap()
         if(formationProfile!=null) metadata[PhoneFormationProfile.OPTION]=formationProfile
+        if(time!=null) process["phone_film_time"]=time.record
         if(lightweight) process["formation_budget"]=mapOf(
             "profile" to formationProfile,"resolution" to "unchanged","chemical_program" to "unchanged",
             "omitted" to listOf("adjacency","dir_inhibition"),
@@ -370,7 +387,8 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
             PhoneSilverGrain(program?.effectsRecipe(recipe) ?: recipe,sourceMetadata,shape[1],fullHeight,lightweight) else null
         require(silver?.enabled!=true || program!=null) { "independent silver grain requires an ordered phone process" }
         return DevelopmentSetup(shape[1], fullHeight, layers, hasCoupler, hasDye, sourceMetadata,
-            preparedValues(metadata), completion, absorption, base, retained, baseAmounts, cross,effects,dyeOpticalScale,program,spatial,silver)
+            preparedValues(metadata), completion, absorption, base, retained, baseAmounts, cross,effects,dyeOpticalScale,program,spatial,silver,time,
+            if(lightweight && formationCompute!=null) program?.computePlan(subtractive) else null)
     }
 
     /** One read-only full-program pass; scalar normalization, never a full-size silver image. */
@@ -485,6 +503,28 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
         val finalDye = FloatArray(layers)
         val finalBleached = FloatArray(layers)
         val pools=PhoneProcessProgram.Pools()
+        // No spatial-rate approximation: only the explicitly lightweight pointwise program.
+        // Preserve the consuming/aliased legacy API; row workers use detached inputs.
+        val accelerated=setup.computePlan?.takeIf { !consumeLatent && spatial==null && formationCompute?.available(it)==true &&
+            pixels*layers>=formationCompute.minimumSamples }?.let { plan ->
+            val prepareStart=System.nanoTime()
+            val input=FloatArray(pixels*layers*8)
+            for(pixel in 0 until pixels) {
+                if(pixel and 255==0) checkActive()
+                val rate=effects.completion(1f,pixel%width,startRow+pixel/width)
+                for(layer in 0 until layers) {
+                    val i=pixel*layers+layer;val o=i*8
+                    input[o]=halideValues[i];input[o+1]=setup.time?.aged(activationValues[i],layer) ?: activationValues[i]
+                    input[o+2]=silverValues[i];input[o+3]=couplerValues?.get(i) ?: 0f
+                    input[o+4]=dyeValues?.get(i) ?: 0f;input[o+5]=bleached?.get(i) ?: 0f
+                    input[o+6]=rate;input[o+7]=layer.toFloat()
+                }
+            }
+            formationCompute!!.developPrepared(input,plan,System.nanoTime()-prepareStart).also { result ->
+                require(result==null || result.size==pixels*layers*6) { "Invalid formation backend result" }
+                checkActive()
+            }
+        }
         for (pixel in 0 until pixels) {
             if(pixel and 255==0) checkActive()
             val x=pixel%width;val y=startRow+pixel/width
@@ -495,11 +535,17 @@ class PhoneReducedKernel : RowReducedKernel, ObservationPreparingKernel {
             for (layer in 0 until layers) {
                 val i = pixel * layers + layer
                 if(program!=null) {
-                    pools.halide=halideValues[i];pools.activation=activationValues[i];pools.silver=silverValues[i]
+                    if(accelerated!=null) {
+                        val o=i*6;pools.halide=accelerated[o];pools.activation=accelerated[o+1];pools.silver=accelerated[o+2]
+                        pools.coupler=accelerated[o+3];pools.dye=accelerated[o+4];pools.bleached=accelerated[o+5]
+                    } else {
+                    pools.halide=halideValues[i];pools.activation=setup.time?.aged(activationValues[i],layer) ?: activationValues[i];pools.silver=silverValues[i]
                     pools.coupler=couplerValues?.get(i) ?: 0f;pools.dye=dyeValues?.get(i) ?: 0f
                     pools.bleached=bleached?.get(i) ?: 0f
                     program.apply(pools,subtractive,localCompletion,layer,
                         firstRate,spatial?.colorRate(x,y,layer) ?: 1f)
+                    }
+                    setup.time?.finish(pools,layer)
                     finalHalide[layer]=pools.halide;finalSilver[layer]=pools.silver;finalDye[layer]=pools.dye;finalBleached[layer]=pools.bleached
                     if(consumeLatent) {
                         halideValues[i]=pools.halide;activationValues[i]=pools.activation;silverValues[i]=pools.silver

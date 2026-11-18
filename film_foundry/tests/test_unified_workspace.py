@@ -21,16 +21,19 @@ def wait(predicate):
 
 @pytest.fixture
 def panel(tmp_path, monkeypatch):
-    for key in ('CATALOG', 'CAMERA_SETTINGS', 'UI_SETTINGS'):
+    for key in ('CATALOG', 'CAMERA_SETTINGS', 'UI_SETTINGS', 'DESKTOP_SETTINGS'):
         monkeypatch.setenv('FILM_FOUNDRY_' + key, str(tmp_path / (key + '.json')))
     from film_foundry.ui.preferences import _read
     from film_foundry.ui.i18n import set_language
     _read.cache_clear();set_language('zh_CN')
+    from film_foundry.app.desktop_settings import load_settings,save_settings
+    settings=load_settings();settings.update(workspace=str(tmp_path/'workspace'),leave_policy='discard');save_settings(settings)
     from film_foundry.tools.run_desktop_gui import DesktopPanel
     panel = DesktopPanel();panel.auto_preview.set(False);panel.root.qt.show()
     yield panel
     if panel.root.winfo_exists():
         wait(lambda: not panel.workspace_host.busy_pages())
+        panel.work_sessions.bypass=True
         panel.root.qt.close()
     _application().sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
     set_language('zh_CN')

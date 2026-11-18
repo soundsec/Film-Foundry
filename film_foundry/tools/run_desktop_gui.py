@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 import sys
+import zipfile
 from threading import Thread
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
@@ -21,7 +22,7 @@ from film_foundry.ui.qt import QtCore, QtGui, QtWidgets, ui
 from film_foundry.ui.curve_editor import CurveEditor, text
 from film_foundry.ui.i18n import tr, current_language, language_options, language_label
 from film_foundry.ui.preferences import load_preferences, save_preferences
-from film_foundry.ui.theme import current_theme, apply_theme
+from film_foundry.ui.theme import current_theme, apply_theme, THEME_KEYS
 from film_foundry.ui.image_view import ImageView
 from film_foundry.ui.comparison_view import ComparisonView
 from film_foundry.ui.color_mixer import ColorMixerEditor
@@ -40,7 +41,17 @@ class DesktopPanel(legacy.DarkroomPanel):
 
     def __init__(self):
         self._workspace_layout=load_preferences().get("workspace_layout","compact")
+        self._scan_advanced=load_preferences().get('scan_advanced',False)
         self._material_windows={}
+        preview_options = load_preferences().get('preview_options', {})
+        for key, name, allowed in [('edge', 'PREVIEW_EDGE', (480,640,900,1200,1600)),
+                                   ('debounce','PREVIEW_DEBOUNCE_MS',(100,200,350,500,800))]:
+            if preview_options.get(key) in allowed:
+                setattr(self, name, preview_options[key])
+        from film_foundry.app.desktop_settings import load_settings
+        last_batch = load_settings().get("last_interrupted_batch")
+        self._resume_record = Path(last_batch) if isinstance(last_batch,str) and Path(last_batch).is_file() else None
+        self._frame_exposure_offsets={}
         self._selected_photos=[]
         self._active_roll=None
         self._expert_operating_mode='expected'
@@ -53,7 +64,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         self._effect_intent_model='process_effect_intent_v3'
         self._result_index_errors=[]
         self._embedded_editor_keys=set()
-        self._layout_sizes={}
+        self.layout_memory=None
         self._settings_dialog=None
         self._section_states={}
         self._task_serial=0
@@ -61,11 +72,17 @@ class DesktopPanel(legacy.DarkroomPanel):
         self._workspace_exit_pending=False
         self._workspace_io_busy=False
         self._latest_output=None
+        self._film_task_context=None
+        self._film_task_context_key=None
+        self._scan_version_path=None
         self._task_stage=None
         self._preview_state_kind="empty"
         self._auto_preview_ready = False
         self._preview_revision = 0
         self._active_preview_revision = -1
+        self._preview_cancel = None
+        self._dragging_preview = False
+        self._active_coarse = False
         self._preview_pending = False
         self.auto_preview = ui.BoolValue(value=load_preferences().get("auto_preview", True))
         from film_foundry.ui.control_reset import ControlResets
@@ -100,27 +117,39 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.work_sessions=WorkspaceSessions(self)
         self.workspace_host.before_close=self._guard_page_close
         self._update_save_work_action()
+        from film_foundry.ui.last_work import LastWork
+        self.last_work=LastWork(self)
+        from film_foundry.ui.work_shortcuts import WorkShortcuts
+        self.work_shortcuts=WorkShortcuts(self,desktop=True)
 
     def _build(self):
+        self._histogram_placement=None
+        if self.layout_memory is not None:
+            self.layout_memory.dispose();self.layout_memory=None
         self._applied_layout=None
         self.root.title("Film Foundry · "+text("工作台", "Workbench"))
         self.root.geometry("1380x900");self.root.minsize(1024, 680)
-        self.expert_groups=[];self.pages=[];self.fields={};self.sections={}
+        self.expert_groups=[];self.pages=[];self.fields={};self.sections={};self._impact_groups=[]
         self.control_resets.clear_widgets()
-        shell=ui.Frame(self.root, padding=12);shell.pack(fill="both", expand=True)
+        shell=ui.Frame(self.root, padding=6);shell.pack(fill="both", expand=True)
         shell.qt.setObjectName("workbench")
-        nav=QtWidgets.QHBoxLayout();shell._ensure_pack_layout().addLayout(nav)
+        command_bar = QtWidgets.QFrame(shell.qt)
+        command_bar.setObjectName("commandBar")
+        nav = QtWidgets.QHBoxLayout(command_bar)
+        nav.setContentsMargins(4, 1, 4, 2)
+        nav.setSpacing(2)
+        shell._ensure_pack_layout().addWidget(command_bar)
         library_button=QtWidgets.QPushButton(text('返回图库','Library'));self.library_navigation_button=library_button;library_button.clicked.connect(self.open_library);nav.addWidget(library_button)
         from film_foundry.ui.workspace_host import WorkspaceHost
         self.workspace_host=WorkspaceHost(shell.qt);shell._ensure_pack_layout().addWidget(self.workspace_host,1)
         self.workspace_host.tabBar().hide()
         self.workspace_host.before_close=self._guard_page_close
-        workspace_menu=QtWidgets.QToolButton();self.workspace_menu=workspace_menu;workspace_menu.setText(text('快捷导航','Navigate'))
+        workspace_menu=QtWidgets.QToolButton();self.workspace_menu=workspace_menu;workspace_menu.setText(text('工作','Work'))
         workspace_menu.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu=QtWidgets.QMenu(workspace_menu)
+        self.navigation_menu=menu=QtWidgets.QMenu(workspace_menu)
         menu.addAction(text('图库','Library'),self.open_library)
         menu.addAction(text('当前胶片工作','Current film work'),self.show_workbench)
-        opened=menu.addMenu(text('已打开的工作','Open work'))
+        opened=QtWidgets.QMenu(text('已打开的工作','Open work'),menu);menu.addMenu(opened)
         def list_opened():
             opened.clear()
             for page,(title,key,_) in self.workspace_host._pages.items():
@@ -137,27 +166,33 @@ class DesktopPanel(legacy.DarkroomPanel):
         menu.addAction(text('印刷与制版','Print & plate studio'),self._open_print_workspace)
         menu.addSeparator()
         from film_foundry.ui.desktop_library import FAMILIES
+        materials=QtWidgets.QMenu(text('实验材料','Experimental materials'),menu);menu.addMenu(materials)
+        self._navigation_submenus=(opened,materials)
         for family,zh,en in FAMILIES[1:]:
-            menu.addAction(text(zh,en),lambda family=family:self._show_material_workspace(family))
-        editors=menu.addMenu(text('配置编辑器','Configuration editors'))
-        for bank,zh,en in (('film','胶片材料','Film material'),('develop','药水与工艺','Chemistry & process'),('scanner','扫描','Scanner'),('runtime','运行设置','Runtime settings')):
-            editors.addAction(text(zh,en),lambda bank=bank:self.open_embedded_editor(bank))
-        menu.addSeparator()
+            materials.addAction(text(zh,en),lambda family=family:self._show_material_workspace(family))
+        workspace_menu.setMenu(menu);nav.addWidget(workspace_menu)
+        files=QtWidgets.QToolButton();self.file_button=files;files.setText(text('文件','File'))
+        files.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.file_menu=QtWidgets.QMenu(files);files.setMenu(self.file_menu);nav.addWidget(files)
+        menu=QtWidgets.QMenu(text('实验材料工作区','Material workspace'),self.file_menu);self.file_menu.addMenu(menu)
+        self._file_submenus=[menu]
         menu.addAction(text('保存材料工作区…','Save material workspace…'),lambda:self._workspace_files.save())
         menu.addAction(text('材料工作区另存为…','Save material workspace as…'),lambda:self._workspace_files.save(save_as=True))
         menu.addAction(text('打开材料工作区…','Open material workspace…'),lambda:self._workspace_files.open())
         menu.setToolTipsVisible(True)
         for action in menu.actions()[-3:]:action.setToolTip(text('保存七类材料状态、曝光、参数与观看设置，并携带全部批量来源和待载入的光学来源。胶片、整卷另行存取。','Saves seven-family states, exposure pixels, drafts, viewing settings, all batch sources and pending optical sources. Film and rolls use separate archives.'))
         menu.addAction(text('恢复材料批次…','Resume material batch…'),self._resume_material_batch)
-        menu.addSeparator()
+        menu=QtWidgets.QMenu(text('胶片工作','Film work'),self.file_menu);self.file_menu.addMenu(menu)
+        self._file_submenus.append(menu)
+        menu.setToolTipsVisible(True)
         menu.addAction(text('保存胶片工作…','Save film work…'),lambda:self._film_workspace_files.save())
         menu.addAction(text('胶片工作另存为…','Save film work as…'),lambda:self._film_workspace_files.save(save_as=True))
         menu.addAction(text('打开胶片工作…','Open film work…'),lambda:self._film_workspace_files.open())
         for action in menu.actions()[-3:]:action.setToolTip(text('携带原始照片、潜影或扫描来源及完整配方，保留来源顺序和路径随机身份。重新执行所选流程；不保存冲洗中途状态。整卷使用电子胶卷。','Carries source photos, latents or scan sources and the complete recipe, source order and path seed identities. Re-runs the selected operation; not a mid-bath checkpoint. Rolls use electronic film rolls.'))
-        workspace_menu.setMenu(menu);nav.addWidget(workspace_menu)
+        if hasattr(self,'last_work'):self.last_work.attach_menu()
         config_button=QtWidgets.QToolButton();config_button.setText(text('材料与预设','Materials & presets'))
         config_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        config_menu=QtWidgets.QMenu(config_button)
+        self.config_menu=config_menu=QtWidgets.QMenu(config_button)
         config_menu.addAction(text('预设管理…','Preset library…'),self.open_preset_library)
         config_menu.addAction(text('分享当前配置…','Share current configuration…'),self._share_current_presets)
         config_menu.addSeparator()
@@ -169,11 +204,14 @@ class DesktopPanel(legacy.DarkroomPanel):
         config_menu.addAction(text('输入配方分享码…','Enter recipe share code…'),self._enter_share_code)
         self.film_border_menu_action=config_menu.addAction(text('片边与齿孔…','Film edges & perforations…'),self._edit_film_border)
         self.film_border_menu_action.setToolTip(text('仅在新曝光中设置；已有潜影和底片的片边已冻结。','Configure new exposures only; existing latent and developed film rebates are frozen.'))
-        tools_menu=menu.addMenu(text('其他工具','Other tools'))
+        utilities=QtWidgets.QToolButton();utilities.setText(text('工具','Tools'))
+        utilities.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        tools_menu=QtWidgets.QMenu(utilities);utilities.setMenu(tools_menu);self.utilities_menu=tools_menu
+        tools_menu.addAction(text('工作快捷键…','Work shortcuts…'),lambda:self.open_global_settings('shortcuts'))
         tools_menu.addAction(text('打开底片灯台…','Open film light table…'),self._open_medium_viewer)
         tools_menu.addAction(text('视频逐帧材料…','Video frame materials…'),self._open_movie_master)
-        config_button.setMenu(config_menu);nav.addWidget(config_button)
-        self.workspace_heading=QtWidgets.QLabel();nav.addWidget(self.workspace_heading,1)
+        config_button.setMenu(config_menu);nav.addWidget(config_button);nav.addWidget(utilities)
+        self.workspace_heading=QtWidgets.QLabel();self.workspace_heading.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Preferred);nav.addWidget(self.workspace_heading,1)
         def current_workspace_changed(_):
             self.workspace_heading.setText(self.workspace_host.tabText(self.workspace_host.currentIndex()))
             self.library_navigation_button.setEnabled(self.workspace_host.currentWidget() is not getattr(self,'library_view',None))
@@ -181,17 +219,26 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.workspace_host.currentChanged.connect(current_workspace_changed)
         self.save_work_button=QtWidgets.QPushButton(text('保存工作','Save work'))
         self.save_work_button.setToolTip(text('保存当前工作，可从图库的最近工作重新打开。','Save the current work to reopen from the library.'))
+        from film_foundry.ui.shortcut_settings import bind_hint
+        bind_hint(self.save_work_button,'save')
         self.save_work_button.clicked.connect(lambda:self.work_sessions.save([self.workspace_host.currentWidget()]))
         nav.addWidget(self.save_work_button);self.save_work_button.hide()
         self.workspace_host.timer.timeout.connect(self._update_save_work_action)
+        self.guide_button=QtWidgets.QPushButton(text('? 本页指南','? Page guide'))
+        self.guide_button.setToolTip(text('查看当前工作页的步骤、冻结范围与保存方式','Steps, frozen settings and saving for the current page'))
+        self.guide_button.clicked.connect(self._open_context_guide);nav.addWidget(self.guide_button)
+        from film_foundry.ui.shortcut_settings import bind_hint
+        bind_hint(self.guide_button,'guide')
         settings=QtWidgets.QPushButton(text('全局设置','Settings'));settings.clicked.connect(self.open_global_settings);nav.addWidget(settings)
         # Keep all film controls inside their page, so the document bar remains
         # available in every workflow without hiding or reparenting its toolbar.
         shell=ui.Frame(shell)
         self.film_workspace=shell.qt
         self.workspace_host.add_page(shell.qt,text('胶片工作','Film work'),key='film',closable=False)
-        top=ui.Frame(shell);top.pack(fill="x", pady=(0,8))
-        ui.Label(top, text=text("处理流程", "Workflow")).pack(side="left", padx=6)
+        top=ui.Frame(shell);top.pack(fill="x", pady=(0,8));self.legacy_task_row=top.qt
+        self.workflow_label=ui.Label(top, text=text("本次执行", "Task"));self.workflow_label.pack(side="left", padx=6)
+        self.task_heading=ui.Label(top,text="",font=("Segoe UI",15,"bold"));self.task_heading.pack(side="left",fill='x',expand=True)
+        self.task_heading.qt.hide()
         self.mode_display=ui.TextValue(value=tr("mode."+self.pipeline_mode.get()))
         self.workflow_labels={
             'full':text('照片 → 冲洗 → 扫描成片','Photo → develop → scan'),
@@ -213,35 +260,45 @@ class DesktopPanel(legacy.DarkroomPanel):
         language.set_tooltip(tr("help.ui_language"))
         language.qt.hide();language.bind("<<ComboboxSelected>>",self._change_language)
         self.theme_display=ui.TextValue(value=tr("theme."+current_theme()))
-        self.theme_keys={tr("theme."+key):key for key in ("dark","ivory")}
+        self.theme_keys={tr("theme."+key):key for key in THEME_KEYS}
         self.theme_combo=ui.Choice(top,textvariable=self.theme_display,values=tuple(self.theme_keys),state="readonly")
         self.theme_combo.qt.setMinimumWidth(90)
         self.theme_combo.qt.setMaximumWidth(110)
         self.theme_combo.qt.setAccessibleName(tr("label.theme"))
         self.theme_combo.qt.hide()
         self.theme_combo.bind("<<ComboboxSelected>>",self._change_theme)
+        from film_foundry.ui.causal_pipeline import CausalPipelineBar
+        pipeline_row=ui.Frame(shell);pipeline_row.pack(fill='x',pady=(0,8))
+        self.pipeline_bar=CausalPipelineBar()
+        pipeline_row._ensure_pack_layout().addWidget(self.pipeline_bar)
+        self.pipeline_bar.stage_requested.connect(self._open_pipeline_stage)
+        self.pipeline_bar.task_requested.connect(self._select_pipeline_endpoint)
         source_bar=ui.Frame(shell);source_bar.pack(fill="x",pady=(0,8))
         self.source_summary=ui.Label(source_bar, text="",wraplength=950);self.source_summary.pack(side="left",fill="x",expand=True)
+        self.source_record_button=ui.Button(source_bar,text=text('形成记录…','Formation record…'),command=self._show_formation_record);self.source_record_button.pack(side='left',padx=3)
+        self.redevelop_button=ui.Button(source_bar,text=text('从潜影另做冲洗…','Develop again from latent…'),command=self._redevelop_from_latent);self.redevelop_button.pack(side='left',padx=3)
+        self.related_results_button=ui.Button(source_bar,text=text('关联结果','Related results'),command=self._show_related_results);self.related_results_button.pack(side='left',padx=3)
+        self.staged_develop_button=ui.Button(source_bar,text=text('分段冲洗…','Develop in stages…'),command=self._start_current_process);self.staged_develop_button.pack(side='left',padx=3)
+        self.staged_develop_button.set_tooltip(text('用当前潜影和冲洗配方建立独立存档，再逐步执行药浴；本工作保持原样。','Create a separate checkpoint from this latent and recipe, then advance through the process. Retain this work.'))
         library=ui.Button(source_bar,text=text("更换来源…","Change source…"),command=self.open_library);library.pack(side="right",padx=6)
         library.set_tooltip(text('回图库选择其他照片、潜影或已冲洗介质。当前工作保留，替换时沿用保存提示。','Choose another photo, latent or developed medium in the library. The current work is retained until replacement, with the normal save prompt.'))
         self.layout_button=QtWidgets.QToolButton(source_bar.qt)
         self.layout_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        layout_menu=QtWidgets.QMenu(self.layout_button)
+        self.layout_menu=layout_menu=QtWidgets.QMenu(self.layout_button)
         for mode,zh,en in (("compact","单侧布局","Compact layout"),("studio","双侧布局","Studio layout")):
             layout_menu.addAction(text(zh,en),lambda mode=mode:self.set_workspace_layout(mode))
-        layout_menu.addSeparator()
-        appearance=layout_menu.addMenu(text('主题','Theme'));language_menu=layout_menu.addMenu(text('语言','Language'))
-        self._view_submenus=(appearance,language_menu)
-        for label in self.theme_keys:
-            def choose_theme(label=label):
-                self.theme_display.set(label);self._change_theme(None)
-            appearance.addAction(label,choose_theme)
-        for label in language_options():
-            def choose_language(label=label):
-                self.language.set(label);self._change_language(None)
-            language_menu.addAction(label,choose_language)
-        self.layout_button.setToolTip(text('单侧 / 双侧布局、主题与语言','Compact / studio layout, theme and language'))
+        self.layout_button.setToolTip(text('单侧 / 双侧布局','Compact / studio layout'))
         self.layout_button.setMenu(layout_menu);source_bar._ensure_pack_layout("left").addWidget(self.layout_button)
+        self.work_tools=QtWidgets.QToolButton();self.work_tools.setText(text('工作设置','Work settings'))
+        self.work_tools.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        tools_menu=QtWidgets.QMenu(self.work_tools);self.work_tools.setMenu(tools_menu)
+        for key,zh,en in (('compute','计算与尺寸','Compute & dimensions'),('resources','档案与资源','Profiles & resources')):
+            tools_menu.addAction(text(zh,en),lambda k=key:self.navigation.setCurrentRow(self.page_index[k]))
+        tools_menu.addSeparator()
+        tools_menu.addAction(text('本次来源 / 逐片曝光…','Sources / per-frame exposure…'),self._show_selected_sources)
+        for expanded,zh,en in ((True,'展开当前页参数','Expand current controls'),(False,'收起当前页参数','Collapse current controls')):
+            tools_menu.addAction(text(zh,en),lambda e=expanded:self._expand_current_sections(e))
+        source_bar._ensure_pack_layout('left').addWidget(self.work_tools)
         for variable in (self.input_path,self.negative_path,self.output_path,self.scan_output_near_source):
             variable._bind_view(lambda _: self._refresh_source_summary(),self.source_summary)
 
@@ -265,15 +322,19 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.selection_list.itemClicked.connect(lambda item:self._focus_selected_photo(item.data(QtCore.Qt.ItemDataRole.UserRole)))
         split.addWidget(self.navigator_panel)
         self.control_panel=QtWidgets.QWidget();self.control_layout=QtWidgets.QVBoxLayout(self.control_panel);self.control_layout.setContentsMargins(0,0,0,0);self.control_layout.setSpacing(6)
-        self.stack=QtWidgets.QStackedWidget();self.stack.setMinimumWidth(300);self.control_layout.addWidget(self.stack,1);split.addWidget(self.control_panel)
-        self.page_index={};self.page_notes={}
+        self.task_navigation=QtWidgets.QComboBox();self.control_layout.addWidget(self.task_navigation);self.task_navigation.hide()
+        self.task_navigation.currentIndexChanged.connect(lambda index:self.navigation.setCurrentRow(self.task_navigation.itemData(index)) if index>=0 else None)
+        self.inspector_splitter=QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        self.control_layout.addWidget(self.inspector_splitter,1)
+        self.stack=QtWidgets.QStackedWidget();self.stack.setMinimumSize(300,220);self.inspector_splitter.addWidget(self.stack);split.addWidget(self.control_panel)
+        self.page_index={};self.page_notes={};self.mode_pickers={}
         for key,zh,en in (
-            ("output","输出","Output"),
             ("film","材料与曝光","Material & exposure"),
             ("develop","冲洗","Development"),
             ("scan","观察与调色","Observe & color"),
+            ("output","输出","Output"),
             ("compute","计算设置","Computation"),
-            ("resources","材料与预设配置","Materials & presets"),
+            ("resources","档案与资源","Profiles & resources"),
         ):
             self.page_index[key]=self.navigation.count()
             self.navigation.addItem(text(zh,en))
@@ -283,6 +344,10 @@ class DesktopPanel(legacy.DarkroomPanel):
             self.page_notes[key]=title
             scroll=QtWidgets.QScrollArea();scroll.setWidgetResizable(True);scroll.setWidget(page.qt)
             self.stack.addWidget(scroll);self.pages.append(page)
+        self.task_navigation.blockSignals(True)
+        for key,zh,en in (('scan','扫描与调色','Scan & color'),('output','成片输出','Image output')):
+            self.task_navigation.addItem(text(zh,en),self.page_index[key])
+        self.task_navigation.blockSignals(False)
         self.navigation.currentRowChanged.connect(self._navigate_workspace)
         self.studio_navigation.currentIndexChanged.connect(self.navigation.setCurrentRow)
         self.studio_tabs.currentChanged.connect(self._studio_page_changed)
@@ -292,15 +357,28 @@ class DesktopPanel(legacy.DarkroomPanel):
         section_menu=QtWidgets.QMenu(sections)
         for expanded,zh,en in ((True,'展开当前页','Expand current page'),(False,'收起当前页','Collapse current page')):
             section_menu.addAction(text(zh,en),lambda e=expanded:self._expand_current_sections(e))
-        sections.setMenu(section_menu);nav_layout.addWidget(sections)
+        sections.setMenu(section_menu);nav_layout.addWidget(sections);sections.hide()
         preview=QtWidgets.QWidget();preview_layout=QtWidgets.QVBoxLayout(preview);preview_layout.setContentsMargins(8,0,0,0);preview_layout.setSpacing(4)
         self.preview_layout=preview_layout
-        self.preview_caption=QtWidgets.QLabel(text("预览", "Preview"));self.preview_caption.setWordWrap(True);preview_layout.addWidget(self.preview_caption)
+        self.preview_caption=QtWidgets.QLabel(preview);self.preview_caption.hide()
         self.preview_tabs=QtWidgets.QTabWidget();self.input_view=ImageView();self.result_view=ComparisonView()
-        self.preview_tabs.addTab(self.result_view,text("结果", "Result"));self.preview_tabs.addTab(self.input_view,text("来源 / 介质", "Source / medium"));preview_layout.addWidget(self.preview_tabs,1)
+        from film_foundry.ui.film_probe import FilmProbe
+        self.film_probe = FilmProbe(self)
+        self.preview_tabs.addTab(self.result_view,text("结果", "Result"));self.preview_tabs.addTab(self.input_view,text("来源 / 介质", "Source / medium"))
+        self.preview_histogram_splitter=QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        self.preview_histogram_splitter.addWidget(self.preview_tabs);preview_layout.addWidget(self.preview_histogram_splitter,1)
+        self.histogram_below_host=QtWidgets.QWidget();below=QtWidgets.QVBoxLayout(self.histogram_below_host);below.setContentsMargins(0,0,0,0)
+        self.histogram_below_host.setMinimumHeight(112);self.preview_histogram_splitter.addWidget(self.histogram_below_host)
+        self.preview_histogram_splitter.setStretchFactor(0,1);self.preview_histogram_splitter.setStretchFactor(1,0)
         self.inspector_view=ImageView();self.preview_tabs.addTab(self.inspector_view,text("阶段检查", "Stages"));self.preview_tabs.setTabVisible(2,False)
-        self.preview_histogram=Histogram(compact=True);preview_layout.addWidget(self.preview_histogram)
+        self.histogram_sidebar_host=QtWidgets.QWidget();side=QtWidgets.QVBoxLayout(self.histogram_sidebar_host);side.setContentsMargins(0,0,0,0)
+        self.histogram_sidebar_host.setMinimumHeight(112);self.inspector_splitter.insertWidget(0,self.histogram_sidebar_host)
+        self.preview_histogram=Histogram(compact=True);side.addWidget(self.preview_histogram)
+        self.inspector_splitter.setStretchFactor(0,0);self.inspector_splitter.setStretchFactor(1,1)
+        self.inspector_splitter.setSizes([154,530])
         for view in (self.input_view,self.result_view,self.inspector_view):
+            view.setMinimumHeight(80)
+            view.enable_clipping(self.preview_histogram.settings)
             view.histogram_bins=None
             def accept_pixels(pixels, target=view):
                 target.histogram_bins=display_bins(pixels)
@@ -313,7 +391,8 @@ class DesktopPanel(legacy.DarkroomPanel):
             bins=self.preview_tabs.currentWidget().histogram_bins
             self.preview_histogram.bins=bins;self.preview_histogram.update()
         self.preview_tabs.currentChanged.connect(update_histogram_tab)
-        tools=QtWidgets.QHBoxLayout();preview_layout.addLayout(tools)
+        from film_foundry.ui.flow_toolbar import FlowToolbar
+        tools=FlowToolbar();preview_layout.addLayout(tools)
         self.preview_zoom_label=QtWidgets.QLabel("—");self.preview_zoom_label.setMinimumWidth(48)
         for label,zh,en,callback in (
             ("−","缩小","Zoom out",lambda view:view.zoom(1/1.2)),
@@ -326,16 +405,19 @@ class DesktopPanel(legacy.DarkroomPanel):
             tools.addWidget(button)
         histogram_toggle=QtWidgets.QPushButton(text("直方图", "Histogram"));histogram_toggle.setCheckable(True);histogram_toggle.setChecked(True)
         self.histogram_toggle=histogram_toggle
-        histogram_toggle.toggled.connect(self.preview_histogram.setVisible);tools.addWidget(histogram_toggle)
+        histogram_toggle.toggled.connect(self._sync_histogram_layout);tools.addWidget(histogram_toggle)
+        self.preview_histogram.settings_changed.connect(self._sync_histogram_layout)
+        self._sync_histogram_layout()
         tools.addWidget(self.preview_zoom_label);tools.addStretch(1)
         for view in (self.input_view,self.result_view,self.inspector_view):view.zoom_changed.connect(self._preview_zoom_changed)
         self.preview_tabs.currentChanged.connect(lambda _:self._preview_zoom_changed())
         from film_foundry.ui.film_edit_tools import FilmEditTools
-        edit_bar=QtWidgets.QHBoxLayout();preview_layout.addLayout(edit_bar)
-        self.edit_tools=FilmEditTools(self,edit_bar)
+        self.edit_tools=FilmEditTools(self,tools)
         preview_help=text("滚轮缩放 · 拖动平移 · 双击适合窗口。预览尺寸小于正式输出。", "Scroll to zoom · drag to pan · double-click to fit. Preview dimensions are smaller than the final output.")
         self.preview_caption.setToolTip(preview_help)
         for view in (self.input_view,self.result_view,self.inspector_view):view.setToolTip(preview_help)
+        from film_foundry.ui.shortcut_settings import bind_hint
+        bind_hint(self.result_view,'hold_source')
         self.preview_state_label=QtWidgets.QLabel(text("尚未生成预览","No preview yet"));self.preview_state_label.setObjectName("sectionNote")
         self.preview_state_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Preferred)
         self._set_preview_state(self._preview_state_kind)
@@ -363,27 +445,27 @@ class DesktopPanel(legacy.DarkroomPanel):
         for page in self.pages:
             page._ensure_pack_layout().addStretch(1)
         activity=ui.Frame(shell);activity.pack(fill="x",pady=(6,0))
-        self.activity_label=ui.Label(activity,text=text("就绪","Ready"),wraplength=900);self.activity_label.qt.setObjectName("sectionNote");self.activity_label.pack(side="left",fill="x",expand=True)
+        self.activity_label=ui.Label(activity,text=text("就绪","Ready"),wraplength=900);self.activity_label.qt.setObjectName("sectionNote");self.activity_label.pack(side="left")
+        ui.Label(activity,textvariable=self.status,wraplength=1180).pack(side="left",fill="x",expand=True)
         self.activity_progress=QtWidgets.QProgressBar();self.activity_progress.setFixedWidth(128);self.activity_progress.setFixedHeight(14);self.activity_progress.setTextVisible(False)
         activity._ensure_pack_layout().addWidget(self.activity_progress)
         self.open_output_button=ui.Button(activity,text=text("最近结果…","Recent output…"),command=self._open_latest_output);self.open_output_button.pack(side="right")
-        bottom=ui.Frame(shell);bottom.pack(fill="x", pady=(8,0))
+        bottom=activity
+        self.test_strip_button=ui.Button(self.preview_actions,text=text('试条…','Test strip…'),command=self._open_test_strip);self.test_strip_button.pack(side='left',padx=2)
+        self.preview_history.button(self.preview_actions._ensure_pack_layout('left'))
         self.preview_button=ui.Button(self.preview_actions,text=text("更新预览","Update"),command=self._start_preview);self.preview_button.pack(side="left",padx=6)
         self.preview_button.set_tooltip(tr("button.preview"))
-        self.clear_preview_cache_button=ui.Button(self.preview_actions,text=text("清缓存","Clear cache"),command=self._clear_preview_cache);self.clear_preview_cache_button.pack(side="left")
-        self.clear_preview_cache_button.set_tooltip(tr("button.clear_preview_cache"))
-        resume=ui.Button(bottom,text=text("恢复批次…","Resume batch…"),command=self._start_resume);resume.pack(side="left",padx=6);resume.set_tooltip(tr("button.resume_batch"))
-        expert=ui.Toggle(bottom,text=text('专家模式','Expert mode'),variable=self.expert_mode,command=self._update_expert_visibility);expert.pack(side='left',padx=12)
-        expert.set_tooltip(text('F8 切换专家参数；当前草稿保持不变','F8 toggles expert controls without discarding settings'))
-        shortcut=QtGui.QShortcut(QtGui.QKeySequence('F8'),shell.qt)
-        shortcut.activated.connect(lambda:(self.expert_mode.set(not self.expert_mode.get()),self._update_expert_visibility()))
+        bind_hint(self.preview_button.qt,'preview')
+        self.clear_preview_cache_button=None
+        resume=ui.Button(bottom,text=text("恢复批次…","Resume batch…"),command=lambda:self._start_resume(self._resume_record));resume.pack(side="left",padx=6);resume.set_tooltip(tr("button.resume_batch"))
         self.expert_operation=QtWidgets.QComboBox()
-        self.expert_operation.addItem(text('期望模式','Expected effects'),'expected');self.expert_operation.addItem(text('原理模式','Process principles'),'principle')
+        self.expert_operation.addItem(text('按效果','By effect'),'expected');self.expert_operation.addItem(text('按药浴','By bath'),'principle')
         self.expert_operation.setCurrentIndex(max(0,self.expert_operation.findData(self._expert_operating_mode)))
-        self.expert_operation.setToolTip(text('期望模式指定效果；原理模式只使用药浴与操作条件。两者共用材料算子，切换保留各自草稿。','Expected mode sets effects; principle mode uses bath conditions. Both share material operators and keep separate drafts.'))
+        self.expert_operation.setToolTip(text('按效果指定期望响应；按药浴使用药浴与操作条件。切换保留各自草稿。','By effect specifies intended responses; By bath uses bath and operation conditions. Switching keeps both drafts.'))
         self.expert_operation.currentIndexChanged.connect(self._set_expert_operation);bottom._ensure_pack_layout().addWidget(self.expert_operation)
+        self.expert_operation.hide()  # Mode pickers in the parameter pages own the visible controls.
         from film_foundry.ui.formation_execution import FormationExecutionBadge
-        self.formation_badge = FormationExecutionBadge()
+        self.formation_badge = FormationExecutionBadge(formal_job=True)
         self.formation_badge.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         formation_menu = QtWidgets.QMenu(self.formation_badge)
         formation_menu.addAction(text('完整形成', 'Full formation'), lambda: self.fast_mode.set(False))
@@ -392,38 +474,87 @@ class DesktopPanel(legacy.DarkroomPanel):
         formation_menu.addAction(text('计算与输出设置…', 'Compute and output settings…'), self._open_runtime_settings)
         self.formation_badge.setMenu(formation_menu)
         bottom._ensure_pack_layout().addWidget(self.formation_badge)
+        bottom._ensure_pack_layout().addWidget(self.edit_tools.quick)
         self.resume_button=resume
-        for button in (self.preview_button,self.clear_preview_cache_button,resume):button.qt.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,QtWidgets.QSizePolicy.Policy.Fixed)
+        for button in (self.preview_button,resume):button.qt.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,QtWidgets.QSizePolicy.Policy.Fixed)
         bottom._ensure_pack_layout().addStretch(1)
         self.process_button=ui.Button(bottom,text=tr("button.process"),command=self._start_process)
         self.process_button.qt.setObjectName("primaryAction")
         self.process_button.pack(side="right")
         self.process_button.qt.setMinimumWidth(160);self.process_button.qt.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,QtWidgets.QSizePolicy.Policy.Fixed)
-        footer=ui.Frame(shell);footer.pack(fill="x",pady=(6,0))
-        ui.Label(footer,textvariable=self.status,wraplength=1180).pack(side="left",fill="x",expand=True)
         from film_foundry.ui.about import show_about
-        self.about_button=ui.Button(footer,text=text("关于","About"),command=lambda:show_about(self.root.qt))
-        self.about_button.qt.setObjectName("aboutLink")
-        self.about_button.pack(side="right")
-        self.about_button.qt.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,QtWidgets.QSizePolicy.Policy.Fixed)
-        self.workbench_chrome=[top.qt,source_bar.qt,activity.qt,bottom.qt,footer.qt]
+        from film_foundry.ui.parameter_pins import open_pins
+        def pins():
+            page=self.workspace_host.currentWidget()
+            if page in self._material_windows.values():open_pins(page,film=False)
+            else:open_pins(self,film=True)
+        from film_foundry.ui.formal_region import open_formal_region
+        from film_foundry.ui.first_tour import open_tour
+        self.utilities_menu.addAction(text('第一次暗房工作…','Your first darkroom session…'),lambda:open_tour(self))
+        self.utilities_menu.addAction(text("局部正式尺度预览…","Formal-scale region preview…"),lambda:open_formal_region(self))
+        self.utilities_menu.addAction(text("钉选参数…","Pinned parameters…"),pins)
+        self.clear_cache_action=self.utilities_menu.addAction(text('清理胶片预览缓存','Clear film preview cache'),self._clear_preview_cache)
+        self.utilities_menu.addAction(text('关于 Film Foundry','About Film Foundry'),lambda:show_about(self.root.qt))
+        self.resume_action=self.file_menu.addAction(text('从记录恢复胶片批次…','Resume film batch from record…'),lambda:self._start_resume())
+        self.workbench_chrome=[top.qt,pipeline_row.qt,source_bar.qt,activity.qt]
         self._sync_selected_photos()
         if self._preview_running:
-            self.preview_button.state(["disabled"]);self.clear_preview_cache_button.state(["disabled"])
+            self.preview_button.state(["disabled"]);self.clear_cache_action.setEnabled(False)
         if self._processing:
             self._set_process_button_mode("cancelling" if self._cancel_flag and self._cancel_flag.requested() else "cancel")
         self._update_expert_visibility()
         self._bind_auto_preview(shell)
         self._sync_activity_ui()
+        for variable in (self.film_preset_display,self.develop_preset_display,self.scanner_preset_display):
+            variable._bind_view(lambda _:self._sync_pipeline_bar(),shell)
+        from film_foundry.ui.parameter_pins import CommonControls
+        self.common_controls=CommonControls(self,True,self.control_layout)
+        from film_foundry.ui.layout_memory import LayoutMemory
+        self.layout_memory=LayoutMemory(self.root.qt,'desktop',(1380,900))
+        self.layout_memory.bind('workspace',self.workspace_splitter,self._layout_variant,self._default_pane_sizes)
+        self.layout_memory.bind('inspector',self.inspector_splitter,
+            lambda:'vertical' if self.preview_histogram.settings.values['layout']=='sidebar' else 'below',
+            lambda:[154,max(220,self.inspector_splitter.height()-163)] if self.preview_histogram.settings.values['layout']=='sidebar' else [0,1])
+        self.layout_memory.bind('histogram_preview',self.preview_histogram_splitter,
+            lambda:self.preview_histogram.settings.values['layout'],
+            lambda:[max(220,self.preview_histogram_splitter.height()-min(154,max(112,self.preview_histogram_splitter.height()-270))-9),
+                    min(154,max(112,self.preview_histogram_splitter.height()-270))]
+            if self.preview_histogram.settings.values['layout']=='below' else [1,0],responsive=True)
+
+    def _sync_histogram_layout(self,*_):
+        mode=self.preview_histogram.settings.values['layout'];shown=self.histogram_toggle.isChecked()
+        if self._histogram_placement==(mode,shown):return
+        self._histogram_placement=(mode,shown)
+        target=self.histogram_sidebar_host if mode=='sidebar' else self.histogram_below_host
+        target.layout().addWidget(self.preview_histogram)
+        self.histogram_sidebar_host.setVisible(shown and mode=='sidebar')
+        self.histogram_below_host.setVisible(shown and mode=='below')
+        self.preview_histogram.setVisible(shown)
+        if self.layout_memory is not None:
+            self.layout_memory.apply('inspector',force=True);self.layout_memory.apply('histogram_preview',force=True)
+
+    def _layout_variant(self):
+        return self._workspace_layout+('.scan' if self._workspace_layout=='studio' and self.pipeline_mode.get()=='scan' else '')
+
+    def _default_pane_sizes(self):
+        if self._workspace_layout=='compact':return [0,470,700]
+        return [0,760,450] if self.pipeline_mode.get()=='scan' else [350,550,350]
 
     def _navigate_workspace(self,index):
         if index<0:return
+        if self.navigation.item(index).isHidden():
+            target=self.page_index['scan' if self.pipeline_mode.get()=='scan' else 'develop']
+            self.navigation.setCurrentRow(target)
+            if index!=target:return
+        self.navigation.blockSignals(True);self.navigation.setCurrentRow(index);self.navigation.blockSignals(False)
+        self.task_navigation.blockSignals(True);self.task_navigation.setCurrentIndex(self.task_navigation.findData(index));self.task_navigation.blockSignals(False)
         self.studio_navigation.blockSignals(True);self.studio_navigation.setCurrentIndex(index);self.studio_navigation.blockSignals(False)
         if index in self.studio_moved:
             self.studio_tabs.blockSignals(True);self.studio_tabs.setCurrentWidget(self.studio_moved[index]);self.studio_tabs.blockSignals(False)
             mode=self.pipeline_mode.get()
             self.stack.setCurrentIndex(self.page_index['scan' if mode in ('full','scan') else 'compute' if mode=='expose' else 'output'])
         else:self.stack.setCurrentIndex(index)
+        self._sync_pipeline_bar()
 
     def _studio_page_changed(self,index):
         if self._workspace_layout!='studio' or getattr(self,'_changing_workspace_layout',False):return
@@ -432,19 +563,20 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.navigation.blockSignals(True);self.navigation.setCurrentRow(target);self.navigation.blockSignals(False)
         self._navigate_workspace(target)
 
+    def _show_selected_sources(self):
+        from film_foundry.ui.frame_exposure import source_dialog
+        return source_dialog(self)
+
     def set_workspace_layout(self, mode, *, persist=True):
         if mode not in ("compact","studio"):raise ValueError("Unknown workspace layout")
         previous=getattr(self,'_applied_layout',None)
         if previous==mode:return
-        if previous:self._layout_sizes[previous]=self.workspace_splitter.sizes()
         selected=self.navigation.currentRow()
         self._changing_workspace_layout=True
         self._applied_layout=mode
         self._workspace_layout=mode
         split=self.workspace_splitter
         split.insertWidget(1,self.control_panel if mode=="compact" else self.preview_surface)
-        self.preview_layout.removeWidget(self.preview_histogram)
-        self.control_layout.insertWidget(0,self.preview_histogram)
         self.preview_histogram.setVisible(self.histogram_toggle.isChecked())
         split.setStretchFactor(1,0 if mode=="compact" else 1)
         split.setStretchFactor(2,1 if mode=="compact" else 0)
@@ -464,14 +596,16 @@ class DesktopPanel(legacy.DarkroomPanel):
                 placeholder=self.studio_placeholders[index];self.stack.removeWidget(placeholder);placeholder.deleteLater()
                 self.stack.insertWidget(index,scroll)
             self.studio_moved.clear();self.studio_placeholders.clear();self.stack.setCurrentIndex(self.navigation.currentRow())
-        self.studio_tabs.setVisible(mode=='studio');self.studio_navigation.setVisible(mode=='studio');self.navigation.setVisible(mode!='studio')
+        self.studio_tabs.setVisible(mode=='studio');self.studio_tabs.tabBar().hide()
+        self.studio_navigation.hide();self.navigation.hide()
         self.navigator_panel.setMinimumWidth(280 if mode=='studio' else 172)
-        self.navigator_panel.setMaximumWidth(520 if mode=='studio' else 200)
-        self.control_panel.setMaximumWidth(580)
+        self.navigator_panel.setMaximumWidth(16777215)
+        self.control_panel.setMaximumWidth(16777215)
         self.preview_surface.setMinimumWidth(260)
-        split.setSizes(self._layout_sizes.get(mode,[180,380,760] if mode=='compact' else [300,700,320]))
+        split.setSizes(self._default_pane_sizes())
         self._changing_workspace_layout=False
         self._navigate_workspace(selected)
+        self._sync_task_navigation()
         self.layout_button.setText(text("视图 · 单侧","View · Compact") if mode=="compact" else text("视图 · 双侧","View · Studio"))
         self.layout_button.setToolTip(text("切换面板位置；保留当前参数、图像和任务","Switch panel positions; retain settings, images and tasks"))
         for window in self._material_windows.values():
@@ -486,8 +620,13 @@ class DesktopPanel(legacy.DarkroomPanel):
         try:
             if self.library_view is None:
                 self.library_view=DesktopLibrary(self._open_catalog_source,self.open_embedded_editor,self.show_workbench,open_batch=self._open_catalog_batch,open_roll=self.open_roll_workspace,open_artifact=self._open_result_artifact,open_stack=self._open_result_stack,print_asset=self._print_catalog_asset,
+                    open_scan=self._open_scan_version,create_work=self._choose_catalog_material,
                     open_browser=self._open_library_browser,open_settings=self.open_global_settings,open_work=lambda p,k:self.work_sessions.open_work(p,k),
                     live_work=lambda:[(v[0],p) for p,v in self.workspace_host._pages.items() if v[1] not in ('library','editors','browser')])
+                from film_foundry.ui.first_tour import install_invitation
+                install_invitation(self,self.library_view)
+                if hasattr(self, "last_work"):
+                    self.last_work.attach_library(self.library_view)
                 self.workspace_host.add_page(self.library_view,text('图库','Library'),key='library',closable=False)
                 self.workspace_host.tabBar().moveTab(self.workspace_host.indexOf(self.library_view),0)
             self.workspace_host.setCurrentWidget(self.library_view)
@@ -503,26 +642,55 @@ class DesktopPanel(legacy.DarkroomPanel):
         page=LibraryBrowser(entries,identity,self.library_view.catalog,annotations_changed=self.library_view.refresh)
         self.workspace_host.add_page(page,text('图像浏览','Image browser'),key='browser')
 
-    def open_global_settings(self):
+    def _change_preview_option(self, key, value):
+        if key == 'edge':
+            self.PREVIEW_EDGE = value
+            self._preview_edited()
+        elif key == 'debounce':
+            self.PREVIEW_DEBOUNCE_MS = value
+        elif key == 'recovery_minutes':
+            self.last_work.store.interval_minutes = value
+        elif key == 'generations':
+            self.last_work.store.generations = value
+            self.last_work.last = None
+            self.last_work.capture()
+            self.last_work.update_action()
+        else:
+            from film_foundry.ui.preview_history import history_budget
+            history_budget.configure()
+
+    def open_global_settings(self,section=None):
         if self._settings_dialog is not None:
+            if section=='shortcuts':self._settings_dialog.tabs.setCurrentWidget(self._settings_dialog.shortcut_settings)
             self._settings_dialog.raise_();self._settings_dialog.activateWindow();return
         from film_foundry.ui.desktop_settings_dialog import DesktopSettingsDialog
-        dialog=DesktopSettingsDialog(self.root.qt,clear_cache=self._release_caches);self._settings_dialog=dialog
+        dialog=DesktopSettingsDialog(self.root.qt,clear_cache=self._release_caches,change_theme=self._apply_global_theme,change_language=self._apply_global_language,change_preview=self._change_preview_option);self._settings_dialog=dialog
+        if section=='shortcuts':dialog.tabs.setCurrentWidget(dialog.shortcut_settings)
         def finished(result):
             self._settings_dialog=None
             if result and self.library_view:self.library_view.sidebar.refresh();self.library_view.sidebar.index_folders()
             dialog.deleteLater()
         dialog.finished.connect(finished);dialog.open()
 
+    def _apply_global_theme(self,key):
+        self.theme_display.set(tr('theme.'+key));self._change_theme()
+
+    def _apply_global_language(self,key):
+        if key!=current_language():
+            self.language.set(language_label(key));self._change_language()
+        return current_language()==key
+
     def _release_caches(self):
+        self.preview_history.clear()
+        for page in self._material_windows.values():page.preview_history.clear()
         from film_foundry.ui.image_cache import preview_images
         from film_foundry.model.config import _config_file_cache
         preview_images.clear();_config_file_cache.clear()
         from film_foundry.app.workflow import _preset_summary_cache
         _preset_summary_cache.clear()
         if self.library_view:
-            self.library_view.cache.clear()
-            for item in self.library_view.items.values():item.setIcon(QtGui.QIcon())
+            self.library_view.clear_thumbnail_cache()
+        self.film_probe.publish(None)
         if not self._preview_running:self._preview_session.clear()
 
     def _expand_current_sections(self,expanded):
@@ -557,7 +725,11 @@ class DesktopPanel(legacy.DarkroomPanel):
 
     def _mount_material_workspace(self,window,key,title=None):
         from film_foundry.ui.desktop_library import FAMILIES
+        from uuid import uuid4
+        window.mount_checkpoint=lambda page,name:self._mount_material_workspace(page,'branch:'+str(uuid4()),name)
         self._material_windows[key]=window
+        guide=getattr(window,'guide_button',None)
+        if guide is not None:guide.hide()
         if hasattr(self,'work_sessions'):
             from film_foundry.ui.close_guard import CloseGuard
             window._work_close_guard=CloseGuard(window,lambda:True if window.busy else self._guard_page_close(window))
@@ -568,6 +740,8 @@ class DesktopPanel(legacy.DarkroomPanel):
         window.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose,True)
         def forget(*_):
             if self._material_windows.get(key) is window:self._material_windows.pop(key,None)
+            if hasattr(self,'work_sessions'):self.work_sessions.material_saved.pop(window,None)
+            if hasattr(self,'last_work'):self.last_work.materials.pop(window,None)
         window.closed.connect(forget);window.destroyed.connect(forget)
         window.set_workspace_layout(self._workspace_layout)
         label=next(text(zh,en) for family,zh,en in FAMILIES if family==window.kind)
@@ -589,6 +763,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         from film_foundry.ui.close_guard import CloseGuard
         page.protect_replacement=lambda action:self.work_sessions.protect(action,pages=[page])
         page._work_close_guard=CloseGuard(page,lambda:self._guard_page_close(page))
+        page.closed.connect(lambda:self.work_sessions.print_saved.pop(page,None))
 
     def _receive_print_source(self,payload):
         from film_foundry.ui.printmaking_workspace import PrintmakingWorkspace
@@ -614,25 +789,61 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.workspace_host.setCurrentWidget(window)
         return window
 
-    def _open_catalog_source(self, path, family):
+    def _choose_catalog_material(self, paths):
+        from film_foundry.ui.material_chooser import MaterialChooser
+        # A modal selector owns no document. Cancelling never changes the old work.
+        dialog=MaterialChooser(self.root.qt,paths=paths,current_key=self.film_preset.get())
+        self._material_chooser=dialog
+        def chosen():
+            selection=dialog.selection
+            if selection is None:return
+            try:
+                if any(not Path(path).is_file() for path in paths):raise ValueError(text('源文件已移动或不存在','Source file moved or missing'))
+                if len(paths)==1:self._open_catalog_source(paths[0],selection['family'],selection=selection)
+                else:self._open_catalog_batch(paths,selection['family'],selection=selection)
+            except (OSError,ValueError,TypeError,KeyError) as exc:
+                QtWidgets.QMessageBox.warning(self.root.qt,text('无法创建工作','Cannot create work'),str(exc))
+        dialog.accepted.connect(chosen);dialog.finished.connect(dialog.deleteLater);dialog.open()
+        return dialog
+
+    def _open_catalog_source(self, path, family, *, selection=None):
+        if selection is not None:
+            from film_foundry.app.material_selection import validate_selection
+            selection=validate_selection(selection)
+            if selection['family']!=family:raise ValueError('Material family mismatch')
         if family=="film":
             if self._processing:raise ValueError(text("胶片任务仍在运行，请完成后切换来源","Wait for the current film task before replacing its source"))
-            return self.work_sessions.protect(lambda:self._replace_film_sources([str(path)]),pages=[self.film_workspace])
+            return self.work_sessions.protect(lambda:self._replace_film_sources([str(path)],material_key=selection['key'] if selection else None),pages=[self.film_workspace])
         from film_foundry.ui.material_lab_window import create_material_window
         # A new selection creates a new work document; older material work stays reachable.
         key=family if family not in self._material_windows else 'source:'+family+':'+str(len(self._material_windows))
-        window=self._mount_material_workspace(create_material_window(family),key)
+        window=create_material_window(family)
+        try:
+            if selection:window.apply_material_definition(selection['material'])
+        except Exception:
+            window.close();window.deleteLater();raise
+        self._mount_material_workspace(window,key)
+        window.config_tabs.setCurrentWidget(window.process_group)
         size=window.work_size.value()
         window._submit(lambda:window.session.open_image(path,size),text("读取图像…","Reading image…"),body_index=0)
 
-    def _replace_film_sources(self,paths):
+    def _replace_film_sources(self,paths,*,material_key=None):
+        self._scan_version_path=None
+        self._frame_exposure_offsets={}
         self._active_roll=None;self._selected_photos=list(paths);self._sync_selected_photos()
         self.mode_choice.qt.setEnabled(True);self.pages[self.page_index['film']].qt.setEnabled(True)
         self._apply_new_work_defaults()
         self.input_path.set(paths[0]);self.pipeline_mode.set('full')
         self.link_scanner.set(True);self.auto_develop.set(True)
+        if material_key is not None:
+            self.material_color_filter='all';self.material_origin_filter='all'
+            self.material_color_display.set(next(label for label,key in self._color_filter_labels.items() if key=='all'))
+            self.material_origin_display.set(next(label for label,key in self._origin_filter_labels.items() if key=='all'))
+            self.film_preset.set(material_key)
         self._apply_recommended_development();self._apply_matching_scanner()
         self._update_mode_visibility();self.navigation.setCurrentRow(self.page_index['film']);self.show_workbench()
+        self.edit_tools.timer.stop();self.edit_tools.initialize()
+        if self.last_work.unclean:self.last_work.capture()
 
     def _sync_selected_photos(self):
         self.selection_list.clear()
@@ -644,18 +855,29 @@ class DesktopPanel(legacy.DarkroomPanel):
             self.input_path.set(path)
             if self.pipeline_mode.get()=='scan':self.negative_path.set(path)
 
-    def _open_catalog_batch(self,paths,family):
+    def _open_catalog_batch(self,paths,family,*,selection=None):
+        if selection is not None:
+            from film_foundry.app.material_selection import validate_selection
+            selection=validate_selection(selection)
+            if selection['family']!=family:raise ValueError('Material family mismatch')
         if family!='film':
             from film_foundry.ui.material_batch_dialog import MaterialBatchDialog
             from film_foundry.app.material_lab_session import SHEET_FAMILIES
             from film_foundry.ui.sheet_lab_window import SheetBatchWindow
-            dialog=SheetBatchWindow(family,paths) if family in SHEET_FAMILIES else MaterialBatchDialog(family,paths,self.root.qt)
+            dialog=SheetBatchWindow(family,paths,load_source=False) if family in SHEET_FAMILIES else MaterialBatchDialog(family,paths,self.root.qt,load_source=False)
+            try:
+                if selection:dialog.apply_material_definition(selection['material'])
+            except Exception:
+                dialog.close();dialog.deleteLater();raise
             from film_foundry.ui.desktop_library import FAMILIES
             label=next(text(zh,en) for key,zh,en in FAMILIES if key==family)
             self._mount_material_workspace(dialog,'batch:'+str(id(dialog)),text('批量 · ','Batch · ')+label)
+            dialog.config_tabs.setCurrentWidget(dialog.process_group)
+            size=dialog.work_size.value()
+            dialog._submit(lambda:dialog.session.open_image(paths[0],size),text('读取首张图像','Reading first image'))
             return
         if self._processing:raise ValueError(text('请等待当前任务完成','Wait for the current task'))
-        self.work_sessions.protect(lambda:self._replace_film_sources(paths),pages=[self.film_workspace])
+        self.work_sessions.protect(lambda:self._replace_film_sources(paths,material_key=selection['key'] if selection else None),pages=[self.film_workspace])
 
     def _record_generated_result(self,record):
         self.root.after(0,lambda:self._record_result(record))
@@ -668,35 +890,84 @@ class DesktopPanel(legacy.DarkroomPanel):
             self._result_index_errors.append(str(exc));self.status.set(text('结果已保存，图库索引写入失败：','Results saved; catalog update failed: ')+str(exc));return
         if self.library_view:
             self.library_view.refresh()
+        self._film_task_context_key=None
+        self._refresh_source_summary()
         for stack in catalog.results:
             page=self.workspace_host.find_page('result:'+stack['id'])
             if page is not None:
                 selected=page.selected_asset()
                 page.load(dict(stack,focus_asset=selected['id'] if selected else None))
 
-    def open_film_process_workspace(self):
+    def open_film_process_workspace(self,path=None,*,new=False,config=None):
         from film_foundry.ui.film_process_workspace import FilmProcessWorkspace
-        page=self.workspace_host.find_page('film-process')
+        pages=[p for p in self.workspace_host._pages if isinstance(p,FilmProcessWorkspace)]
+        page=None
+        if path:
+            from film_foundry.app.catalog_assets import path_key
+            page=next((p for p in pages if p.final_path is None and path_key(p.path or getattr(p,'_opening_path',None))==path_key(path)),None)
+        elif not new:page=pages[-1] if pages else None
         if page is None:
-            page=FilmProcessWorkspace(lambda:self._config())
+            # New drafts keep the recipe of their originating work. Continuing
+            # a checkpoint uses its own frozen recipe, never this provider.
+            snapshot=copy.deepcopy(config if config is not None else legacy.DarkroomConfig() if path else self._config())
+            page=FilmProcessWorkspace(lambda:copy.deepcopy(snapshot))
             page.result_ready.connect(self._record_result)
             page.view_result.connect(lambda path:self._open_result_artifact(path,'film'))
-            self.workspace_host.add_page(page,text('胶片分段冲洗','Film reaction stages'),key='film-process')
+            def remember(checkpoint):
+                from film_foundry.app.desktop_settings import remember_work
+                remember_work(checkpoint,'process',Path(checkpoint).name)
+                old_title,key,closable=self.workspace_host._pages[page]
+                title=text('冲洗完成 · ','Developed · ') if page.final_path else text('分段冲洗 · ','Reaction stages · ')
+                title+=Path(page.final_path or checkpoint).name
+                self.workspace_host._pages[page]=(title,key,closable)
+                index=self.workspace_host.indexOf(page);self.workspace_host.setTabText(index,title);self.workspace_host.setTabToolTip(index,title)
+                if self.workspace_host.currentWidget() is page:self.workspace_heading.setText(title)
+                if self.library_view:self.library_view.sidebar.refresh()
+            page.checkpoint_ready.connect(remember)
+            title=text('分段冲洗','Reaction stages')+((' · '+Path(path).name) if path else '')
+            self.workspace_host.add_page(page,title,key='film-process' if not pages else 'film-process:'+str(id(page)))
+            if path:
+                page._opening_path=path;page.open_from(path)
         self.workspace_host.setCurrentWidget(page)
         return page
 
-    def _open_result_artifact(self,path,family,*,body_id=None,rework=False,stage=None,_approved=False):
+    def _start_current_process(self):
+        if self._processing or self._active_roll is not None:return
+        try:
+            from film_foundry.app.film_task import available_latent
+            from film_foundry.app.output_destination import default_output_directory
+            source=Path(self.negative_path.get())
+            if self.pipeline_mode.get()!='develop_latent' or not available_latent(source):return
+            config=copy.deepcopy(self._config())
+            name=source.name.removesuffix('.darkroom_latent.npz')+'.ffprocess.npz'
+            output,_=QtWidgets.QFileDialog.getSaveFileName(self.film_workspace,text('保存分段冲洗起点','Save reaction-stage starting point'),str(default_output_directory()/name),'Process (*.ffprocess.npz)')
+            if not output:return
+            page=self.open_film_process_workspace(new=True,config=config)
+            from film_foundry.app.source_seed import offset_for
+            page.start_from(source,output,config=config,path_seed_offset=offset_for(source,self._path_seed_offsets))
+        except (ValueError,OSError,KeyError) as exc:self.status.set(str(exc))
+
+    def _open_result_artifact(self,path,family,*,body_id=None,rework=False,stage=None,_approved=False,config=None,scan_version=None):
         if family=='film' and (stage=='state' or path.endswith('.ffprocess.npz')):
-            self.open_film_process_workspace().open_from(path);return
+            self.open_film_process_workspace(path);return
         if family=='film':
             if self._processing:raise ValueError(text('请等待当前任务完成','Wait for the current task'))
             if not _approved:
-                return self.work_sessions.protect(lambda:self._open_result_artifact(path,family,body_id=body_id,rework=rework,stage=stage,_approved=True),pages=[self.film_workspace])
+                return self.work_sessions.protect(lambda:self._open_result_artifact(path,family,body_id=body_id,rework=rework,stage=stage,_approved=True,config=config,scan_version=scan_version),pages=[self.film_workspace])
+            if not Path(path).is_file():raise ValueError(text('文件已移动或不存在','File moved or missing'))
+            self._preview_timer.stop();self._preview_pending=False
+            self._film_task_context_key=None
+            self._scan_version_path=scan_version
+            self._frame_exposure_offsets={}
             self._active_roll=None;self._selected_photos=[];self._sync_selected_photos()
             latent=stage=='latent' or path.endswith('.darkroom_latent.npz')
             self.negative_path.set(path);self.pipeline_mode.set('develop_latent' if latent else 'scan');self._update_mode_visibility()
+            if scan_version:self.scanner_preset.set('')
+            if config is not None:self._apply_loaded_config(config)
             self.mode_choice.qt.setEnabled(True);self.pages[self.page_index['film']].qt.setEnabled(True);self.show_workbench()
-            self.navigation.setCurrentRow(self.page_index['develop' if latent else 'scan']);self._start_preview();return
+            self.navigation.setCurrentRow(self.page_index['develop' if latent else 'scan'])
+            self.edit_tools.timer.stop();self.edit_tools.initialize()
+            self._preview_edited();self._start_preview();return
         from film_foundry.ui.material_lab_window import create_material_window
         key='inspect:'+str(Path(path).resolve())
         window=self._material_windows.get(key)
@@ -707,6 +978,25 @@ class DesktopPanel(legacy.DarkroomPanel):
         window=self._mount_material_workspace(create_material_window(family),key,text('材料 · ','Material · ')+Path(path).name)
         window._catalog_body_selection=(body_id,rework)
         window.open_archive(path)
+
+    def _open_scan_version(self,path):
+        from film_foundry.app.film_task import scan_version_context, rescan_config
+        from film_foundry.app.desktop_catalog import DesktopCatalog
+        from film_foundry.ui.film_task_context import scan_version_hint
+        if self._processing:raise ValueError(text('请等待当前任务完成','Wait for the current task'))
+        catalog=self.library_view.catalog if self.library_view else DesktopCatalog()
+        # Check before asking to replace work, and again after an asynchronous save.
+        context=scan_version_context(path,catalog)
+        if context['problem']:raise ValueError(scan_version_hint(context))
+        def open_now():
+            context=scan_version_context(path,catalog)
+            if context['problem']:
+                self.status.set(scan_version_hint(context));return
+            config=rescan_config(context,self._config())
+            self._open_result_artifact(context['medium'],'film',config=config,
+                                       scan_version=context['path'],_approved=True)
+            self.status.set(text('已载入此版本的扫描设置；执行后另存新成片。','Scan settings restored; execution saves a new image.'))
+        return self.work_sessions.protect(open_now,pages=[self.film_workspace])
 
     def _open_catalog_asset(self,asset,action,target=None):
         path=asset['path']
@@ -722,6 +1012,7 @@ class DesktopPanel(legacy.DarkroomPanel):
             from film_foundry.app.desktop_catalog import DesktopCatalog
             catalog=self.library_view.catalog if self.library_view else DesktopCatalog()
             page=ResultStackView(entry,self._open_result_artifact,send_medium=self._send_result_to_material,
+                open_scan=self._open_scan_version,
                 catalog=catalog,open_asset=self._open_catalog_asset,print_asset=self._print_catalog_asset,
                 annotations_changed=lambda:self.library_view.refresh() if self.library_view else None)
             self.workspace_host.add_page(page,text('结果 · ','Result · ')+entry['label'],key=key)
@@ -787,7 +1078,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.roll_view.refresh();self.workspace_host.setCurrentWidget(self.roll_view)
         self.roll_view.set_busy(self._processing)
 
-    def _configure_roll(self,session,stage=None,*,destination=None):
+    def _configure_roll(self,session,stage=None,*,destination=None,recovery_config=None):
         if self._processing:return
         if session is None:return
         if stage in ('develop','scan') and destination is None:
@@ -803,11 +1094,14 @@ class DesktopPanel(legacy.DarkroomPanel):
             from dataclasses import asdict
             try:
                 key='roll-recipe:'+str(session.path)
-                existing=self.workspace_host.find_page(key)
-                if existing is not None:self.workspace_host.setCurrentWidget(existing);return
-                config=DarkroomConfig.from_dict(session.data['recipe_draft']) if session.data.get('recipe_draft') else self._config()
+                existing=self.find_configuration_dialog(key)
+                if existing is not None:existing.raise_();return
+                config=(DarkroomConfig.from_dict(recovery_config) if recovery_config is not None else
+                    DarkroomConfig.from_dict(session.data['recipe_draft']) if session.data.get('recipe_draft') else self._config())
                 # Use the exposed material to choose native topology; never a currently selected photo stock.
-                dialog=RollProcessDialog(session.process_config(config),self.root.qt)
+                from film_foundry.app.roll_peek import RollPeek
+                dialog=RollProcessDialog(session.process_config(config),self.root.qt,peek=lambda cfg:RollPeek(session.path,cfg))
+                dialog._recovery_roll_path=str(session.path)
                 def apply_recipe():
                     # Another tab may have started the roll while this draft
                     # stayed open. Re-read its phase; never thaw frozen baths.
@@ -824,6 +1118,7 @@ class DesktopPanel(legacy.DarkroomPanel):
                 self.roll_view.status.setText(str(exc))
             return
         self._active_roll=session
+        self._frame_exposure_offsets={}
         self._selected_photos=[];self._sync_selected_photos()
         for view in (self.input_view,self.result_view,self.inspector_view):
             view.source=None;view.histogram_bins=None;view._sync_source()
@@ -857,7 +1152,7 @@ class DesktopPanel(legacy.DarkroomPanel):
             self.status.set(text('已有任务运行中','A task is already running'));return
         self._cancel_flag=legacy.CancelFlag();self._processing=True;self._task_serial+=1
         self._result_index_errors=[]
-        self._preview_timer.stop();self._preview_revision+=1;self._preview_pending=False
+        self._preview_timer.stop();self._invalidate_preview();self._preview_pending=False
         self._set_process_button_mode('cancel');self._sync_activity_ui()
         if self.roll_view:self.roll_view.set_busy(True)
         def finish(value,error):
@@ -876,7 +1171,10 @@ class DesktopPanel(legacy.DarkroomPanel):
         def run():
             value=None;error=None
             try:value=work()
-            except Exception as exc:error=exc
+            except Exception as exc:
+                from film_foundry.app.crash_journal import record_exception
+                record_exception('Desktop workspace task',exc)
+                error=exc
             self.root.after(0,lambda:finish(value,error))
         Thread(target=run,daemon=True).start()
 
@@ -1049,7 +1347,14 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.open_library()
         self.root.mainloop()
 
+    def _end_preview_drag(self):
+        self._dragging_preview=False
+        if self.auto_preview.get():self._preview_edited()
+
     def _bind_auto_preview(self, owner):
+        for slider in self.film_workspace.findChildren(QtWidgets.QSlider):
+            slider.sliderPressed.connect(lambda:setattr(self,'_dragging_preview',True))
+            slider.sliderReleased.connect(self._end_preview_drag)
         names = set(self.fields) | {
             "input_path", "negative_path", "pipeline_mode", "film_preset",
             "develop_preset", "scanner_preset", "frame_size", "developer_type",
@@ -1071,20 +1376,35 @@ class DesktopPanel(legacy.DarkroomPanel):
                     frozen_source=self.pipeline_mode.get() in ("scan","develop_latent")
                     if name == "input_path" and frozen_source or name == "negative_path" and not frozen_source:
                         return
+                    if name in ('input_path','negative_path','pipeline_mode'):
+                        self._dragging_preview=False
                     self._preview_edited()
             variable._bind_view(changed,owner)
         for editor in self.curve_editors.values():
             editor.changed.connect(self._preview_edited)
 
+    def _invalidate_preview(self):
+        self._preview_revision += 1
+        if hasattr(self,"film_probe"):self.film_probe.publish(None)
+        if self._preview_cancel is not None:
+            self._preview_cancel.cancel()
+
     def _preview_edited(self):
         if not self._auto_preview_ready or not self.root.winfo_exists():
             return
         if hasattr(self,'edit_tools'):self.edit_tools.schedule()
+        if hasattr(self,'preview_history'):self.preview_history.synchronize()
         # Even in manual mode an edited recipe invalidates an in-flight frame.
-        self._preview_revision += 1
+        if self._active_coarse and self._dragging_preview:
+            self._preview_revision += 1
+        else:
+            self._invalidate_preview()
+        self._sync_pipeline_bar()
         if self.auto_preview.get():
             self._preview_pending = True
-            self._preview_timer.start(self.PREVIEW_DEBOUNCE_MS)
+            if self._dragging_preview:
+                if not self._preview_timer.isActive():self._preview_timer.start(60)
+            else:self._preview_timer.start(self.PREVIEW_DEBOUNCE_MS)
         self._set_preview_state("stale")
 
     def _change_auto_preview(self):
@@ -1100,8 +1420,17 @@ class DesktopPanel(legacy.DarkroomPanel):
         if self._preview_pending and self.auto_preview.get() and not self._processing and not self._preview_running:
             self._start_preview(automatic=True)
 
+    def _focused_frame_settings(self, path):
+        source=str(path)
+        index=self._selected_photos.index(source)+1 if source in self._selected_photos else 1
+        ev=self._frame_exposure_offsets.get(str(Path(source).resolve()),0.) if self._frame_exposure_offsets else 0.
+        return index,ev
+
     def _fast_preview_config(self):
         config=self._freeze_incident_config(self._config())
+        if self.pipeline_mode.get() in ('full','develop','expose') and self._selected_photos:
+            from film_foundry.app.workspace_jobs import apply_frame_settings
+            apply_frame_settings(config,*self._focused_frame_settings(self.input_path.get()))
         config.debug_output=False;config.comparison_grid=False;config.save_sidecar=False
         config.fast_mode=True
         config.processing.execution_mode="reduced_fast"
@@ -1115,6 +1444,9 @@ class DesktopPanel(legacy.DarkroomPanel):
         return config
 
     def _start_preview(self, automatic=False):
+        if getattr(self,'_test_strip_dialog',None) is not None:
+            if self.auto_preview.get():self._preview_pending=True
+            return
         if self._active_roll:
             self._preview_pending=False
             if not automatic:self.status.set(text('整卷暗房请在冲洗完成后扫描观察','Develop the whole roll before observing it through scanning'))
@@ -1142,24 +1474,60 @@ class DesktopPanel(legacy.DarkroomPanel):
             self.status.set(text("预览失败：", "Preview failed: ")+str(exc));return
         self._preview_generation+=1
         self._active_preview_revision=self._preview_revision
-        request=legacy.PreviewRequest(self._preview_generation,mode,config,path,self.PREVIEW_EDGE,True,
-            path_seed_offset=legacy.offset_for(path,self._path_seed_offsets))
+        self._active_coarse = bool(automatic and self._dragging_preview)
+        edge = min(self.PREVIEW_EDGE, 320) if self._active_coarse else self.PREVIEW_EDGE
+        config.output.render_long_edge = config.output.preview_long_edge = edge
+        self._preview_cancel = legacy.CancelFlag()
+        from film_foundry.app.preview_probe import PreviewProbe
+        request=legacy.PreviewRequest(self._preview_generation,mode,config,path,edge,True,
+            path_seed_offset=legacy.offset_for(path,self._path_seed_offsets), cancel=self._preview_cancel,probe=PreviewProbe() if self.film_probe.action.isChecked() else None)
+        self._pending_probe = request.probe
+        from film_foundry.ui.work_preview_history import prepare_film
+        try:self._history_preview_request=prepare_film(self,request)
+        except (OSError,ValueError,TypeError) as exc:
+            self._history_preview_request=None
+            self._set_preview_state('failed')
+            self.status.set(text('预览失败：','Preview failed: ')+str(exc));return
         self._preview_running=True
-        self.preview_button.state(["disabled"]);self.clear_preview_cache_button.state(["disabled"])
+        self.preview_button.state(["disabled"]);self.clear_cache_action.setEnabled(False)
         self.status.set(tr("status.previewing"))
         self._set_preview_state("running")
         Thread(target=self._render_preview,args=(request,),daemon=True).start()
 
+    def _clear_preview_cache(self):
+        if not self._preview_running:
+            self.film_probe.publish(None)
+        super()._clear_preview_cache()
+
+    def _open_test_strip(self):
+        from film_foundry.ui.film_test_strip import open_test_strip
+        return open_test_strip(self)
+
     def _post_preview(self, token, callback):
         def apply():
             if (self.root.winfo_exists() and token == self._preview_generation
-                    and self._active_preview_revision == self._preview_revision and not self._processing):
+                    and (self._active_preview_revision == self._preview_revision or
+                         self._active_coarse and self._dragging_preview and not self._preview_cancel.requested())
+                    and not self._processing):
                 callback()
+                if self._active_coarse:
+                    self.preview_state_label.setText(text('拖动预览 · 松开后细化','Drag preview · release to refine'))
+                    return
+                if self._preview_state_kind=='ready':
+                    self.film_probe.publish(self._pending_probe)
+                    from film_foundry.ui.work_preview_history import publish_film
+                    try:publish_film(self,getattr(self,'_history_preview_request',None))
+                    except (OSError,ValueError):pass  # Source changed after the completed computation.
         self.root.after(0,apply)
 
     def _finish_preview(self, token):
         if not self.root.winfo_exists() or token!=self._preview_generation:return
+        self._active_coarse = False
+        self._pending_probe = None
+        self._preview_cancel = None
         super()._finish_preview(token)
+        if not self.film_probe.action.isChecked():self._preview_session.clear_probe()
+        self._history_preview_request=None
         self._sync_activity_ui()
         if self._active_preview_revision!=self._preview_revision:
             self._set_preview_state("stale")
@@ -1167,7 +1535,11 @@ class DesktopPanel(legacy.DarkroomPanel):
                 self.status.set(text("参数已修改，请更新预览。","Settings changed; update the preview."))
         elif self._preview_state_kind=="running":
             self._set_preview_state("failed")
-        if not self._preview_timer.isActive():self._run_auto_preview()
+        if self.film_probe.refresh_pending:
+            self.film_probe.refresh_pending = False
+            self._start_preview()
+        elif not self._preview_timer.isActive():
+            self._run_auto_preview()
 
     def _start_process(self):
         if self._processing:
@@ -1188,6 +1560,9 @@ class DesktopPanel(legacy.DarkroomPanel):
                  (text('成片旋转','Image rotation'),f'{export_config.output.rotation_quarters*90}°'),
                  (text('输出格式','Output format'),f'{export_config.output.format.upper()} · {export_config.output.bit_depth}-bit'),
                  (text('编码质量','Encoding quality'),str(export_config.output.quality) if export_config.output.format.lower() in ('jpg','jpeg','webp') else text('无损','Lossless'))]
+        if self.pipeline_mode.get()=='scan':
+            details=[(text('本次任务','Task'),text('扫描成片；来源介质保持不变','Scan to image; source medium is unchanged')),
+                     (text('保存方式','Save as'),text('新的扫描结果','New scan result')),*details[3:]]
         dialog=OutputDestinationDialog(self.source_summary.qt.text(),self.film_workspace,details=details)
         def start():
             current=(self.pipeline_mode.get(),self.input_path.get(),self.negative_path.get(),tuple(self._selected_photos),self._active_roll)
@@ -1211,19 +1586,29 @@ class DesktopPanel(legacy.DarkroomPanel):
             output=Path(self.output_path.get())
             scaled=bool(self.run_as_preview.get())
             path_seed_offsets=copy.deepcopy(self._path_seed_offsets)
+            frame_offsets=dict(self._frame_exposure_offsets)
             command=self.pipeline_mode.get()
             def work():
-                failures=process_photos(paths,output,config,control=self._workflow_control(self._cancel_flag),scaled_override=scaled,
-                    path_seed_offsets=path_seed_offsets,command=command,
-                    on_run=lambda root:self.root.after(0,lambda:self._remember_workspace_output(root)),
-                    on_result=lambda record:self.root.after(0,lambda record=record:self._record_result(record)))
+                run_root = None
+                def started(root):
+                    nonlocal run_root
+                    run_root = Path(root)
+                    self.root.after(0,lambda:self._remember_workspace_output(root))
+                try:
+                    failures=process_photos(paths,output,config,control=self._workflow_control(self._cancel_flag),scaled_override=scaled,
+                        path_seed_offsets=path_seed_offsets,command=command,on_run=started,frame_exposure_offsets=frame_offsets,
+                        on_result=lambda record:self.root.after(0,lambda record=record:self._record_result(record)))
+                except Exception:
+                    if run_root and (run_root/'film_foundry_run.json').is_file():self._offer_resume(run_root/'film_foundry_run.json')
+                    raise
+                if run_root:self._offer_resume(run_root/'film_foundry_run.json',bool(failures))
                 if failures:raise ValueError('\n'.join(f"{f['source']}: {f['error']}" for f in failures))
             self._submit_workspace_job(work);return
         if not self._required_paths():return
         self._task_serial+=1;self._task_stage=None
         self._preview_timer.stop()
         self._preview_pending=False
-        self._preview_revision+=1
+        self._invalidate_preview()
         super()._start_process()
         self._sync_activity_ui()
 
@@ -1233,31 +1618,52 @@ class DesktopPanel(legacy.DarkroomPanel):
     def _finish_process(self):
         super()._finish_process()
         self._sync_activity_ui()
+        self._refresh_source_summary()
         if self._close_after_process:
             self._preview_pending=False;self._preview_timer.stop();self.root.after(0,self.root.qt.close);return
         if self._preview_pending and self.auto_preview.get():
             self._preview_timer.start(self.PREVIEW_DEBOUNCE_MS)
 
     def _set_generated_medium_root(self,value):
-        # A successful job points the medium picker at its new output folder.
-        # This bookkeeping is not a user edit and must not re-preview a
-        # consumed latent or overwrite the completion status.
+        # A completed development must not replace its latent input with a
+        # folder of developed media while the task still says "Develop latent".
+        # New results are reached explicitly through the related stack.
+        if self.pipeline_mode.get()=='develop_latent':return
         ready=self._auto_preview_ready;self._auto_preview_ready=False
         try:super()._set_generated_medium_root(value)
         finally:self._auto_preview_ready=ready
 
-    def _start_resume(self):
+    def _mark_resumable(self, path, pending=True):
+        from film_foundry.app.desktop_settings import load_settings, save_settings
+        path = Path(path)
+        if pending and path.is_file():
+            self._resume_record = path
+        elif path == self._resume_record:
+            self._resume_record = None
+        else:
+            return
+        try:
+            settings = load_settings()
+            settings['last_interrupted_batch'] = str(self._resume_record) if self._resume_record else None
+            save_settings(settings)
+        except (OSError,ValueError) as exc:
+            from film_foundry.app.crash_journal import record_exception
+            record_exception('Remember interrupted batch',exc)
+        self._sync_activity_ui()
+
+    def _start_resume(self, path=None):
         was_processing=self._processing
         if not was_processing:self._task_serial+=1;self._task_stage=None
-        super()._start_resume()
+        super()._start_resume(path=path)
         if self._processing and not was_processing:
-            self._preview_timer.stop();self._preview_pending=False;self._preview_revision+=1
+            self._preview_timer.stop();self._preview_pending=False;self._invalidate_preview()
         self._sync_activity_ui()
 
     def _resume_batch(self,plan,cancel_flag):
         try:
             from film_foundry.app.replay_batch import run_resume_batch
             result=run_resume_batch(plan,control=self._workflow_control(cancel_flag),on_result=lambda record:self.root.after(0,lambda record=record:self._record_result(record)))
+            self._offer_resume(plan.manifest, result.cancelled or bool(result.failures))
             self.root.after(0,lambda:self._remember_workspace_output(plan.output_root))
             message=tr('status.resume_complete').format(completed=result.completed,reused=result.reused,failed=len(result.failures),output=plan.output_root)
             if result.cancelled:message+=' · '+tr('status.cancelling')
@@ -1307,10 +1713,15 @@ class DesktopPanel(legacy.DarkroomPanel):
         if self.roll_view:self.roll_view.setProperty('workspaceBusy',busy and self._active_roll is not None)
         strict=self._active_roll is not None
         self.mode_choice.qt.setEnabled(not busy and not strict)
+        self._sync_pipeline_bar()
         self.resume_button.qt.setEnabled(not busy and not strict)
+        self.resume_button.qt.setVisible(getattr(self,'_resume_record',None) is not None and not strict)
+        self.resume_action.setEnabled(not busy and not strict)
+        self.clear_cache_action.setEnabled(not busy and not self._preview_running and not strict)
         self.pages[self.page_index['film']].qt.setEnabled(not strict)
         self.pages[self.page_index['develop']].qt.setEnabled(not strict)
-        for button in (self.preview_button,self.clear_preview_cache_button):button.qt.setEnabled(not busy and not self._preview_running and not strict)
+        self.preview_button.qt.setEnabled(not busy and not self._preview_running and not strict)
+        self.test_strip_button.qt.setEnabled(not busy and not self._preview_running and not strict)
         self.activity_progress.setVisible(busy)
         if busy:
             cancelling=self._cancel_flag is not None and self._cancel_flag.requested()
@@ -1369,7 +1780,9 @@ class DesktopPanel(legacy.DarkroomPanel):
 
     def _allow_window_close(self):
         if self._workspace_exit_pending:return False
-        pending=self._processing or self._preview_running or self._workspace_io_busy or self.workspace_host.busy_pages()
+        def previews():return [d for d in self.root.qt.findChildren(QtWidgets.QDialog) if d.property('disposablePreview')]
+        def preview_busy():return any(d.busy for d in previews())
+        pending=self._processing or self._preview_running or self._workspace_io_busy or self.workspace_host.busy_pages() or preview_busy()
         if pending:
             if self._processing:
                 if not self._confirm_cancel_close():return False
@@ -1381,15 +1794,17 @@ class DesktopPanel(legacy.DarkroomPanel):
             self._workspace_exit_pending=True;self._preview_pending=False;self._preview_timer.stop()
             self.workspace_host.setEnabled(False)
             if self._processing:self._request_cancel()
+            for dialog in previews():dialog.reject()
             for window in self._material_windows.values():
                 cancel=getattr(window,'_batch_cancel',None)
                 if cancel is not None:cancel.cancel()
             def finish_exit():
-                if self._processing or self._preview_running or self._workspace_io_busy or self.workspace_host.busy_pages():
+                if self._processing or self._preview_running or self._workspace_io_busy or self.workspace_host.busy_pages() or preview_busy():
                     self.root.after(100,finish_exit);return
                 self._workspace_exit_pending=False;self.root.qt.close()
             self.root.after(100,finish_exit)
             return False
+        for dialog in previews():dialog.reject()
         if hasattr(self,'work_sessions') and not self.work_sessions.bypass:
             def close_saved():
                 self.work_sessions.bypass=True
@@ -1397,6 +1812,8 @@ class DesktopPanel(legacy.DarkroomPanel):
                 finally:self.work_sessions.bypass=False
             self.work_sessions.protect(lambda:self.root.after(0,close_saved))
             return False
+        if hasattr(self,'last_work') and not self.last_work.begin_close():return False
+        self.preview_history.dispose()
         # Parent destruction does not deliver closeEvent to embedded children.
         # Let each page stop its timers and release its executor first.
         for page in list(self._material_windows.values()):page.close()
@@ -1418,6 +1835,8 @@ class DesktopPanel(legacy.DarkroomPanel):
             group.reset_button.clicked.connect(lambda:self.control_resets.reset_group(group.qt))
         group.pack(fill="x",pady=(0,8));group.columnconfigure(1,weight=1);group.columnconfigure(2,weight=1)
         if expert:self.expert_groups.append(group)
+        stage=next((k for k in ('film','develop','scan','output') if page is self.pages[self.page_index[k]]),None)
+        if stage:self._impact_groups.append((group,stage,text(zh,en)))
         return group
 
     def choice(self, group, label, variable, values, row=0, callback=None):
@@ -1443,24 +1862,46 @@ class DesktopPanel(legacy.DarkroomPanel):
         return choice
 
     def _browse_presets(self, choice, title):
+        if choice is self.film_preset_combo:return self._choose_work_material()
         from film_foundry.ui.preset_picker import PresetPicker
         combo=choice.qt
         labels=tuple(combo.itemText(index) for index in range(combo.count()))
         records=[]
+        preview_bank=None
         for bank in ('film','develop','scanner'):
             if choice is not getattr(self,bank+'_preset_combo',None):continue
+            preview_bank=bank
             mapping=getattr(self,'_'+bank+'_display_key_map',{})
             for label in labels:
                 key=mapping.get(label,'');record=getattr(legacy,bank+'_preset_record')(key) or {}
                 path=getattr(legacy,bank+'_preset_path')(key)
                 user_dir=getattr(legacy,'USER_'+bank.upper()+'_PRESET_DIR')
                 records.append({**record,'key':key,'origin':'custom' if path.resolve().is_relative_to(user_dir.resolve()) else 'builtin'})
-        picker=PresetPicker(self.root.qt,title,labels,combo.currentIndex(),records=records or None)
+        source=self.input_path.get() if self._is_photo_workflow() else None
+        if source and not Path(source).is_file():source=None
+        try:preview_base=self._config()
+        except (ValueError,TypeError) as exc:
+            self.status.set(text('请先修正当前参数：','Correct the current settings first: ')+str(exc));return
+        picker=PresetPicker(self.root.qt,title,labels,combo.currentIndex(),records=records or None,
+            preview_bank=preview_bank,preview_base=preview_base,source=source)
         def apply():
             if picker.selected_index is not None:
                 combo.setCurrentIndex(picker.selected_index)
                 combo.activated.emit(picker.selected_index)
         self._present_workspace_dialog(picker,on_accept=apply)
+
+    def _choose_work_material(self):
+        if self._processing or not self.film_source_group.qt.isEnabled():return
+        from film_foundry.ui.material_chooser import MaterialChooser
+        path=self.input_path.get()
+        paths=[path] if self._is_photo_workflow() and Path(path).is_file() else []
+        dialog=MaterialChooser(self.root.qt,paths=paths,family='film',current_key=self.film_preset.get(),fixed_family=True)
+        self._material_chooser=dialog
+        def apply():
+            if self._processing or not self.film_source_group.qt.isEnabled():return
+            self.film_preset.set(dialog.selection['key'])
+            self._on_film_preset_display_selected()
+        self._present_workspace_dialog(dialog,on_accept=apply)
 
     def _preset_source_note(self, group, variable, row):
         note=ui.Frame(group);note.grid(row=row,column=0,columnspan=4,sticky="ew")
@@ -1473,7 +1914,8 @@ class DesktopPanel(legacy.DarkroomPanel):
     def _bind_section_count(self, key, names):
         section=self.sections[key]
         def update(_=None):
-            count=sum(bool(getattr(self,name).get()) for name in names)
+            relevant=('save_sidecar',) if key=='output.exports' and self.pipeline_mode.get()=='scan' else names
+            count=sum(bool(getattr(self,name).get()) for name in relevant)
             section.set_summary(text(f"已选 {count} 项",f"{count} selected") if count else "")
         for name in names:getattr(self,name)._bind_view(update,section)
 
@@ -1491,12 +1933,15 @@ class DesktopPanel(legacy.DarkroomPanel):
             "scanner_raw_border":text("参考边宽度 %","Reference margin %"),"anti_banding":text("防色带","Anti-banding"),
             "print_contrast":text("对比度","Contrast"),"scan_saturation":text("饱和度","Saturation"),"scan_strength":text("归一化强度","Normalization strength")}
         for row,(name,label,low,high,*precision) in enumerate(specs,start):
-            caption=ui.Label(group,text=short_labels.get(label,tr("label."+label)),wraplength=120);caption.qt.setMinimumWidth(88);caption.qt.setMaximumWidth(120);caption.grid(row=row,column=0,sticky="ew",pady=4)
+            from film_foundry.ui.numeric_units import label_and_suffix
+            caption_text,suffix=label_and_suffix(short_labels.get(label,tr("label."+label)))
+            caption=ui.Label(group,text=caption_text,wraplength=120);caption.qt.setMinimumWidth(88);caption.qt.setMaximumWidth(120);caption.grid(row=row,column=0,sticky="ew",pady=4)
             variable=getattr(self,name)
             slider=ui.Slider(group,from_=low,to=high,variable=variable);slider.grid(row=row,column=1,columnspan=2,sticky="ew")
             slider.qt.setMinimumWidth(32);slider.qt.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Fixed)
             entry=ui.NumberInput(group,from_=-1e9,to=1e9,increment=10**-(precision[0] if precision else 2),textvariable=variable)
-            entry.qt.setFixedWidth(88);entry.grid(row=row,column=3,sticky="e")
+            entry.qt.setSuffix(suffix);entry.qt.setAccessibleName(caption_text)
+            entry.qt.setFixedWidth(104 if suffix else 88);entry.grid(row=row,column=3,sticky="e")
             help_label="exposure_occlusion" if label.startswith("exposure_occlusion_") else "print_color_shift" if label.startswith("filter_") else "highlight_color_bias" if label.startswith("highlight_") else label
             for widget in (caption,slider,entry):legacy.attach_tooltip(widget,"help."+help_label)
             self.fields[name]=(slider,entry)
@@ -1541,7 +1986,10 @@ class DesktopPanel(legacy.DarkroomPanel):
 
     def _build_film(self,page):
         self.film_source_group=self.group(page,"材料与画幅","Material & format")
-        g=self.film_source_group
+        # Keep the legacy selection model for session / editor callbacks. Its
+        # filters now live in the shared chooser rather than four work rows.
+        self.material_selection_model=ui.Frame(self.film_source_group)
+        g=self.material_selection_model
         self.material_color_filter=getattr(self,"material_color_filter","all")
         self.material_origin_filter=getattr(self,"material_origin_filter","all")
         color_choices=(("all",text("色彩不限","Any color")),("color",text("彩色","Color")),("monochrome",text("黑白","Black & white")))
@@ -1561,9 +2009,18 @@ class DesktopPanel(legacy.DarkroomPanel):
             choice.qt.setAccessibleName(caption);choice.set_tooltip(caption);self.material_filter_choices.append(choice)
         self.film_preset_combo=self.preset_choice(g,tr("label.film_preset"),self.film_preset_display,self._on_film_preset_display_selected,2)
         self.wrapped_toggle(g,text("显示更多风格变体", "Show more style variants"),self.show_preset_variants,3,self._change_preset_visibility)
-        self.choice(g,tr("label.frame_size"),self.frame_size,("half_frame","35mm","6x6","6x7","4x5"),4)
-        self._preset_source_note(g,self.film_preset_source,5)
-        self.material_editor_link=self._editor_link(g,"材料编辑器…","Material editor…","run_film_material_editor",6)
+        self.material_selection_model.qt.hide()
+        g=self.film_source_group
+        card=ui.Frame(g);card.grid(row=0,column=0,columnspan=5,sticky='ew',pady=(0,6));card.columnconfigure(0,weight=1)
+        ui.Label(card,text=text('当前材料','Current material')).grid(row=0,column=0,sticky='w')
+        self.current_material_name=ui.Label(card,textvariable=self.film_preset_display,wraplength=320)
+        self.current_material_name.qt.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.current_material_name.grid(row=1,column=0,sticky='ew')
+        self.film_preset_source._bind_view(lambda value:self.current_material_name.qt.setToolTip(text('基于所选材料；编辑过的参数仍然保留。\n','Based on the selected material; edited settings are retained.\n')+str(value)),self.current_material_name)
+        self.change_material_button=ui.Button(card,text=text('更换…','Change…'),command=self._choose_work_material)
+        self.change_material_button.grid(row=0,column=1,rowspan=2,sticky='e',padx=(8,0))
+        self.choice(g,tr("label.frame_size"),self.frame_size,("half_frame","35mm","6x6","6x7","4x5"),1)
+        self.material_editor_link=self._editor_link(g,"材料编辑器…","Material editor…","run_film_material_editor",2)
         self.film_border_group=self.group(page,'片边与齿孔','Film edges & perforations')
         self.film_border_button=ui.Button(self.film_border_group,text=text('配置片边与齿孔…','Configure film edges…'),command=self._edit_film_border)
         self.film_border_button.pack(fill='x')
@@ -1571,7 +2028,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.capture_exposure_group=self.group(page,"单张／批次曝光","Single / batch exposure")
         self.sliders(self.capture_exposure_group,[("exposure_ev","exposure_ev",-5,5)])
         ui.Button(self.capture_exposure_group,text=text('曝光时间条件…','Exposure time conditions…'),command=self._edit_exposure_conditions).grid(row=1,column=0,columnspan=4,sticky='ew')
-        self.film_condition_group=self.group(page,"保存与过期","Storage & ageing",key="film.ageing",collapsed=False)
+        self.film_condition_group=self.group(page,"储存与老化","Storage & ageing",key="film.ageing",collapsed=False)
         self.sliders(self.film_condition_group,[("material_degradation","material_degradation",0,1)])
         self.film_gate_group=self.group(page,"片门脏物","Gate dirt",key="film.gate",collapsed=True)
         self.toggles(self.film_gate_group,[(key,key) for key in ("exposure_occlusion_dust","exposure_occlusion_hair","exposure_occlusion_insect","exposure_occlusion_debris")])
@@ -1589,7 +2046,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.choice(g,tr("label.imprint_style"),self.imprint_style_display,tuple(imprint_style_labels().values()))
         self.choice(g,tr("label.imprint_side"),self.imprint_side_display,tuple(imprint_side_labels().values()),1)
         self._text_row(g,tr("label.imprint_text"),self.imprint_text,2);self._text_row(g,tr("label.imprint_time"),self.imprint_time,3)
-        ui.Button(g,text=text('字形与自由位置…','Typeface & free position…'),command=self._edit_imprint).grid(row=4,column=0,columnspan=4,sticky='ew')
+        ui.Button(g,text=text('颜色、亮度与位置…','Colour, brightness & position…'),command=self._edit_imprint).grid(row=4,column=0,columnspan=4,sticky='ew')
         self.control_resets.add(g.qt,'imprint.placement',self._imprint_placement,self._restore_imprint_placement)
         g.set_tooltip(text("打印位于照片画面内，在曝光时形成，随冲洗响应。文字与时间均为空或光源关闭时不打印。片基边沿的厂标、条码另在“材料与预设”编辑布局。", "Printed inside the picture during exposure, then developed with the image. No imprint when the lamp is off or both fields are empty. Edit film-edge factory lettering and bars separately under Materials & presets."))
         page.set_tooltip(text("光谱升维在独立配置里直接开启，不需要附带的 JSON。", "Spectral lift is switched on under Resource editors and does not need a bundled JSON file."))
@@ -1597,17 +2054,18 @@ class DesktopPanel(legacy.DarkroomPanel):
     def _restore_imprint_placement(self,value):
         if self._recipe_base is None:self._recipe_base=self._config()
         border=self._recipe_base.film_border
-        border.imprint_font,border.imprint_position_xy,border.imprint_scale=value
+        border.imprint_font,border.imprint_position_xy,border.imprint_scale=value[:3]
+        if len(value)>3:border.imprint_light_color_rgb,border.imprint_exposure_ev=value[3:]
 
     def _imprint_placement(self):
         border=(self._recipe_base or legacy.DarkroomConfig()).film_border
-        return border.imprint_font,border.imprint_position_xy,border.imprint_scale
+        return border.imprint_font,border.imprint_position_xy,border.imprint_scale,border.imprint_light_color_rgb,border.imprint_exposure_ev
 
     def _edit_imprint(self):
         from film_foundry.ui.imprint_dialog import ImprintDialog
         dialog=ImprintDialog(self._config().film_border,self.root.qt)
         def apply():
-            value=dialog.value();self._restore_imprint_placement((value.imprint_font,value.imprint_position_xy,value.imprint_scale));self._preview_edited()
+            value=dialog.value();self._restore_imprint_placement((value.imprint_font,value.imprint_position_xy,value.imprint_scale,value.imprint_light_color_rgb,value.imprint_exposure_ev));self._preview_edited()
         self._present_workspace_dialog(dialog,key='imprint',on_accept=apply)
 
     def _edit_exposure_conditions(self):
@@ -1647,6 +2105,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         self._present_workspace_dialog(editor,key='film-border',on_accept=apply)
 
     def _build_develop(self,page):
+        self._build_mode_picker(page,'develop')
         self.principle_group=self.group(page,'药浴与操作条件','Baths & operations')
         ui.Button(self.principle_group,text=text('编辑工艺条件…','Edit process conditions…'),command=self._edit_principle_process).pack(fill='x')
         self.principle_group.set_tooltip(text('药浴控制物质反应；操作页记录浸润、清洗、变温、硬化和含银液接触。材料响应在材料编辑器中设置，潜影曝光后冻结。','Baths drive material reactions. Operations record contact, washing, temperature, hardening and silver solution. Material responses are configured in the material editor and frozen at exposure.'))
@@ -1684,13 +2143,26 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.toggles(g,[("enable_mtf","enable_mtf"),("enable_halation","enable_halation"),("enable_grain","enable_grain"),("force_bw","bw_negative")],14)
 
     def _build_scan(self,page):
+        self.scan_advanced_toggle=QtWidgets.QCheckBox(text('显示进阶参数','Show advanced controls'))
+        from film_foundry.ui.shortcut_settings import bind_hint
+        bind_hint(self.scan_advanced_toggle,'advanced')
+        self.scan_advanced_toggle.setToolTip(text('显示观察细调和设备响应曲线；仅改变控件显隐，保留参数。','Show observation details and the device response curve. Only visibility changes; values are retained.'))
+        self.scan_advanced_toggle.setChecked(self._scan_advanced)
+        self.scan_advanced_toggle.toggled.connect(self._set_scan_advanced)
+        page._ensure_pack_layout().addWidget(self.scan_advanced_toggle)
         g=self.group(page,"观察方式","Observation")
         self.scanner_preset_combo=self.preset_choice(g,tr("label.scanner_preset"),self.scanner_preset_display,self._on_scanner_preset_display_selected)
         self._preset_source_note(g,self.scanner_preset_source,1)
         self.scan_recommendation._bind_view(lambda value,target=g:target.set_tooltip(str(value)),g)
         self.wrapped_toggle(g,text("显示更多风格变体", "Show more style variants"),self.show_preset_variants,3,self._change_preset_visibility)
         self.scanner_editor_link=self._editor_link(g,"完整扫描设置…","Full scanner settings…","run_scanner_render_editor",4)
-        self.wrapped_toggle(g,text('随材料匹配扫描','Link scan to material'),self.link_scanner,5,self._apply_matching_scanner)
+        self.scan_link_row=self.wrapped_toggle(g,text('随材料匹配扫描','Link scan to material'),self.link_scanner,5,self._apply_matching_scanner)
+        self.scan_link_reset=g._ensure_grid_layout().itemAtPosition(5,4).widget()
+        from film_foundry.ui.scan_framing import open_framing
+        framing=ui.Button(g,text=text("裁切与拉直…","Crop & straighten…"),command=lambda:open_framing(self))
+        framing.grid(row=6,column=0,columnspan=2,sticky="w")
+        calibration=ui.Button(g,text=text("片基 / 滴管…","Film base / eyedropper…"),command=lambda:open_framing(self,calibration=True))
+        calibration.grid(row=6,column=2,columnspan=3,sticky="w")
         g=self.group(page,"基础调色","Basic adjustments")
         self.sliders(g,[("print_exposure","print_exposure",-5,5),("print_contrast","print_contrast",.3,3),("saturation","scan_saturation",0,3),("scan_strength","scan_strength",0,1)])
         self.toggles(g,[("scan_normalize","scan_normalize")],4)
@@ -1719,7 +2191,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.scan_pipeline_description._bind_view(lambda value,target=g:target.set_tooltip(str(value)),g)
         lamp=ui.Frame(g);lamp.grid(row=3,column=0,columnspan=4,sticky="ew");lamp.columnconfigure(1,weight=1);lamp.columnconfigure(2,weight=1)
         self.sliders(lamp,[("light_table_ev","transmission_light_ev",-4,4),("light_table_temperature","transmission_light_temperature",2400,10000,0),("positive_color_control","positive_color_control",0,1)])
-        g=self.group(page,"观察细调","Observation details",True,key="scan.details")
+        g=self.group(page,"观察细调","Observation details",key="scan.details")
         self.sliders(g,[("print_shift_r","filter_r",-.5,.5),("print_shift_g","filter_g",-.5,.5),("print_shift_b","filter_b",-.5,.5),("highlight_green","highlight_green",.1,2),("highlight_blue","highlight_blue",.1,2),("projection_white_softness","projection_white_softness",0,1),("projection_black_adaptation","projection_black_adaptation",0,1),("negative_channel_compensation_strength","negative_channel_compensation_strength",0,1)])
         self.toggles(g,[("negative_channel_compensation","negative_channel_compensation")],8)
 
@@ -1810,11 +2282,18 @@ class DesktopPanel(legacy.DarkroomPanel):
 
     def _session_payload(self):
         payload=super()._session_payload()
-        payload.setdefault('ui_options',{}).update(link_scanner=self.link_scanner.get(),auto_develop=self.auto_develop.get())
+        payload["frame_exposure_offsets"]=dict(self._frame_exposure_offsets)
+        payload.setdefault('ui_options',{}).update(link_scanner=self.link_scanner.get(),auto_develop=self.auto_develop.get(),
+            scan_version_path=self._scan_version_path if self.pipeline_mode.get()=='scan' else None)
         return payload
 
     def _apply_session_payload(self,payload):
+        from film_foundry.app.workspace_jobs import exposure_offsets
+        offsets=exposure_offsets(payload.get('frame_exposure_offsets'))
+        self._scan_version_path=payload.get('ui_options',{}).get('scan_version_path') if payload.get('pipeline_mode')=='scan' else None
+        self._film_task_context_key=None
         super()._apply_session_payload(payload)
+        self._frame_exposure_offsets=offsets
         options=payload.get('ui_options',{})
         self.link_scanner.set(bool(options.get('link_scanner',False)));self.auto_develop.set(bool(options.get('auto_develop',False)))
 
@@ -1846,10 +2325,6 @@ class DesktopPanel(legacy.DarkroomPanel):
         ui.Button(page,text=tr("button.runtime_settings"),command=self._open_runtime_settings).pack(fill="x",pady=6)
 
     def _build_resources(self,page):
-        g=self.group(page,"材料与药水配置","Material & chemistry editors")
-        for row,(label,module) in enumerate([("film_editor","run_film_material_editor"),("develop_editor","run_develop_process_editor"),("scanner_editor","run_scanner_render_editor")]):
-            ui.Button(g,text=tr("button."+label),command=lambda m=module:self._open_editor("film_foundry.tools."+m)).grid(row=row,column=0,columnspan=4,sticky="ew",pady=4)
-        g.set_tooltip(text("在主窗口打开完整配置编辑器，保存或显式应用工作副本；切换保留当前工作。冻结来源不可覆盖。", "Open the full editor in the main window. Save or explicitly apply the working copy; switching retains the current work. Frozen sources cannot be overwritten."))
         g=self.group(page,"档案与物理画幅","Profiles & physical frame",key="resources.geometry",collapsed=True)
         self._text_row(g,tr("label.spatial_reference_mm"),self.spatial_reference_mm,0);self._text_row(g,tr("label.frame_long_edge_mm"),self.frame_long_edge_mm,1)
         self.resource_source_group=g
@@ -1946,6 +2421,13 @@ class DesktopPanel(legacy.DarkroomPanel):
         self._navigate_workspace(self.navigation.currentRow())
         self._preview_edited()
 
+    def _select_pipeline_endpoint(self,mode):
+        if self._processing or not self._is_photo_workflow() or self._active_roll is not None:
+            self._sync_pipeline_bar();return
+        if mode not in ('expose','develop','full','scan'):return
+        if mode==self.pipeline_mode.get():self._sync_pipeline_bar();return
+        self.mode_display.set(self.workflow_labels[mode]);self._select_mode()
+
     def _preview_zoom_changed(self, _percent=None):
         view=self.preview_tabs.currentWidget()
         self.preview_zoom_label.setText(f"{view.zoom_percent}%" if view is not None and view.source is not None else "—")
@@ -1954,7 +2436,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         super()._set_process_button_mode(mode)
         if mode not in ("cancel","cancelling") and self.process_button is not None and self.process_button.winfo_exists():
             labels={"full":text("冲洗并扫描","Develop & scan"),"develop":text("冲洗并保存介质","Develop medium"),
-                "scan":text("扫描并保存成片","Scan to image"),"expose":text("保存曝光潜影","Expose latent"),"develop_latent":text("冲洗已保存潜影","Develop latent")}
+                "scan":text("扫描并保存成片","Scan to image"),"expose":text("保存曝光潜影","Expose latent"),"develop_latent":text("冲洗并保存底片","Develop and save film")}
             self.process_button.configure(text=labels[self.pipeline_mode.get()])
         if hasattr(self,"resume_button"):self._sync_activity_ui()
 
@@ -2005,17 +2487,55 @@ class DesktopPanel(legacy.DarkroomPanel):
         from film_foundry.app.camera_profile import prepare_camera_config
         return prepare_camera_config(config,self._camera_profile.current())
 
+    def _build_mode_picker(self,page,key):
+        from film_foundry.ui.operating_mode import OperatingModePicker
+        picker=OperatingModePicker(page.qt)
+        picker.mode_changed.connect(self._set_panel_operation)
+        page._ensure_pack_layout().addWidget(picker)
+        self.mode_pickers[key]=picker
+
+    def _set_panel_operation(self,mode):
+        self.expert_mode.set(mode!='normal')
+        if mode!='normal':
+            self._expert_operating_mode=mode
+            self.expert_operation.blockSignals(True)
+            self.expert_operation.setCurrentIndex(self.expert_operation.findData(mode))
+            self.expert_operation.blockSignals(False)
+        self._update_expert_visibility();self._preview_edited()
+
     def _update_expert_visibility(self):
         for group in getattr(self,"expert_groups",[]):
             group.qt.setVisible(bool(self.expert_mode.get()))
         if hasattr(self,"curve_tabs"):
-            self.curve_tabs.setTabVisible(2,bool(self.expert_mode.get()))
+            self.curve_tabs.setTabVisible(2,self._scan_advanced)
+        if 'scan.details' in self.sections:self.sections['scan.details'].qt.setVisible(self._scan_advanced)
         expert=bool(self.expert_mode.get());principle=expert and self._expert_operating_mode=='principle'
-        if hasattr(self,'expert_operation'):self.expert_operation.setVisible(expert)
+        mode=self._expert_operating_mode if expert else 'normal'
+        for key,picker in getattr(self,'mode_pickers',{}).items():
+            editable=self.pipeline_mode.get() in (('full','develop','expose') if key=='film' else ('full','develop','develop_latent'))
+            picker.sync(mode,editable=editable)
+        if hasattr(self,'expert_operation'):self.expert_operation.hide()
         if hasattr(self,'principle_group'):
             self.principle_group.qt.setVisible(principle)
             for group in (self.develop_source_group,self.develop_effect_group):group.qt.setVisible(not principle)
             for group in (self.develop_detail_group,self.develop_identity_group,*self.develop_additional_groups):group.qt.setVisible(expert and not principle)
+
+    def _set_scan_advanced(self,shown):
+        self._scan_advanced=bool(shown)
+        blocked=self.scan_advanced_toggle.blockSignals(True)
+        self.scan_advanced_toggle.setChecked(self._scan_advanced)
+        self.scan_advanced_toggle.blockSignals(blocked)
+        self._update_expert_visibility()
+        self._save_display_preferences(scan_advanced=self._scan_advanced)
+
+    def _toggle_page_advanced(self):
+        if self.workspace_host.currentWidget() is not self.film_workspace:return
+        focused=QtWidgets.QApplication.focusWidget()
+        scan=self.pages[self.page_index['scan']].qt
+        if self.navigation.currentRow()==self.page_index['scan'] or focused is not None and scan.isAncestorOf(focused):
+            self._set_scan_advanced(not self._scan_advanced)
+        elif self.navigation.currentRow()==self.page_index['develop'] and self.mode_pickers['develop'].buttons['normal'].isEnabled():
+            self._set_panel_operation('normal' if self.expert_mode.get() else self._expert_operating_mode)
 
     def _set_expert_operation(self,*_):
         self._expert_operating_mode=self.expert_operation.currentData()
@@ -2027,7 +2547,7 @@ class DesktopPanel(legacy.DarkroomPanel):
             existing=self.workspace_host.find_page('principle-process')
             if existing is not None:self.workspace_host.setCurrentWidget(existing);return
             dialog=RollProcessDialog(self._config(),self.root.qt)
-            dialog.setWindowTitle(text('原理模式 · 药浴与步骤','Process principles · Baths & steps'))
+            dialog.setWindowTitle(text('按药浴 · 药浴与步骤','By bath · Baths & steps'))
             def apply():
                 self._principle_chemistry=copy.deepcopy(dialog.config.chemistry);self._preview_edited()
             self._present_workspace_dialog(dialog,key='principle-process',on_accept=apply)
@@ -2165,6 +2685,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.pages[self.page_index["scan"]].qt.setEnabled(scan)
         self._refresh_source_summary()
         self._refresh_scanner_catalog();self._update_scan_parameter_visibility();self._update_expert_visibility()
+        self._sync_task_navigation()
         if not self._processing:self._set_process_button_mode("process")
         descriptions={
             "output":text("来源信息与输出内容；执行时选择保存位置","Source information and output content; choose the destination when running"),
@@ -2178,6 +2699,7 @@ class DesktopPanel(legacy.DarkroomPanel):
             title.set_tooltip(descriptions[key])
             self.navigation.item(self.page_index[key]).setToolTip(descriptions[key])
         self.mode_choice.set_tooltip(tr("status."+mode))
+        self._sync_group_impacts()
         if not self._processing:self.status.set("")
 
     def _is_photo_workflow(self):
@@ -2186,7 +2708,166 @@ class DesktopPanel(legacy.DarkroomPanel):
         from film_foundry.core.io_utils import SUPPORTED_EXTENSIONS
         return self.pipeline_mode.get()=='scan' and Path(self.negative_path.get()).suffix.lower() in SUPPORTED_EXTENSIONS
 
+    def _sync_task_navigation(self):
+        """Only show stages editable in this task; saved facts have a read-only entry."""
+        if not hasattr(self,'page_index') or not hasattr(self,'studio_tabs'):return
+        mode=self.pipeline_mode.get();frozen=mode in ('scan','develop_latent') and not self._is_photo_workflow()
+        hidden={'film','develop'} if mode=='scan' else {'film','scan'} if frozen else set()
+        for key,index in self.page_index.items():
+            self.navigation.item(index).setHidden(key in hidden)
+            self.studio_navigation.model().item(index).setEnabled(key not in hidden)
+            if index in self.studio_moved:
+                self.studio_tabs.setTabVisible(self.studio_tabs.indexOf(self.studio_moved[index]),key not in hidden)
+        scan=mode=='scan'
+        self.navigator_panel.setVisible(self._workspace_layout=='studio' and not scan)
+        self.task_navigation.setVisible(self._active_roll is not None)  # Rolls have no single-frame stage bar.
+        if hasattr(self,'formation_badge'):self.formation_badge.setVisible(not scan)
+        if hasattr(self,'scan_link_row'):
+            self.scan_link_row.qt.setVisible(not scan);self.scan_link_reset.setVisible(not scan)
+        if 'output.exports' in self.sections:
+            exports=self.sections['output.exports'];grid=exports._ensure_grid_layout()
+            for index in range(grid.count()):
+                row,_,_,_=grid.getItemPosition(index);widget=grid.itemAt(index).widget()
+                if widget is not None and row>0:widget.setVisible(not scan)
+            exports.title=text('扫描记录','Scan record') if scan else text('附属文件与诊断输出','Additional files & diagnostics')
+            exports.header.setAccessibleName(exports.title);exports.set_summary('')
+        self.studio_tabs.setTabVisible(self.studio_tabs.indexOf(self.selection_list),bool(self._selected_photos))
+        self.studio_tabs.setVisible(self._workspace_layout=='studio' and not scan)
+        self.navigation.hide();self.studio_navigation.hide();self.studio_tabs.tabBar().hide()
+        self.navigator_panel.setMinimumWidth(172 if scan or self._workspace_layout=='compact' else 280)
+        self.navigator_panel.setMaximumWidth(16777215)
+        self.workflow_label.qt.setVisible(not frozen);self.mode_choice.qt.setVisible(not frozen);self.task_heading.qt.setVisible(frozen)
+        self.legacy_task_row.setVisible(self._active_roll is not None)
+        self.task_heading.configure(text=text('底片 · 扫描','Film medium · Scan') if mode=='scan' else text('潜影 · 冲洗','Latent exposure · Develop'))
+        if self.navigation.currentRow()>=0 and self.navigation.currentItem().isHidden():
+            self.navigation.setCurrentRow(self.page_index['scan' if scan else 'develop'])
+        if hasattr(self,'edit_tools'):self.edit_tools.sync_task()
+        if self.layout_memory is not None:self.layout_memory.apply('workspace')
+
+    def _open_context_guide(self):
+        from film_foundry.ui.context_guide import open_desktop_guide
+        return open_desktop_guide(self)
+
+    def _current_film_context(self,*,refresh=False):
+        path=Path(self.negative_path.get())
+        if self._active_roll is not None or self.pipeline_mode.get() not in ('scan','develop_latent') or path.suffix.lower()!='.npz' or not path.is_file():return None
+        sidecar=path.with_suffix(path.suffix+'.json')
+        key=(str(path.resolve()),path.stat().st_mtime_ns,sidecar.stat().st_mtime_ns if sidecar.is_file() else None)
+        if refresh or key!=self._film_task_context_key:
+            from film_foundry.app.film_task import film_task_context
+            from film_foundry.app.desktop_catalog import DesktopCatalog
+            catalog=self.library_view.catalog if self.library_view else DesktopCatalog()
+            self._film_task_context=film_task_context(path,catalog);self._film_task_context_key=key
+        return self._film_task_context
+
+    def _sync_pipeline_bar(self):
+        if not hasattr(self,'pipeline_bar') or not hasattr(self,'page_index'):return
+        self.pipeline_bar.setVisible(self._active_roll is None)
+        selected=next((key for key,index in self.page_index.items() if index==self.navigation.currentRow()),None)
+        mode=self.pipeline_mode.get();photo=self._is_photo_workflow()
+        summaries={key:text('基于 ','Based on ')+str(getattr(self,bank+'_preset_display').get())
+                   for key,bank in (('film','film'),('develop','develop'),('scan','scanner'))}
+        if self.expert_mode.get() and self._expert_operating_mode=='principle':summaries['develop']=text('当前药浴与操作条件','Current baths and operations')
+        if not photo and mode in ('scan','develop_latent'):
+            try:context=self._current_film_context()
+            except (ValueError,OSError,KeyError,zipfile.BadZipFile):context=None
+            stored=(context or {}).get('config') or {}
+            stock=stored.get('film');chemistry=stored.get('chemistry')
+            summaries['film']=str(stock.get('name') or text('来源材料记录','Source material record')) if isinstance(stock,dict) else text('来源材料记录','Source material record')
+            if mode=='scan':summaries['develop']=str(chemistry.get('developer_name') or text('来源冲洗记录','Source development record')) if isinstance(chemistry,dict) else text('来源冲洗记录','Source development record')
+        summaries['output']=text('潜影存档','Latent archive') if mode=='expose' else text('底片介质','Film medium') if mode in ('develop','develop_latent') else text('扫描成片','Scanned image')
+        self.pipeline_bar.sync(mode,photo_source=photo,selected=selected,summaries=summaries,busy=self._processing)
+
+    def _sync_group_impacts(self):
+        from film_foundry.ui.recalculation_hint import recalculation_hint
+        for group,stage,title in self._impact_groups:
+            label,detail=recalculation_hint(stage,self.pipeline_mode.get(),self._is_photo_workflow())
+            if hasattr(group,'impact_badge'):
+                group.impact_badge.setText(label);group.impact_badge.setToolTip(detail);group.impact_badge.show()
+                group.header.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Fixed)
+            else:
+                # Output titles change with the task, so retain their actual current title.
+                old=getattr(group,'_impact_label','')
+                actual=group.qt.title()
+                if old and actual.endswith(' · '+old):actual=actual[:-len(' · '+old)]
+                group.qt.setTitle(actual+' · '+label);group._impact_label=label
+                tip=group.qt.toolTip();old_hint=getattr(group,'_impact_hint','')
+                if old_hint and tip==old_hint:tip=''
+                elif old_hint and tip.endswith('\n\n'+old_hint):tip=tip[:-len('\n\n'+old_hint)]
+                group.qt.setToolTip((tip+'\n\n' if tip else '')+detail);group._impact_hint=detail
+
+    def _open_pipeline_stage(self,key):
+        self._sync_pipeline_bar()
+        state=self.pipeline_bar.states[key]
+        if state not in ('frozen','skip'):
+            self.navigation.setCurrentRow(self.page_index[key]);return
+        from film_foundry.ui.causal_pipeline import PipelineStageDialog
+        from film_foundry.ui.inline_editor import present_inline_editor
+        try:context=self._current_film_context(refresh=True) if state=='frozen' else None
+        except (ValueError,OSError,KeyError,zipfile.BadZipFile):context=None
+        dialog=PipelineStageDialog(self.pipeline_bar.buttons[key].text().replace('\n',' · '),
+            self.pipeline_bar.explanation(key),can_record=context is not None,
+            can_branch=bool(context and context['latents']) and not self._processing,
+            frozen=state=='frozen',latent=self.pipeline_mode.get()=='develop_latent',parent=self.film_workspace)
+        def accepted():
+            if dialog.action=='record':self._show_formation_record()
+            elif dialog.action=='branch':self._redevelop_from_latent()
+        present_inline_editor(self.film_workspace,dialog,accepted)
+
+    def _show_formation_record(self):
+        try:
+            context=self._current_film_context(refresh=True)
+            if context is None:return
+            from film_foundry.ui.film_task_context import FilmSourceDialog
+            from film_foundry.ui.inline_editor import present_inline_editor
+            present_inline_editor(self.film_workspace,FilmSourceDialog(context,self.film_workspace))
+        except (ValueError,OSError,KeyError,zipfile.BadZipFile) as exc:self.status.set(str(exc))
+
+    def _show_related_results(self):
+        try:
+            from film_foundry.app.desktop_catalog import DesktopCatalog
+            context=self._current_film_context(refresh=True)
+            catalog=self.library_view.catalog if self.library_view else DesktopCatalog()
+            from film_foundry.app.film_task import related_film_stack
+            source=context['path'] if context else self.negative_path.get() if self.pipeline_mode.get()=='scan' else self.input_path.get()
+            stack=related_film_stack(source,catalog)
+            if stack:
+                from film_foundry.app.catalog_assets import path_key
+                focus=source
+                if context is None or context['kind']=='latent':
+                    focus=next((run['medium'] for run in reversed(stack['runs'])
+                                if path_key(run.get('source',''))==path_key(focus) and Path(run['medium']).is_file()),focus)
+                self._open_result_stack(dict(stack,focus_asset='asset:'+path_key(focus)))
+        except (ValueError,OSError,KeyError,zipfile.BadZipFile) as exc:self.status.set(str(exc))
+
+    def _redevelop_from_latent(self):
+        if self._processing or self._active_roll is not None:return
+        try:
+            from film_foundry.app.film_task import available_latent,redevelopment_config
+            context=self._current_film_context(refresh=True)
+            paths=context['latents'] if context else []
+            if not paths:
+                self.status.set(text('没有可用的原潜影；可从图库选择原图重新曝光。','No available original latent; choose the original image in the library to expose again.'));return
+            path=paths[0]
+            if len(paths)>1:
+                path,accepted=QtWidgets.QInputDialog.getItem(self.film_workspace,text('选择原潜影','Choose original latent'),text('已记录来源','Recorded sources'),paths,0,False)
+                if not accepted:return
+            config=redevelopment_config(context,self._config())
+            def open_branch():
+                if not available_latent(path):
+                    self.status.set(text('原潜影已不可用，未创建新工作。','The original latent is no longer available; no new work was created.'));return
+                # Keep the original formation discoverable even when opened as
+                # a standalone archive, without ever rewriting that archive.
+                self._record_result(context['record'])
+                self._open_result_artifact(path,'film',stage='latent',config=config,_approved=True)
+                self.status.set(text('已从原潜影建立冲洗工作；原底片保留，执行后另存结果。','Development work starts from the original latent. The old medium is retained; execution saves a new result.'))
+            self.work_sessions.protect(open_branch,pages=[self.film_workspace])
+        except (ValueError,OSError,KeyError,zipfile.BadZipFile) as exc:self.status.set(str(exc))
+
     def _refresh_source_summary(self):
+        self._sync_pipeline_bar()
+        for name in ('source_record_button','redevelop_button','related_results_button','staged_develop_button'):
+            if hasattr(self,name):getattr(self,name).qt.hide()
         if self._active_roll:
             roll=self._active_roll.data['roll']
             self.source_summary.configure(text=text('整卷：','Roll: ')+f"{roll.get('label') or roll['roll_id']} · {roll['capacity']}")
@@ -2199,6 +2880,24 @@ class DesktopPanel(legacy.DarkroomPanel):
         if self._is_photo_workflow() and len(self._selected_photos)>1:
             self.source_summary.configure(text=text(f'已选 {len(self._selected_photos)} 张 · ',f'{len(self._selected_photos)} selected · ')+name)
         self.source_summary.qt.setToolTip(str(source))
+        if mode=='scan' and self._scan_version_path:
+            self.source_summary.configure(text=text('底片 · ','Film · ')+name+text(' / 扫描版本 · ',' / Scan version · ')+Path(self._scan_version_path).name)
+            self.source_summary.qt.setToolTip(str(source)+'\n'+text('扫描参数来源：','Scan settings from: ')+self._scan_version_path)
+        if hasattr(self,'source_record_button'):
+            try:context=self._current_film_context()
+            except (ValueError,OSError,KeyError,zipfile.BadZipFile) as exc:
+                context=None;self.source_summary.qt.setToolTip(str(source)+'\n'+str(exc))
+            if context:
+                self.related_results_button.qt.setVisible(context['stack_id'] is not None)
+                self.redevelop_button.qt.setEnabled(bool(context['latents']) and not self._processing)
+                self.staged_develop_button.qt.setVisible(context['kind']=='latent')
+                self.staged_develop_button.qt.setEnabled(not self._processing)
+                self.redevelop_button.set_tooltip(text('使用已记录的原潜影重新冲洗，另存结果；原底片及扫描不变。','Develop the recorded original latent again, saving a new medium; existing film and scans remain unchanged.') if context['latents'] else text('没有可用的原潜影。不会从底片或成片反推曝光；可回图库从原图重新开始。','No original latent is available. Exposure is not reconstructed from a medium or scan; start from the original image in the library.'))
+            elif self._is_photo_workflow() and hasattr(self,'library_view'):
+                from film_foundry.app.desktop_catalog import DesktopCatalog
+                from film_foundry.app.film_task import related_film_stack
+                catalog=self.library_view.catalog if self.library_view else DesktopCatalog()
+                self.related_results_button.qt.setVisible(related_film_stack(source,catalog) is not None)
 
     def _show_source_information(self):
         dialog=QtWidgets.QDialog(self.film_workspace);dialog.setWindowTitle(text('来源信息','Source information'))
@@ -2268,6 +2967,9 @@ class DesktopPanel(legacy.DarkroomPanel):
         self._preview_edited()
 
     def _sync_scanner_preset_controls(self):
+        if not self.scanner_preset.get():
+            self._refresh_scanner_catalog()
+            return
         super()._sync_scanner_preset_controls()
         path=legacy.scanner_preset_path(self.scanner_preset.get())
         if path.exists():
@@ -2275,6 +2977,18 @@ class DesktopPanel(legacy.DarkroomPanel):
             self.color_mixer.load(scanner.color_mixer)
             for key,editor in self.curve_editors.items():editor.load(getattr(scanner,key))
             self._update_curve_summary()
+        self._show_saved_scan_reference()
+
+    def _refresh_scanner_catalog(self):
+        super()._refresh_scanner_catalog()
+        self._show_saved_scan_reference()
+
+    def _show_saved_scan_reference(self):
+        if self.pipeline_mode.get()=='scan' and self._scan_version_path and not self.scanner_preset.get():
+            self.scanner_preset_combo.qt.setPlaceholderText(text('已保存的扫描设置','Saved scan settings'))
+            self.scanner_preset_display.set('')
+            self.scanner_preset_source.set(text('扫描版本记录','Scan version record'))
+            self.scanner_preset_combo.qt.setToolTip(self._scan_version_path)
 
     def _apply_editor_bank(self,bank,edited):
         mode=self.pipeline_mode.get()
@@ -2343,7 +3057,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.input_view.source,self.result_view.source=images[:2]
         self.input_view.fit();self.result_view.fit()
         self.result_view.original,self.result_view.result,self.result_view.mode,self.result_view.divider,self.result_view.rotation_quarters=comparison
-        self.result_view._aligned=None;self.result_view._present()
+        self.result_view._frames_changed()
         self.edit_tools.comparison.setCurrentIndex(self.edit_tools.comparison.findData(comparison[2]))
         if any(image is not None for image in images[:2]):self.preview_caption.setText(images[3])
         self.inspector_view.source=images[2];self.inspector_view.fit()
@@ -2370,10 +3084,13 @@ class DesktopPanel(legacy.DarkroomPanel):
             self.status.set(f"{tr('status.ui_preferences_failed')}: {exc}")
 
     def _show_preview(self,source_name,left,right,left_title,right_title):
-        self.inspector_view.source=None;self.preview_tabs.setTabVisible(2,False)
-        self.input_view.show_array(left);self.result_view.set_pair(left,right)
-        self.result_view.set_rotation(self._config().output.rotation_quarters)
+        self.inspector_view.clear_image();self.preview_tabs.setTabVisible(2,False)
+        self.input_view.show_array(left)
+        self.result_view.set_pair(self.input_view.source,right,
+                                  rotation=self._config().output.rotation_quarters)
+        if self.pipeline_mode.get() in ('develop','develop_latent'):right_title=text('冲洗预览','Development preview')
         self.preview_tabs.setTabText(0,right_title);self.preview_tabs.setTabText(1,left_title)
+        self.preview_tabs.setTabToolTip(0,text('按当前配方试算；执行并保存后才产生底片或成片。','A trial of the current recipe; executing and saving creates the medium or image.'))
         self.preview_caption.setText(source_name);self.preview_tabs.setCurrentIndex(0)
         self.status.set(text("预览已更新：", "Preview updated: ")+source_name)
         self._set_preview_state("ready")
@@ -2387,7 +3104,17 @@ class DesktopPanel(legacy.DarkroomPanel):
 
 
 def main():
-    DesktopPanel().run()
+    from film_foundry.app.last_work import recovery_directory
+    from film_foundry.app.crash_journal import CrashJournal, record_exception
+    journal=CrashJournal(recovery_directory())
+    try:
+        try:journal.install()
+        except OSError as exc:print('Desktop diagnostics unavailable:',exc,file=sys.stderr)
+        DesktopPanel().run()
+    except BaseException as exc:
+        record_exception('Desktop startup or event loop',exc)
+        raise
+    finally:journal.close()
 
 
 if __name__ == "__main__":

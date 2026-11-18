@@ -14,6 +14,37 @@ def transmission_radiance(optical_density, illuminant_rgb):
     return result
 
 
+def apply_local_exposures(dose, regions):
+    """Apply elliptical printing exposures on the receiver, in bounded row blocks."""
+    from film_foundry.contracts.scan_framing import pixel_bounds
+    height,width = dose.shape[:2]
+    for region in regions:
+        if not region.ev:
+            continue
+        l,t,r,b = region.rect
+        angle=np.deg2rad(region.angle)
+        c,s=np.cos(angle),np.sin(angle)
+        cx,cy=(l+r)*width/2,(t+b)*height/2
+        rx,ry=(r-l)*width/2,(b-t)*height/2
+        dx,dy=abs(c)*rx+abs(s)*ry,abs(s)*rx+abs(c)*ry
+        x0,x1=max(0,int(np.floor(cx-dx))),min(width,int(np.ceil(cx+dx)))
+        y0,y1=max(0,int(np.floor(cy-dy))),min(height,int(np.ceil(cy+dy)))
+        x=np.arange(x0,x1,dtype=np.float64)+.5-cx
+        for start in range(y0,y1,128):
+            end=min(start+128,y1)
+            y=(np.arange(start,end,dtype=np.float64)+.5-cy)[:,None]
+            u=(c*x+s*y)/rx;v=(-s*x+c*y)/ry
+            distance=np.sqrt(u*u+v*v) if region.shape=='ellipse' else np.maximum(abs(u),abs(v))
+            if region.feather:
+                weight=np.clip((1-distance)/region.feather,0,1)
+                weight=weight*weight*(3-2*weight)
+            else:
+                weight=distance<=1
+            if region.shape=='gradient':weight=weight*np.clip((1+u)/2,0,1)
+            gain = np.exp2(region.ev*weight).astype(np.float32)
+            dose[start:end,x0:x1] *= gain[:,:,None]
+
+
 def relay_dose(radiance, settings: OpticalRelay):
     """Resize flux, then apply filter/time. Resampling does not change field extent.
 
@@ -35,6 +66,8 @@ def relay_dose(radiance, settings: OpticalRelay):
     gain = np.power(10., -np.asarray(settings.filter_density_rgb, np.float64)) * settings.exposure_seconds * 2 ** settings.exposure_ev
     result = np.array(image, dtype=np.float32, copy=True)
     result *= gain.astype(np.float32)
+    if settings.local_exposures:
+        apply_local_exposures(result,settings.local_exposures)
     if not np.isfinite(np.max(result)):
         raise ValueError('Optical relay dose overflow')
     return result

@@ -5,8 +5,9 @@ from film_foundry.ui.curve_editor import text
 
 
 class FormationExecutionBadge(QtWidgets.QToolButton):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, formal_job=False):
         super().__init__(parent)
+        self.formal_job = formal_job
         self.setAutoRaise(True)
         self.setAccessibleName(text('形成模型', 'Formation model'))
 
@@ -24,7 +25,7 @@ class FormationExecutionBadge(QtWidgets.QToolButton):
             tip = text('使用已保存的历史降阶方案；不自动升级到基础快速冲洗。', 'Uses the saved historical reduction profile without upgrading it.')
         tip += '\n' + text('扫描规则与输出尺寸不因降阶改变。编辑器保留完整配方，未参与的设置可供完整模式使用。',
                             'Reduction does not change scan rules or output dimensions. Editors retain the full recipe for full-mode reuse.')
-        self.setText(title)
+        self.setText((text('正式算法 · ', 'Job model · ') if self.formal_job else '') + title)
         self.setToolTip(tip)
         self.execution_info = info
 

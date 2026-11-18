@@ -52,6 +52,73 @@ def test_catalog_annotations_persist_and_do_not_touch_source(tmp_path,monkeypatc
     assert restored.entries[0]['rating']==4
 
 
+def test_batch_annotations_save_once_and_roll_back_asset_aliases(tmp_path,monkeypatch):
+    from unittest.mock import Mock
+    from film_foundry.app.catalog_assets import path_key,asset_descriptor
+    catalog=DesktopCatalog()
+    path=source(tmp_path)
+    entry=catalog.add([path])[0]
+    derived=asset_descriptor(str(tmp_path/'scan.png'),'scan')
+    catalog.results=[dict(id='stack',path=str(path),rating=1,favorite=False,
+                          runs=[dict(medium=str(path),assets=[derived])])]
+    alias='asset:'+path_key(path)
+    write=Mock(wraps=catalog.save)
+    monkeypatch.setattr(catalog,'save',write)
+    catalog.annotate_many([entry['id'],alias,derived['id']],rating=4)
+    assert write.call_count==1 and entry['rating']==4
+    assert catalog.asset_annotations=={derived['id']:dict(rating=4,favorite=False)}
+    other=asset_descriptor(str(tmp_path/'other.png'),'scan')
+    catalog.results[0]['runs'][0]['assets'].append(other)
+    write.side_effect=OSError('write failed')
+    with pytest.raises(OSError):
+        catalog.annotate_many([alias,derived['id'],other['id']],favorite=True)
+    assert not entry['favorite']
+    assert catalog.asset_annotations=={derived['id']:dict(rating=4,favorite=False)}
+
+
+def test_gallery_thumbnail_viewport_and_clear_during_read(tmp_path,monkeypatch):
+    from threading import Event
+    from unittest.mock import patch
+    from film_foundry.ui import desktop_library as module
+    from film_foundry.ui.qt import QtGui
+    monkeypatch.setenv('FILM_FOUNDRY_DESKTOP_SETTINGS',str(tmp_path/'desktop.json'))
+    app=_application()
+    grid_page=module.DesktopLibrary(lambda *_:None,lambda:None,lambda:None)
+    entered,release=Event(),Event()
+    path=source(tmp_path)
+    def decode(_):
+        entered.set()
+        release.wait(3)
+        image=QtGui.QImage(12,12,QtGui.QImage.Format.Format_RGB32)
+        image.fill(QtCore.Qt.GlobalColor.red)
+        return image
+    monkeypatch.setattr(module,'thumbnail',decode)
+    # Distinct catalogue references may use the same cover thumbnail.
+    rows=[dict(id=str(i),path=str(path),rating=0,favorite=False) for i in range(140)]
+    monkeypatch.setattr(grid_page.catalog,'query',lambda **_:rows)
+    try:
+        grid_page.resize(1000,590);grid_page.show();grid_page.refresh()
+        grid=grid_page.grid
+        wait(entered.is_set)
+        grid.scrollToItem(grid.item(97));app.processEvents();grid_page.load_visible()
+        visible={row for row in range(grid.count()) if grid.viewport().rect().intersects(grid.visualItemRect(grid.item(row)))}
+        assert 97 in visible and len(visible)<20
+        with patch.object(grid,'visualItemRect',wraps=grid.visualItemRect) as geometry:
+            assert set(grid_page._visible_rows())==visible
+            assert geometry.call_count<=grid.count().bit_length()+len(visible)+1
+        grid_page.timer.stop()
+        grid_page.clear_thumbnail_cache()
+        release.set();wait(lambda:not grid_page.loading)
+        assert not grid_page.cache and grid.item(97).icon().isNull()
+        grid_page.load_visible();wait(lambda:not grid.item(97).icon().isNull())
+        assert all(not grid.item(row).icon().isNull() for row in visible)
+        grid.scrollToTop();app.processEvents();grid_page.load_visible()
+        assert grid.item(97).icon().isNull() and not grid.item(0).icon().isNull()
+    finally:
+        release.set();grid_page.close();grid_page.deleteLater()
+        app.sendPostedEvents(None,QtCore.QEvent.Type.DeferredDelete)
+
+
 def test_library_routes_source_and_preserves_layout_editor_drafts(tmp_path):
     from film_foundry.tools.run_desktop_gui import DesktopPanel
     from film_foundry.ui.i18n import language_label
@@ -63,6 +130,8 @@ def test_library_routes_source_and_preserves_layout_editor_drafts(tmp_path):
         assert library.selected()['rating']==4 and library.selected()['favorite']
         wait(lambda:not library.grid.item(0).icon().isNull())
         library.open_selected()
+        assert panel._material_chooser.isVisible()
+        panel._material_chooser.confirm()
         assert panel.input_path.get()==str(path.resolve())
         before=asdict(panel._config());points=panel.curve_editors['tone_curve'].points
         for mode in ('studio','compact','studio'):

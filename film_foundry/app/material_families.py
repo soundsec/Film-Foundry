@@ -57,7 +57,11 @@ OBSERVATION_CHUNK_PIXELS=CHUNK_PIXELS
 
 
 def _checked_observation(image):
-    if image.ndim!=3 or image.shape[2]!=3 or not np.isfinite(image).all() or (image<0).any():
+    from film_foundry.core.material_arrays import array_bounds
+    if image.ndim!=3 or image.shape[2]!=3 or not image.size:
+        raise ValueError("Material observer returned invalid linear RGB")
+    low,high=array_bounds(image)
+    if not np.isfinite(low) or not np.isfinite(high) or low<0:
         raise ValueError("Material observer returned invalid linear RGB")
     return image
 

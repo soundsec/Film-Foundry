@@ -394,6 +394,10 @@ def _material_latent_state(
     from film_foundry.core.film_process.time_history import storage_response
     stored=storage_response(film,material.layer_count)
     if stored is not None:layer_exposure*=stored[0]
+    from ..formation_observer import observer, exposure_row
+    sink = observer.get()
+    if sink is not None:
+        sink.exposure(material, layer_exposure, exposure_row.get())
     state = material.expose(
         layer_exposure,
         preserve_original_developability=False,

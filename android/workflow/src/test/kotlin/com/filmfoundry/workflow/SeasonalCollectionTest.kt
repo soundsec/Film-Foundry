@@ -26,7 +26,10 @@ class SeasonalCollectionTest {
         val original=source.linearRgb.copyOf();val kernel=PhoneReducedKernel()
         val output=mutableListOf<FloatArray>()
         for(pair in pairs) {
-            val recipe=pair.recipe+mapOf(PhoneProcessModels.OPTION to PhoneProcessModels.CURRENT)
+            val recipe=pair.recipe+mapOf(PhoneProcessModels.OPTION to PhoneProcessModels.CURRENT,
+                PhoneFormationProfile.OPTION to PhoneFormationProfile.LIGHTWEIGHT,
+                PhoneMaterialPhenomena.EXPOSURE_OPTION to PhoneMaterialPhenomena.CURRENT,
+                PhoneMaterialPhenomena.DEVELOPMENT_OPTION to PhoneMaterialPhenomena.CURRENT)
             assertEquals(catalog.materials.single { it.id==pair.materialId }.recipe["film"],recipe["film"])
             val latent=kernel.expose(source,recipe);val medium=kernel.develop(latent,recipe)
             val density=medium.opticalDensityRgb.values.copyOf()

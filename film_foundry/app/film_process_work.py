@@ -61,6 +61,9 @@ def describe_work(path):
     return {'run_id': metadata['run_id'], 'next_step': boundary.next_step,
         'total_steps': len(steps), 'steps': steps, 'status': metadata['status'],
         'scope': metadata['scope'], 'source_name': metadata['source_name'],
+        'source_path': metadata.get('source_path'),
+        'material_name': metadata['config'].get('film',{}).get('name',''),
+        'developer_name': metadata['config'].get('chemistry',{}).get('developer_name',''),
         'baths':baths,'bath_revisions':metadata.get('bath_revisions',[]),
         'capabilities':describe_process_capabilities(metadata,baths)}
 
@@ -74,7 +77,7 @@ def start_work(source, output, config, *, stop_after=0, control=None, path_seed_
     runtime, _ = prepare_develop_runtime_config(config)
     rng, seed = rng_and_resolved_seed_for_develop(source, runtime, path_seed_offset=path_seed_offset)
     metadata = {'run_id': str(uuid4()), 'config': asdict(runtime), 'rng_initial': deepcopy(rng.bit_generator.state),
-        'resolved_seed': seed, 'source_name': source.name, 'identity': identity,
+        'resolved_seed': seed, 'source_name': source.name, 'source_path': str(source), 'identity': identity,
         'scope': 'frozen_program_wet_history_v5',
         'preparation': 'restore_spatial_fields_rng_and_wet_inventories'}
     return _run(source, output, latent, runtime, metadata, None, stop_after, control)
@@ -155,6 +158,30 @@ def _run(source, output, latent, config, metadata, boundary, stop_after, control
     attach_frame_identity(medium.metadata, frame_identity_from_mapping(identity))
     medium.metadata['film_process_continuation'] = {'model': MODEL, 'run_id': metadata['run_id'],
         'resumed_from_step': initial_cursor, 'completed_steps': progress['total_steps'], 'scope': metadata['scope'],
+        'source_path': metadata.get('source_path'),
         'bath_revisions':deepcopy(metadata.get('bath_revisions',[]))}
     paths = save_developed_medium_at_path(source, output, medium, config, resolved_seed=metadata['resolved_seed'])
     return FilmProcessWorkResult(output, 'completed', progress['next_step'], progress['total_steps'], paths)
+
+
+def process_result_record(result, source, info):
+    """Index an explicit checkpoint/medium and its parent using the shared result format."""
+    from film_foundry.core.atomic_io import atomic_write_json
+    source=Path(source).resolve();output=Path(result.output_path).resolve()
+    artifacts={key:str(Path(path).resolve()) for key,path in result.artifacts.items() if path is not None}
+    record={'key':'film-process:'+info['run_id'], 'source':str(source),
+            'label':info['source_name'],'family':'film','medium':str(output),
+            'artifacts':artifacts,'cover':artifacts.get('positive_visual_preview',artifacts.get('negative_visual_preview',''))}
+    manifest=output.with_name(output.name+'.result.json')
+    record['artifacts']['result']=str(manifest)
+    atomic_write_json(manifest,record)
+    return record
+
+
+def checkpoint_record(path, info):
+    """Describe an opened checkpoint for the catalogue without changing its files."""
+    from film_foundry.app.catalog_assets import import_record
+    record=import_record(path)
+    if info.get('source_path') and not record.get('source'):record['source']=info['source_path']
+    record['key']='film-process:'+info['run_id'];record['label']=info['source_name']
+    return record

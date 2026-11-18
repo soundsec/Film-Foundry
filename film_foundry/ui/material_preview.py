@@ -1,16 +1,12 @@
 """Embeddable diagnostic preview; worker owns the session, never GUI state."""
-from concurrent.futures import ThreadPoolExecutor
 import copy
 from time import perf_counter
 import numpy as np
 
+from film_foundry.ui.preview_worker import PreviewWorker
 from film_foundry.app.preview_session import PreviewSession
-from film_foundry.ui.qt import QtCore, QtGui, QtWidgets
+from film_foundry.ui.qt import QtCore, QtWidgets
 from film_foundry.ui.curve_editor import text
-
-
-class _Signals(QtCore.QObject):
-    ready = QtCore.Signal(int, object, str)
 
 
 class MaterialPreview(QtWidgets.QWidget):
@@ -18,11 +14,7 @@ class MaterialPreview(QtWidgets.QWidget):
         super().__init__(parent)
         self.config_provider = config_provider
         self.session = renderer if renderer is not None else PreviewSession()
-        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='material-preview')
-        self.signals = _Signals()
-        self.signals.ready.connect(self._ready)
-        pool = self.pool
-        self.destroyed.connect(lambda *_: pool.shutdown(wait=False, cancel_futures=True))
+        self.worker=PreviewWorker(self,'material-preview',self._ready)
         self.generation = 0
         self.busy = False
         self.pending = None
@@ -60,6 +52,8 @@ class MaterialPreview(QtWidgets.QWidget):
         self.generation += 1
         # An old queued request is obsolete even when auto update is disabled.
         self.pending = None
+        self.timer.stop()
+        self.worker.cancel()
         if self.frames is not None:self.status.setText(text('参数已更改','Settings changed'))
         details = {
             'color24': ('24 个合成 sRGB 色块，包含肤色、自然色、饱和色及六级中性灰；不是实测校色卡。', '24 synthetic sRGB swatches: skin, natural and saturated colours plus six neutrals; not a measured calibration card.'),
@@ -73,11 +67,20 @@ class MaterialPreview(QtWidgets.QWidget):
         super().showEvent(event)
         if self.automatic.isChecked():self.timer.start()
 
+    def hideEvent(self,event):
+        super().hideEvent(event)
+        self.timer.stop()
+        if self.automatic.isChecked():
+            self.generation+=1
+            self.pending=None
+            self.worker.cancel()
+
     def request(self,*_):
         self.timer.stop()
         try:config=copy.deepcopy(self.config_provider())
         except (ValueError,TypeError) as exc:self.status.setText(str(exc));return
         self.generation += 1
+        self.worker.cancel()
         self.pending = (self.generation, self.target.currentData(), config)
         self._start()
 
@@ -85,23 +88,25 @@ class MaterialPreview(QtWidgets.QWidget):
         if self.busy or self.pending is None:return
         generation, kind, config = self.pending;self.pending=None;self.busy=True
         self.status.setText(text('预览计算中…','Rendering preview…'))
-        session,signals=self.session,self.signals
-        def run():
+        self._active_generation=generation
+        session=self.session
+        def render(control):
             start=perf_counter()
-            try:
-                source,result,hit=session.render_target(kind,config)
-                status=text('复用','Reused') if hit else text('完成','Rendered')
-                frames=(source,result);status+=f' · {perf_counter()-start:.2f} s'
-            except Exception as exc:frames=None;status=str(exc)
-            try:signals.ready.emit(generation,frames,status)
-            except RuntimeError:pass
-        self.pool.submit(run)
+            source,result,hit=session.render_target(kind,config)
+            return (source,result),hit,perf_counter()-start
+        self.worker.submit(render)
 
-    def _ready(self,generation,frames,status):
+    @QtCore.Slot(object)
+    def _ready(self,future):
         self.busy=False
-        if generation==self.generation:
-            self.status.setText(status)
-            if frames is not None:self.frames=frames;self._display()
+        if self._active_generation==self.generation:
+            try:
+                self.frames,hit,elapsed=future.result()
+            except Exception as exc:self.status.setText(str(exc))
+            else:
+                status=text('复用','Reused') if hit else text('完成','Rendered')
+                self.status.setText(status+f' · {elapsed:.2f} s')
+                self._display()
         self._start()
 
     def _display(self,*_):
@@ -109,12 +114,14 @@ class MaterialPreview(QtWidgets.QWidget):
         source,result=self.frames
         if self.display.currentIndex()==2:
             height=max(source.shape[0],result.shape[0])
-            frames=[np.pad(a,((0,height-a.shape[0]),(0,0),(0,0)),constant_values=.12) for a in (source,result)]
-            pixels=np.concatenate(frames,axis=1)
+            width=source.shape[1]
+            pixels=np.full((height,width+result.shape[1],3),.12,dtype=np.result_type(source,result))
+            pixels[:source.shape[0],:width]=source
+            pixels[:result.shape[0],width:]=result
         else:pixels=source if self.display.currentIndex()==1 else result
         pixels=np.ascontiguousarray(np.clip(pixels*255+.5,0,255).astype(np.uint8))
-        h,w=pixels.shape[:2]
-        self.pixmap=QtGui.QPixmap.fromImage(QtGui.QImage(pixels.data,w,h,pixels.strides[0],QtGui.QImage.Format.Format_RGB888).copy())
+        from film_foundry.ui.image_view import ImageView
+        self.pixmap=ImageView.rgb_pixmap(pixels)
         self._fit()
 
     def _fit(self):

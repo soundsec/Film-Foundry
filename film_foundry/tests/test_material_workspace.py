@@ -52,7 +52,9 @@ def test_seven_families_resume_exact_formation_and_source(tmp_path):
 
 def test_prepared_plate_retains_optical_exposure_without_source_file(tmp_path):
     source=formed('wet');medium=tmp_path/'wet.npz';source.save_products(medium)
-    session=MaterialLabSession('plate');session.open_medium(medium,long_edge=0)
+    session=MaterialLabSession('plate')
+    session.storage_precision='full'  # This test compares resumed plate fields exactly.
+    session.open_medium(medium,long_edge=0)
     for op in ('prepare','polish','sensitize'):session.process(op,seed=31)
     path=tmp_path/'optical.ffworkspace'
     archive.save_material_workspace(path,[archive.snapshot_document(session,{})]);medium.unlink()
@@ -97,6 +99,9 @@ def test_workspace_reopens_seven_drafts_without_replacing_live_pages(panel,tmp_p
     for kind in FAMILIES:
         page=panel._show_material_workspace(kind);originals.append(page)
         page.session=formed(kind);page._restore_controls();page._sync()
+        # This test asserts exact array identity after I/O; auto storage is
+        # intentionally allowed to quantize appearance fields to FP16.
+        page.processing_bar.full_precision.setChecked(True)
         page.view_ev.setValue(.7);page.work_size.setValue(900)
         page.set_workspace_layout('studio' if kind in ('peel','paper') else 'compact')
         if kind in ('peel','integral','plate'):page.seconds.setValue(57)

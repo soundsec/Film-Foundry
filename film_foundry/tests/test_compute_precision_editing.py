@@ -118,9 +118,10 @@ def test_material_action_undo_redo_rotation_preserves_formed_arrays(tmp_path,kin
         wait(lambda:not page.busy);page.close();_application().processEvents()
 
 
-def test_preset_filters_intersect_without_changing_index():
+def test_preset_filters_intersect_without_changing_index(tmp_path,monkeypatch):
     from film_foundry.ui.qt import _application
     from film_foundry.ui.preset_picker import PresetPicker
+    monkeypatch.setenv('FILM_FOUNDRY_UI_SETTINGS',str(tmp_path/'ui.json'))
     _application()
     picker=PresetPicker(None,'Presets',('Warm','Warm','Cool'),0,records=[
         {'key':'warm_stock','origin':'builtin','color':'color'},

@@ -303,14 +303,14 @@ def test_historical_script_entry_points_open_new_desktop(monkeypatch):
     assert calls == ["new","new"]
 
 
-def test_output_page_leads_and_smits_turns_on_without_a_file():
+def test_navigation_follows_formation_and_smits_turns_on_without_a_file():
     from film_foundry.tools.run_desktop_gui import DesktopPanel
     from film_foundry.ui.i18n import current_language,set_language
     previous=current_language();set_language("zh_CN")
     panel=DesktopPanel()
     try:
-        assert panel.page_index["output"]==0 and panel.page_index["scan"]==3
-        assert panel.navigation.item(0).text()=="任务与输出"
+        assert panel.page_index["output"]==3 and panel.page_index["scan"]==2
+        assert panel.navigation.item(0).text()=="材料与曝光"
         assert panel._profiles["spectral_exposure_profile"] is None
         panel._enable_smits_exposure()
         profile=panel._profiles["spectral_exposure_profile"]

@@ -10,6 +10,7 @@ import math
 import numpy as np
 from film_foundry.core.material_structure import StructureMaterial
 from film_foundry.core import transfer_environment as environment, material_defects as defects
+from film_foundry.core.material_arrays import array_bounds
 
 FIELDS = {'developer_available', 'developer_used', 'developer_inactive',
           'alkali_remaining', 'alkali_neutralized', 'neutralizer_remaining', 'neutralization_clock'}
@@ -62,11 +63,11 @@ def initialize(fields, material, inactive_fraction):
 def validate(fields, shape, material=None):
     for key in FIELDS:
         expected = shape if key in RGB_FIELDS else shape[:2]
-        if fields[key].shape != expected or np.any(fields[key] < 0):
+        if fields[key].shape != expected or array_bounds(fields[key])[0]<0:
             raise ValueError('Invalid finite reagent field: '+key)
     if material is None:
         for key in INITIAL_FIELDS:
-            if fields[key].shape != shape[:2] or np.any(fields[key] < 0):
+            if fields[key].shape != shape[:2] or array_bounds(fields[key])[0]<0:
                 raise ValueError('Invalid reagent source: '+key)
         developer, alkali, acid = (fields[key] for key in INITIAL_FIELDS)
     else:
@@ -79,7 +80,7 @@ def validate(fields, shape, material=None):
             raise ValueError('Finite reagent inventory is not conserved')
     if not np.allclose(fields['developer_used'], fields['received']+fields['transfer_loss']+fields['developed_donor'],rtol=2e-6,atol=3e-6):
         raise ValueError('Developer use disagrees with formed image material')
-    if material is not None and np.any(fields['neutralization_clock']>material.neutralization_delay_seconds+material.neutralization_seconds+1e-3):
+    if material is not None and array_bounds(fields['neutralization_clock'])[1]>material.neutralization_delay_seconds+material.neutralization_seconds+1e-3:
         raise ValueError('Neutralization clock exceeds the release window')
 
 
@@ -87,6 +88,40 @@ def _consumed(substrate, developer, exposure):
     gap = np.abs(substrate-developer)
     y = np.divide(-np.expm1(-gap*exposure), gap, out=np.array(exposure, copy=True), where=gap>0)
     return np.minimum(np.minimum(substrate, developer), substrate*developer*y/(1+np.minimum(substrate, developer)*y))
+
+
+def _illuminated_transfer(remaining,substrate,developer,consumed,rate,light,b,acid):
+    """The same 12-node, FP64 quadrature on only chemically active entries.
+
+    Exhausted/neutralized regions transfer exactly zero. A sparse interval
+    needs no logarithms or exponentials there; dense intervals retain their
+    ordinary layout. Constant-alkali intervals share one unchanged divisor.
+    """
+    from .execution_topology import reference_execution_enabled
+    reference=reference_execution_enabled()
+    selected=None;shape=consumed.shape
+    if not reference:
+        active=(consumed>0)&(remaining>0)
+        if np.count_nonzero(active)<active.size*.75:
+            selected=active
+            remaining,substrate,developer,consumed,rate,light,b,acid=(
+                np.broadcast_to(value,shape)[active] for value in
+                (remaining,substrate,developer,consumed,rate,light,b,acid))
+    gap=np.abs(substrate-developer);least=np.minimum(substrate,developer)
+    greatest=np.maximum(substrate,developer);integral=np.zeros_like(consumed)
+    constant_divisor=(b+np.sqrt(np.maximum(b*b,0.)) if not reference and not np.any(acid) else None)
+    for node,weight in zip(_NODES,_WEIGHTS):
+        extent=consumed*((node+1)*.5)
+        denominator=np.maximum((least-extent)*greatest,1e-300)
+        q=np.divide(np.log1p(extent*gap/denominator),gap,out=extent/denominator,where=gap>1e-12)
+        q=np.divide(q,rate,out=np.zeros_like(q),where=rate>0)
+        divisor=constant_divisor if constant_divisor is not None else b+np.sqrt(np.maximum(b*b-2*acid*q,0.))
+        time=np.divide(2*q,divisor,out=np.zeros_like(q),where=divisor>0)
+        integral+=weight*np.exp(-light*time)
+    transferred=remaining*np.divide(consumed*.5*integral,substrate,out=np.zeros_like(consumed),where=substrate>0)
+    if selected is None:return transferred
+    result=np.zeros(shape,np.float64);result[selected]=transferred
+    return result
 
 
 def _interval(f, dt, rate, light, alkali, acid_rate, yield_fraction, stain, neutralizing=False):
@@ -105,21 +140,7 @@ def _interval(f, dt, rate, light, alkali, acid_rate, yield_fraction, stain, neut
     if np.any(light) and np.any(consumed):
         # Integrate chemical conversion of transferable material. Light changes
         # which pool is developable, but not the total undeveloped substrate.
-        gap = np.abs(substrate-developer); least = np.minimum(substrate, developer)
-        greatest = np.maximum(substrate, developer); integral = np.zeros_like(consumed)
-        for node, weight in zip(_NODES, _WEIGHTS):
-            extent = consumed*((node+1)*.5)
-            denominator = np.maximum((least-extent)*greatest, 1e-300)
-            q = np.divide(np.log1p(extent*gap/denominator), gap,
-                          out=extent/denominator, where=gap>1e-12)
-            q = np.divide(q, rate, out=np.zeros_like(q), where=rate>0)
-            # Invert b*t - acid*t²/2 without cancellation; constant alkali is
-            # the acid=0 case of the same expression.
-            divisor = b+np.sqrt(np.maximum(b*b-2*acid*q, 0.))
-            time = np.divide(2*q, divisor, out=np.zeros_like(q), where=divisor>0)
-            integral += weight*np.exp(-light*time)
-        transferred = remaining*np.divide(consumed*.5*integral, substrate,
-                                           out=np.zeros_like(consumed), where=substrate>0)
+        transferred = _illuminated_transfer(remaining,substrate,developer,consumed,rate,light,b,acid)
         # Acid arrest also closes this model's light-sensitive reaction window.
         # This keeps one long advance consistent with stopping at neutralization.
         retained = remaining*(1-fraction)*np.exp(-light*light_time)
@@ -127,11 +148,14 @@ def _interval(f, dt, rate, light, alkali, acid_rate, yield_fraction, stain, neut
         transferred = np.minimum(np.minimum(transferred, consumed), drop)
         fogged = drop-transferred
     else:
-        transferred = remaining*fraction
+        # The transferable portion cannot exceed the chemical conversion.
+        # Division followed by multiplication can overshoot consumed by one
+        # ULP at an empty donor pool, otherwise creating negative donor silver.
+        transferred = np.minimum(remaining*fraction, consumed)
         retained = (remaining-transferred)*np.exp(-light*light_time) if np.any(light) else remaining-transferred
         fogged = remaining-transferred-retained
     f.update(remaining=retained, immobile=immobile+fogged,
-             developed_donor=developed+consumed-transferred,
+             developed_donor=developed+(consumed-transferred),
              received=f['received']+transferred*yield_fraction,
              transfer_loss=f['transfer_loss']+transferred*(1-yield_fraction),
              developer_available=np.maximum(developer-consumed, 0.),
@@ -151,25 +175,20 @@ def advance(state, seconds):
     yields = (1-warm*np.array([.28,.07,.015])-cold*np.array([.015,.06,.27]) if channels==3 else 1-.15*(warm+cold))
     stain = warm*np.array([0,.08,.13])+cold*np.array([.05,.005,0])
     illumination = (1-settings.get('light_protection',1.))*settings.get('ambient_light',1.)*m.light_sensitivity*.025
-    changed = ('remaining','immobile','received','developed_donor','transfer_loss','stain_density',
-               'developer_available','developer_used','alkali_remaining','alkali_neutralized','neutralizer_remaining','neutralization_clock')
+    from . import transfer_compute
+    changed = transfer_compute.CHANGED
+    rate_parameters=(thermal,m.reaction_seconds,m.inhibitor_sensitivity,illumination,yields,
+                     state.elapsed_seconds,seconds,m.neutralizer_capacity,m.neutralization_seconds)
     fields = dict(state.fields)
-    for key in changed: fields[key] = np.empty_like(state.fields[key])
     h,w = state.fields['coverage'].shape
     def rows(start, stop):
         f = {key: np.array(state.fields[key][start:stop], np.float64, copy=True) for key in changed}
         original = {key: value[start:stop] for key,value in state.fields.items()}
-        coverage = original['coverage']; contact = original['contact']
-        rate = thermal/m.reaction_seconds*original['channel_activity']*(coverage*contact*np.exp(-3*m.inhibitor_sensitivity*original['inhibitor']))[...,None]
-        yield_fraction = np.clip(yields,0,1)*original['transfer_yield']
-        light = illumination*10**(-original['inhibitor'][...,None]*environment.RESIDUE_RGB)
-        if channels == 1: light = light.mean(axis=-1,keepdims=True)
-        before = np.clip(original['arrival_seconds']-state.elapsed_seconds,0,seconds)
+        rate,light,after_light,before,timer_rate,acid_rate,yield_fraction=transfer_compute.prepare_rates(original,*rate_parameters)
         if illumination and np.any(before):
             _interval(f,before,np.zeros_like(rate),light,f['alkali_remaining'],np.zeros_like(before),yield_fraction,0.)
         duration = seconds-before
-        light = light*(.04+.6*(1-coverage))[...,None]
-        timer_rate = thermal*contact
+        light = after_light
         clock = f['neutralization_clock']
         # Three analytic intervals: before acid access, linear acid release,
         # after release. Frame splitting cannot change these material boundaries.
@@ -181,7 +200,6 @@ def advance(state, seconds):
         to_end = np.divide(np.maximum(m.neutralization_delay_seconds+m.neutralization_seconds-clock,0),timer_rate,
                            out=np.full_like(clock,np.inf),where=timer_rate>0)
         release = np.minimum(left,to_end)
-        acid_rate = coverage*m.neutralizer_capacity/m.neutralization_seconds*timer_rate
         _interval(f,release,rate,light,f['alkali_remaining'],acid_rate,yield_fraction,stain,m.neutralizer_capacity>0)
         neutralized = np.minimum(f['alkali_remaining'], np.minimum(f['neutralizer_remaining'],acid_rate*release))
         f['alkali_remaining'] -= neutralized; f['alkali_neutralized'] += neutralized; f['neutralizer_remaining'] -= neutralized
@@ -189,11 +207,27 @@ def advance(state, seconds):
         f['neutralization_clock'] = np.minimum(clock+(left)*timer_rate,m.neutralization_delay_seconds+m.neutralization_seconds)
         for key in changed: fields[key][start:stop] = f[key]
     from film_foundry.core.material_parallel import run_rows
-    run_rows(h,w,rows,chunk_pixels=131072)
+    gpu_fields=transfer_compute.try_advance(state.fields,rate_parameters,m.neutralization_delay_seconds,
+        m.neutralization_seconds,m.neutralizer_capacity>0,_NODES,_WEIGHTS,stain)
+    if gpu_fields is None:
+        for key in changed:fields[key]=np.empty_like(state.fields[key])
+        run_rows(h,w,rows,chunk_pixels=131072)
+    else:fields.update(gpu_fields)
     fields['exposure_response'] = fields['immobile']
     snapshot = defects.record_event(state.process_json,'advance',seconds=seconds,temperature_c=temperature,
         light_protection=settings.get('light_protection',1.),ambient_light=settings.get('ambient_light',1.))
-    return replace(state,elapsed_seconds=state.elapsed_seconds+seconds,fields=fields,process_json=snapshot)
+    try:
+        return replace(state,elapsed_seconds=state.elapsed_seconds+seconds,fields=fields,process_json=snapshot)
+    except ValueError as exc:
+        if gpu_fields is None:raise
+        # A driver result must also pass the original cross-pool invariants.
+        # Rebuild all changed pools from the immutable source on failure.
+        from .desktop_compute import reject
+        reject(f'Transfer inventory rejected GPU output: {exc}')
+        for key in changed:fields[key]=np.empty_like(state.fields[key])
+        run_rows(h,w,rows,chunk_pixels=131072)
+        fields['exposure_response']=fields['immobile']
+        return replace(state,elapsed_seconds=state.elapsed_seconds+seconds,fields=fields,process_json=snapshot)
 
 
 def optical_progress(fields, material):

@@ -44,6 +44,20 @@ def test_capacity_consumes_both_images_and_shortage_never_catches_up():
     assert inactive.fields['developer_used'].mean()<full.fields['developer_used'].mean()
 
 
+def test_empty_donor_pool_cannot_gain_negative_silver_from_roundoff():
+    remaining=np.array([[[.3105434583131119]]],np.float64)
+    developer=np.array([[[.2660740148124535]]],np.float64)
+    dose=np.array([[[1.8994039537054226]]],np.float64)
+    zeros=np.zeros_like(remaining)
+    fields=dict(remaining=remaining.copy(),immobile=zeros.copy(),developed_donor=zeros.copy(),
+                developer_available=developer.copy(),developer_used=zeros.copy(),received=zeros.copy(),
+                transfer_loss=zeros.copy(),stain_density=zeros.copy())
+    inv._interval(fields,np.ones((1,1)),dose,np.zeros_like(dose),np.ones((1,1)),np.zeros((1,1)),1.,0.)
+    assert fields['developed_donor'].min()>=0
+    np.testing.assert_allclose(fields['remaining']+fields['received'],remaining,rtol=0,atol=1e-16)
+    np.testing.assert_allclose(fields['received']+fields['developed_donor'],fields['developer_used'],rtol=0,atol=1e-16)
+
+
 def test_dark_partition_and_future_environment_preserve_three_budgets():
     base=contact(peel.PeelMaterial(neutralizer_capacity=1.4,neutralization_delay_seconds=35,neutralization_seconds=60),
                  reagent_load=.8,spread_seconds=8,coverage=.9,contact=.75,roller_streaks=.2,reagent_leak=.2)

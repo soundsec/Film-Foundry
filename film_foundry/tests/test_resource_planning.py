@@ -113,7 +113,7 @@ def test_process_file_error_budget_stops_before_pixel_decode(tmp_path, monkeypat
     def fail_if_decoded(_path, **_kwargs):
         raise AssertionError("memory preflight must run before load_image")
 
-    monkeypatch.setattr(engine, "load_image_with_color", fail_if_decoded)
+    monkeypatch.setattr(engine, "load_formation_image", fail_if_decoded)
     with pytest.raises(MemoryError, match="Estimated pipeline peak"):
         engine.process_file(input_path, output_path, config)
 

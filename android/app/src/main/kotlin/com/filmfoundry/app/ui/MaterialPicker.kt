@@ -88,7 +88,8 @@ class MaterialPicker(private val activity: ComponentActivity,private val shell: 
                         control.checkCancel()
                         val bitmap=runCatching {
                             val film=all.first { it.id==item.id }.film
-                            val rgb=sampleCache.render(CameraEffectsPreview.Request(film,selected=sampleRecipes[item.id].orEmpty(),longEdge=160),emptyMap(),check=control::checkCancel)
+                            val rgb=sampleCache.render(CameraEffectsPreview.Request(film,capture=PhoneMaterialDefaults.previewCaptureSettings(),
+                                selected=sampleRecipes[item.id].orEmpty(),longEdge=160),emptyMap(),check=control::checkCancel)
                             observationBitmap(OpticalPreviewSession.Observation(rgb.shape[1],rgb.shape[0],rgb.values,rgb.shape[1],rgb.shape[0],emptyMap()),control)
                         }.getOrElse { control.checkCancel();null }
                         activity.runOnUiThread { if(stale() || activity.isDestroyed) bitmap?.recycle() else deliver(item.id,bitmap) }

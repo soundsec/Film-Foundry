@@ -13,11 +13,12 @@ class HardwareComputeSelfTestTest {
         override fun transmit(density: FloatArray)=DensityTransmissionCompute.reference(density)
         override fun transmitSpectral(amounts: FloatArray,post: FloatArray?,plan: SpectralTransmissionPlan)=plan.reference(amounts,post)
         override fun encodeOutput(linear: FloatArray,plan: com.filmfoundry.kernel.ScanOutputPlan)=plan.reference(linear)
+        override fun develop(input: FloatArray,plan: com.filmfoundry.kernel.FilmDevelopmentPlan)=plan.reference(input)
         override fun close() { closed=true }
     }
     @Test fun fallbackIsNeverReportedAsGpuTiming() {
         val report=HardwareComputeSelfTest { error("Device has no compute backend") }.run()
-        assertEquals(5,report.measurements.size)
+        assertEquals(6,report.measurements.size)
         assertTrue(report.measurements.all { it.gpuMs==null && !it.recommendGpu && it.detail.contains("CPU fallback") })
     }
     @Test fun detectsIncorrectLargeOutputEvenAfterSmallQualificationPasses() {

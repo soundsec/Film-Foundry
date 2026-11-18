@@ -41,8 +41,10 @@ def test_controls_reset_pairing_and_library_mode(desktop,tmp_path):
     panel.film_preset_display.set(label);panel._on_film_preset_display_selected()
     assert panel.develop_time.get()==9.1 and not panel.auto_develop.get()
     panel.auto_develop.set(True);panel.link_scanner.set(True)
-    for action in panel._view_submenus[1].actions():
-        if 'English' in action.text():action.trigger();break
+    panel.open_global_settings()
+    dialog=panel._settings_dialog
+    dialog.language.setCurrentIndex(dialog.language.findData('en_US'))
+    dialog.reject()
     assert panel.auto_develop.get() and panel.link_scanner.get()
 
 

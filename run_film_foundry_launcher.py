@@ -83,9 +83,9 @@ class FoundryLauncher:
         language_combo = ui.Choice(language_row, textvariable=self.language, values=language_options(), width=14, state="readonly")
         language_combo.pack(side="left")
         language_combo.bind("<<ComboboxSelected>>", self._change_language)
-        from film_foundry.ui.theme import current_theme
+        from film_foundry.ui.theme import current_theme, THEME_KEYS
         self.theme_display = ui.TextValue(value=tr("theme." + current_theme()))
-        self.theme_keys = {tr("theme." + key): key for key in ("dark", "ivory")}
+        self.theme_keys = {tr("theme." + key): key for key in THEME_KEYS}
         self.theme_combo = ui.Choice(language_row, textvariable=self.theme_display, values=tuple(self.theme_keys), state="readonly", width=10)
         self.theme_combo.pack(side="left", padx=(12, 0))
         self.theme_combo.bind("<<ComboboxSelected>>", self._change_theme)

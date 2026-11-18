@@ -1,7 +1,8 @@
 package com.filmfoundry.platform
 
 /** Optional row math backend. Receives frozen numeric plans, never platform/UI or medium ownership. */
-interface SrgbRowCompute: AutoCloseable,com.filmfoundry.kernel.DensityTransmissionCompute {
+interface SrgbRowCompute: AutoCloseable,com.filmfoundry.kernel.DensityTransmissionCompute,com.filmfoundry.kernel.FilmDevelopmentCompute {
+    override fun develop(input: FloatArray,plan: com.filmfoundry.kernel.FilmDevelopmentPlan): FloatArray?=null
     override fun transmit(density: FloatArray): FloatArray=throw UnsupportedOperationException("Density compute unavailable")
     fun linearize(encoded: FloatArray): FloatArray
     override fun transmitSpectral(amounts: FloatArray,post: FloatArray?,plan: com.filmfoundry.kernel.SpectralTransmissionPlan): FloatArray =

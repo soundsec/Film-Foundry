@@ -9,60 +9,74 @@
       "recipe": {
         "film": {
           "name": "Clear Modern Negative",
+          "medium_family": "film",
+          "medium_process": "negative",
           "image_polarity": "negative",
           "color_process": "color",
+          "halation_strength": 0.075,
+          "halation_threshold": 0.78,
+          "halation_softness": 0.16,
+          "halation_core_radius": 0.0032,
+          "halation_outer_radius": 0.014,
+          "halation_core_mix": 0.66,
+          "halation_color": [
+            1.0,
+            0.44,
+            0.2
+          ],
           "contrast": 1.06,
+          "emulsion_mtf_strength": 0.18,
           "hd_gamma": [
-            0.6,
-            0.63,
-            0.59
+            0.72,
+            0.72,
+            0.72
           ],
           "density_max": [
-            1.82,
-            1.9,
-            1.74
+            1.88,
+            1.88,
+            1.88
           ],
           "log_exposure_toe": [
-            -2.25,
-            -2.18,
-            -2.28
+            -2.2,
+            -2.2,
+            -2.2
           ],
           "log_exposure_shoulder": [
             0.5,
-            0.52,
-            0.47
+            0.5,
+            0.5
           ],
           "layer_sensitivity_matrix": [
             [
-              0.84,
-              0.12,
-              0.04
+              0.94,
+              0.045,
+              0.015
             ],
             [
-              0.1,
-              0.79,
-              0.11
+              0.03,
+              0.94,
+              0.03
             ],
             [
-              0.05,
-              0.19,
-              0.76
+              0.015,
+              0.045,
+              0.94
             ]
           ],
           "dye_absorption_matrix": [
             [
-              1.02,
-              0.1,
+              1.0,
+              0.04,
+              0.02
+            ],
+            [
+              0.04,
+              1.0,
               0.04
             ],
             [
-              0.08,
-              1.01,
-              0.12
-            ],
-            [
-              0.03,
-              0.15,
+              0.02,
+              0.04,
               1.0
             ]
           ],
@@ -86,6 +100,16 @@
             0.08,
             0.07,
             0.06
+          ],
+          "grain_scales": [
+            0.0006,
+            0.0015,
+            0.004
+          ],
+          "grain_scale_weights": [
+            0.78,
+            0.18,
+            0.04
           ]
         }
       }
@@ -98,12 +122,25 @@
       "recipe": {
         "film": {
           "name": "Warm Consumer Negative",
+          "medium_family": "film",
+          "medium_process": "negative",
           "image_polarity": "negative",
           "color_process": "color",
+          "halation_strength": 0.2,
+          "halation_threshold": 0.68,
+          "halation_softness": 0.2,
+          "halation_core_radius": 0.0045,
+          "halation_outer_radius": 0.022,
+          "halation_color": [
+            1.0,
+            0.34,
+            0.12
+          ],
+          "emulsion_mtf_strength": 0.25,
           "hd_gamma": [
-            0.6,
-            0.64,
-            0.58
+            0.66,
+            0.704,
+            0.638
           ],
           "density_max": [
             1.78,
@@ -122,19 +159,19 @@
           ],
           "layer_sensitivity_matrix": [
             [
-              0.84,
-              0.12,
-              0.04
+              0.896,
+              0.078,
+              0.026
             ],
             [
-              0.1,
-              0.77,
-              0.13
+              0.065,
+              0.8505,
+              0.0845
             ],
             [
-              0.06,
-              0.22,
-              0.72
+              0.039,
+              0.143,
+              0.818
             ]
           ],
           "dye_absorption_matrix": [
@@ -174,6 +211,16 @@
             0.08,
             0.07,
             0.06
+          ],
+          "grain_scales": [
+            0.0006,
+            0.0015,
+            0.004
+          ],
+          "grain_scale_weights": [
+            0.78,
+            0.18,
+            0.04
           ]
         }
       }
@@ -186,12 +233,27 @@
       "recipe": {
         "film": {
           "name": "Vivid Balanced Negative",
+          "medium_family": "film",
+          "medium_process": "negative",
           "image_polarity": "negative",
           "color_process": "color",
+          "halation_strength": 0.04,
+          "halation_threshold": 0.86,
+          "halation_softness": 0.13,
+          "halation_core_radius": 0.0026,
+          "halation_outer_radius": 0.01,
+          "halation_core_mix": 0.72,
+          "halation_color": [
+            1.0,
+            0.52,
+            0.28
+          ],
+          "emulsion_mtf_strength": 0.17,
+          "emulsion_blur_radius": 0.0009,
           "hd_gamma": [
-            0.67,
-            0.66,
-            0.64
+            0.737,
+            0.726,
+            0.704
           ],
           "density_max": [
             1.96,
@@ -210,19 +272,19 @@
           ],
           "layer_sensitivity_matrix": [
             [
-              0.94,
-              0.045,
-              0.015
+              0.961,
+              0.02925,
+              0.00975
             ],
             [
-              0.025,
-              0.95,
-              0.025
+              0.01625,
+              0.9675,
+              0.01625
             ],
             [
-              0.015,
-              0.045,
-              0.94
+              0.00975,
+              0.02925,
+              0.961
             ]
           ],
           "dye_absorption_matrix": [
@@ -262,6 +324,16 @@
             0.08,
             0.07,
             0.06
+          ],
+          "grain_scales": [
+            0.0006,
+            0.0015,
+            0.004
+          ],
+          "grain_scale_weights": [
+            0.78,
+            0.18,
+            0.04
           ]
         }
       }
@@ -274,8 +346,15 @@
       "recipe": {
         "film": {
           "name": "Monochrome Push",
+          "medium_family": "film",
+          "medium_process": "negative",
           "image_polarity": "negative",
           "color_process": "monochrome",
+          "halation_strength": 0.05,
+          "halation_threshold": 0.74,
+          "halation_softness": 0.16,
+          "halation_core_radius": 0.003,
+          "halation_outer_radius": 0.012,
           "hd_gamma": [
             0.78,
             0.78,
@@ -305,7 +384,10 @@
             1.0,
             1.0,
             1.0
-          ]
+          ],
+          "silver_grain_strength": 0.038,
+          "silver_grain_radius": 0.0011,
+          "silver_grain_clump_mix": 0.26
         }
       }
     },
@@ -317,8 +399,22 @@
       "recipe": {
         "film": {
           "name": "Standard Color Reversal Transparency",
+          "medium_family": "film",
+          "medium_process": "slide",
           "image_polarity": "positive",
           "color_process": "color",
+          "halation_strength": 0.055,
+          "halation_threshold": 0.82,
+          "halation_softness": 0.13,
+          "halation_core_radius": 0.0026,
+          "halation_outer_radius": 0.01,
+          "halation_core_mix": 0.7,
+          "halation_color": [
+            1.0,
+            0.5,
+            0.24
+          ],
+          "emulsion_mtf_strength": 0.22,
           "hd_gamma": [
             0.82,
             0.826,
@@ -377,6 +473,16 @@
             0.035,
             0.035,
             0.04
+          ],
+          "grain_scales": [
+            0.00055,
+            0.0014,
+            0.0035
+          ],
+          "grain_scale_weights": [
+            0.7,
+            0.23,
+            0.07
           ]
         }
       }
@@ -389,8 +495,20 @@
       "recipe": {
         "film": {
           "name": "Neutral Fine-Grain Monochrome Reversal",
+          "medium_family": "film",
+          "medium_process": "reversal",
           "image_polarity": "positive",
           "color_process": "monochrome",
+          "halation_strength": 0.035,
+          "halation_threshold": 0.83,
+          "halation_softness": 0.14,
+          "halation_core_radius": 0.0022,
+          "halation_outer_radius": 0.008,
+          "halation_color": [
+            1.0,
+            1.0,
+            1.0
+          ],
           "hd_gamma": [
             0.82,
             0.82,
@@ -420,7 +538,10 @@
             1.0,
             1.0,
             1.0
-          ]
+          ],
+          "silver_grain_strength": 0.018,
+          "silver_grain_radius": 0.00065,
+          "silver_grain_clump_mix": 0.16
         }
       }
     },
@@ -432,12 +553,27 @@
       "recipe": {
         "film": {
           "name": "Blue Highlight Negative",
+          "medium_family": "film",
+          "medium_process": "negative",
           "image_polarity": "negative",
           "color_process": "color",
+          "halation_strength": 0.065,
+          "halation_threshold": 0.8,
+          "halation_softness": 0.15,
+          "halation_core_radius": 0.003,
+          "halation_outer_radius": 0.013,
+          "halation_core_mix": 0.68,
+          "halation_color": [
+            1.0,
+            0.46,
+            0.22
+          ],
+          "emulsion_mtf_strength": 0.19,
+          "emulsion_blur_radius": 0.001,
           "hd_gamma": [
-            0.59,
-            0.62,
-            0.74
+            0.649,
+            0.682,
+            0.814
           ],
           "density_max": [
             1.84,
@@ -456,19 +592,19 @@
           ],
           "layer_sensitivity_matrix": [
             [
-              0.85,
-              0.11,
-              0.04
+              0.9025,
+              0.0715,
+              0.026
             ],
             [
-              0.09,
-              0.8,
-              0.11
+              0.0585,
+              0.87,
+              0.0715
             ],
             [
-              0.04,
-              0.16,
-              0.8
+              0.026,
+              0.104,
+              0.87
             ]
           ],
           "dye_absorption_matrix": [
@@ -508,6 +644,16 @@
             0.08,
             0.07,
             0.06
+          ],
+          "grain_scales": [
+            0.0006,
+            0.0015,
+            0.004
+          ],
+          "grain_scale_weights": [
+            0.78,
+            0.18,
+            0.04
           ]
         }
       }
@@ -520,12 +666,27 @@
       "recipe": {
         "film": {
           "name": "Cyan Shadow Warm Highlight Negative",
+          "medium_family": "film",
+          "medium_process": "negative",
           "image_polarity": "negative",
           "color_process": "color",
+          "halation_strength": 0.09,
+          "halation_threshold": 0.76,
+          "halation_softness": 0.18,
+          "halation_core_radius": 0.0035,
+          "halation_outer_radius": 0.016,
+          "halation_core_mix": 0.64,
+          "halation_color": [
+            1.0,
+            0.4,
+            0.16
+          ],
+          "emulsion_mtf_strength": 0.15,
+          "emulsion_blur_radius": 0.0012,
           "hd_gamma": [
-            0.7,
-            0.62,
-            0.5
+            0.77,
+            0.682,
+            0.55
           ],
           "density_max": [
             1.9,
@@ -544,19 +705,19 @@
           ],
           "layer_sensitivity_matrix": [
             [
-              0.86,
-              0.1,
-              0.04
+              0.909,
+              0.065,
+              0.026
             ],
             [
-              0.09,
-              0.8,
-              0.11
+              0.0585,
+              0.87,
+              0.0715
             ],
             [
-              0.04,
-              0.18,
-              0.78
+              0.026,
+              0.117,
+              0.857
             ]
           ],
           "dye_absorption_matrix": [
@@ -596,6 +757,16 @@
             0.08,
             0.07,
             0.06
+          ],
+          "grain_scales": [
+            0.0006,
+            0.0015,
+            0.004
+          ],
+          "grain_scale_weights": [
+            0.78,
+            0.18,
+            0.04
           ]
         }
       }
@@ -608,12 +779,24 @@
       "recipe": {
         "film": {
           "name": "Red Rich Negative",
+          "medium_family": "film",
+          "medium_process": "negative",
           "image_polarity": "negative",
           "color_process": "color",
+          "halation_strength": 0.16,
+          "halation_threshold": 0.7,
+          "halation_softness": 0.2,
+          "halation_core_radius": 0.0042,
+          "halation_outer_radius": 0.02,
+          "halation_color": [
+            1.0,
+            0.28,
+            0.1
+          ],
           "hd_gamma": [
-            0.64,
-            0.67,
-            0.6
+            0.704,
+            0.737,
+            0.66
           ],
           "density_max": [
             1.84,
@@ -632,19 +815,19 @@
           ],
           "layer_sensitivity_matrix": [
             [
-              0.88,
-              0.09,
-              0.03
+              0.922,
+              0.0585,
+              0.0195
             ],
             [
-              0.11,
-              0.77,
-              0.12
+              0.0715,
+              0.8505,
+              0.078
             ],
             [
-              0.05,
-              0.21,
-              0.74
+              0.0325,
+              0.1365,
+              0.831
             ]
           ],
           "dye_absorption_matrix": [
@@ -684,6 +867,16 @@
             0.08,
             0.07,
             0.06
+          ],
+          "grain_scales": [
+            0.0006,
+            0.0015,
+            0.004
+          ],
+          "grain_scale_weights": [
+            0.78,
+            0.18,
+            0.04
           ]
         }
       }
@@ -696,8 +889,20 @@
       "recipe": {
         "film": {
           "name": "High Contrast Push",
+          "medium_family": "film",
+          "medium_process": "negative",
           "image_polarity": "negative",
           "color_process": "color",
+          "halation_strength": 0.14,
+          "halation_threshold": 0.7,
+          "halation_softness": 0.18,
+          "halation_core_radius": 0.004,
+          "halation_outer_radius": 0.018,
+          "halation_color": [
+            1.0,
+            0.38,
+            0.14
+          ],
           "hd_gamma": [
             0.72,
             0.76,
@@ -738,6 +943,16 @@
             0.08,
             0.07,
             0.06
+          ],
+          "grain_scales": [
+            0.0006,
+            0.0015,
+            0.004
+          ],
+          "grain_scale_weights": [
+            0.78,
+            0.18,
+            0.04
           ]
         }
       }
@@ -750,8 +965,20 @@
       "recipe": {
         "film": {
           "name": "Vivid High-Contrast Color Reversal",
+          "medium_family": "film",
+          "medium_process": "slide",
           "image_polarity": "positive",
           "color_process": "color",
+          "halation_strength": 0.065,
+          "halation_threshold": 0.8,
+          "halation_softness": 0.12,
+          "halation_core_radius": 0.0024,
+          "halation_outer_radius": 0.01,
+          "halation_color": [
+            1.0,
+            0.46,
+            0.2
+          ],
           "hd_gamma": [
             0.9,
             0.906,
@@ -811,6 +1038,16 @@
             0.035,
             0.04
           ],
+          "grain_scales": [
+            0.00065,
+            0.0016,
+            0.004
+          ],
+          "grain_scale_weights": [
+            0.66,
+            0.25,
+            0.09
+          ],
           "cross_process_layer_balance": [
             0.76,
             1.19,
@@ -838,8 +1075,15 @@
       "recipe": {
         "film": {
           "name": "Fine Monochrome Negative",
+          "medium_family": "film",
+          "medium_process": "negative",
           "image_polarity": "negative",
           "color_process": "monochrome",
+          "halation_strength": 0.05,
+          "halation_threshold": 0.74,
+          "halation_softness": 0.16,
+          "halation_core_radius": 0.003,
+          "halation_outer_radius": 0.012,
           "hd_gamma": [
             0.58,
             0.58,
@@ -886,7 +1130,10 @@
             0.76,
             0.19,
             0.05
-          ]
+          ],
+          "silver_grain_strength": 0.012,
+          "silver_grain_radius": 0.0006,
+          "silver_grain_clump_mix": 0.12
         }
       }
     },
@@ -898,8 +1145,22 @@
       "recipe": {
         "film": {
           "name": "Amber Color Reversal",
+          "medium_family": "film",
+          "medium_process": "slide",
           "image_polarity": "positive",
           "color_process": "color",
+          "halation_strength": 0.055,
+          "halation_threshold": 0.82,
+          "halation_softness": 0.13,
+          "halation_core_radius": 0.0026,
+          "halation_outer_radius": 0.01,
+          "halation_core_mix": 0.7,
+          "halation_color": [
+            1.0,
+            0.5,
+            0.24
+          ],
+          "emulsion_mtf_strength": 0.22,
           "hd_gamma": [
             0.93,
             0.82,
@@ -992,8 +1253,20 @@
       "recipe": {
         "film": {
           "name": "Cobalt Color Reversal",
+          "medium_family": "film",
+          "medium_process": "slide",
           "image_polarity": "positive",
           "color_process": "color",
+          "halation_strength": 0.065,
+          "halation_threshold": 0.8,
+          "halation_softness": 0.12,
+          "halation_core_radius": 0.0024,
+          "halation_outer_radius": 0.01,
+          "halation_color": [
+            1.0,
+            0.46,
+            0.2
+          ],
           "hd_gamma": [
             0.74,
             1.05,
@@ -1096,8 +1369,20 @@
       "recipe": {
         "film": {
           "name": "Graphic Monochrome Reversal",
+          "medium_family": "film",
+          "medium_process": "reversal",
           "image_polarity": "positive",
           "color_process": "monochrome",
+          "halation_strength": 0.035,
+          "halation_threshold": 0.83,
+          "halation_softness": 0.14,
+          "halation_core_radius": 0.0022,
+          "halation_outer_radius": 0.008,
+          "halation_color": [
+            1.0,
+            1.0,
+            1.0
+          ],
           "hd_gamma": [
             1.65,
             1.65,
@@ -1130,8 +1415,183 @@
           ],
           "contrast": 1.35,
           "grain_strength": 0.045,
-          "silver_grain_strength": 0.06,
-          "silver_grain_clump_mix": 0.6
+          "silver_grain_strength": 0.055,
+          "silver_grain_clump_mix": 0.28,
+          "silver_grain_radius": 0.0009
+        }
+      }
+    },
+    {
+      "id": "monochrome_ortho_negative",
+      "label_zh": "黑白负片 · 正色响应",
+      "label_en": "B&W negative · Orthochromatic response",
+      "source": "phone_rgb_response_approximation_v1",
+      "recipe": {
+        "film": {
+          "name": "B&W negative · Orthochromatic response",
+          "medium_family": "film",
+          "medium_process": "negative",
+          "image_polarity": "negative",
+          "color_process": "monochrome",
+          "halation_strength": 0.05,
+          "halation_threshold": 0.74,
+          "halation_softness": 0.16,
+          "halation_core_radius": 0.003,
+          "halation_outer_radius": 0.012,
+          "hd_gamma": [
+            0.58,
+            0.58,
+            0.58
+          ],
+          "density_max": [
+            1.8,
+            1.8,
+            1.8
+          ],
+          "log_exposure_toe": [
+            -2.05,
+            -2.05,
+            -2.05
+          ],
+          "log_exposure_shoulder": [
+            0.36,
+            0.36,
+            0.36
+          ],
+          "film_base_density_rgb": [
+            0.06,
+            0.06,
+            0.06
+          ],
+          "retained_halide_density_rgb": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "contrast": 0.88,
+          "clear_support_density_rgb": [
+            0.04,
+            0.04,
+            0.04
+          ],
+          "grain_strength": 0.012,
+          "grain_scales": [
+            0.0006,
+            0.0015,
+            0.004
+          ],
+          "grain_scale_weights": [
+            0.76,
+            0.19,
+            0.05
+          ],
+          "silver_grain_strength": 0.012,
+          "silver_grain_radius": 0.0006,
+          "silver_grain_clump_mix": 0.12,
+          "layer_sensitivity_matrix": [
+            [
+              0.02,
+              0.68,
+              0.3
+            ],
+            [
+              0.02,
+              0.68,
+              0.3
+            ],
+            [
+              0.02,
+              0.68,
+              0.3
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "monochrome_blue_sensitive_negative",
+      "label_zh": "黑白负片 · 蓝敏响应",
+      "label_en": "B&W negative · Blue-sensitive response",
+      "source": "phone_rgb_response_approximation_v1",
+      "recipe": {
+        "film": {
+          "name": "B&W negative · Blue-sensitive response",
+          "medium_family": "film",
+          "medium_process": "negative",
+          "image_polarity": "negative",
+          "color_process": "monochrome",
+          "halation_strength": 0.05,
+          "halation_threshold": 0.74,
+          "halation_softness": 0.16,
+          "halation_core_radius": 0.003,
+          "halation_outer_radius": 0.012,
+          "hd_gamma": [
+            0.58,
+            0.58,
+            0.58
+          ],
+          "density_max": [
+            1.8,
+            1.8,
+            1.8
+          ],
+          "log_exposure_toe": [
+            -2.05,
+            -2.05,
+            -2.05
+          ],
+          "log_exposure_shoulder": [
+            0.36,
+            0.36,
+            0.36
+          ],
+          "film_base_density_rgb": [
+            0.06,
+            0.06,
+            0.06
+          ],
+          "retained_halide_density_rgb": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "contrast": 0.88,
+          "clear_support_density_rgb": [
+            0.04,
+            0.04,
+            0.04
+          ],
+          "grain_strength": 0.012,
+          "grain_scales": [
+            0.0006,
+            0.0015,
+            0.004
+          ],
+          "grain_scale_weights": [
+            0.76,
+            0.19,
+            0.05
+          ],
+          "silver_grain_strength": 0.012,
+          "silver_grain_radius": 0.0006,
+          "silver_grain_clump_mix": 0.12,
+          "layer_sensitivity_matrix": [
+            [
+              0.01,
+              0.09,
+              0.9
+            ],
+            [
+              0.01,
+              0.09,
+              0.9
+            ],
+            [
+              0.01,
+              0.09,
+              0.9
+            ]
+          ]
         }
       }
     }
@@ -1149,8 +1609,25 @@
             1.0,
             1.0
           ],
+          "scanner_response_matrix": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
           "print_mapping_mode": "sigmoid",
-          "scan_saturation": 1.1,
+          "scan_saturation": 1.0,
           "scan_normalize": true,
           "scan_normalize_strength": 1.0,
           "scan_normalize_mode": "luma",
@@ -1187,6 +1664,23 @@
             1.0,
             1.0,
             1.0
+          ],
+          "scanner_response_matrix": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
           ],
           "print_mapping_mode": "sigmoid",
           "scan_saturation": 1.1,
@@ -1263,6 +1757,23 @@
             1.0,
             1.0,
             1.0
+          ],
+          "scanner_response_matrix": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
           ],
           "print_mapping_mode": "sigmoid",
           "scan_saturation": 1.1,
@@ -1813,6 +2324,9 @@
     "monochrome_fine_negative",
     "color_reversal_amber",
     "color_reversal_cobalt",
-    "monochrome_reversal_graphic"
-  ]
+    "monochrome_reversal_graphic",
+    "monochrome_ortho_negative",
+    "monochrome_blue_sensitive_negative"
+  ],
+  "revision": "phone_reduced_materials_v3"
 }

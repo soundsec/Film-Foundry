@@ -18,6 +18,7 @@ class GlesSrgbRowCompute: SrgbRowCompute {
     private val bufferBytes=IntArray(4)
     private var coefficients: com.filmfoundry.kernel.SpectralTransmissionPlan?=null
     private var outputCoefficients: com.filmfoundry.kernel.ScanOutputPlan?=null
+    private var formationCoefficients: com.filmfoundry.kernel.FilmDevelopmentPlan?=null
     private var sizeUniform=-1
     private var operationUniform=-1
     private var waveUniform=-1
@@ -57,6 +58,8 @@ class GlesSrgbRowCompute: SrgbRowCompute {
         }
     }
     override fun linearize(encoded: FloatArray)=execute(encoded,0)
+    override fun develop(input: FloatArray,plan: com.filmfoundry.kernel.FilmDevelopmentPlan): FloatArray =
+        execute(input,4,formationPlan=plan)
     override fun transmit(density: FloatArray)=execute(density,1)
     override fun transmitSpectral(amounts: FloatArray,post: FloatArray?,plan: com.filmfoundry.kernel.SpectralTransmissionPlan): FloatArray =
         execute(amounts,2,post,plan)
@@ -101,11 +104,11 @@ class GlesSrgbRowCompute: SrgbRowCompute {
         GL.glBufferSubData(GL.GL_SHADER_STORAGE_BUFFER,0,bytes,upload)
     }
     private fun execute(encoded: FloatArray,operation: Int,post: FloatArray?=null,plan: com.filmfoundry.kernel.SpectralTransmissionPlan?=null,
-        outputPlan: com.filmfoundry.kernel.ScanOutputPlan?=null): FloatArray = current {
+        outputPlan: com.filmfoundry.kernel.ScanOutputPlan?=null,formationPlan: com.filmfoundry.kernel.FilmDevelopmentPlan?=null): FloatArray = current {
         require(encoded.size<=DeferredPixelCompute.MAX_GPU_COMPONENTS) { "GPU row buffer exceeds bound" }
         if(encoded.isEmpty()) return@current FloatArray(0)
-        val count=if(operation==2) encoded.size/9 else if(operation==3) encoded.size/3 else encoded.size
-        val outputCount=if(operation==2 || operation==3) count*3 else count
+        val count=if(operation==4) encoded.size/8 else if(operation==2) encoded.size/9 else if(operation==3) encoded.size/3 else encoded.size
+        val outputCount=if(operation==4) count*6 else if(operation==2 || operation==3) count*3 else count
         val bytes=Math.multiplyExact(outputCount,4)
         if(operation==2) {
             require(encoded.size%9==0 && count<=DeferredPixelCompute.MAX_SPECTRAL_PIXELS && (post==null || post.size==count*3))
@@ -120,13 +123,21 @@ class GlesSrgbRowCompute: SrgbRowCompute {
                 })
                 coefficients=config
                 outputCoefficients=null
+                formationCoefficients=null
             } else GL.glBindBufferBase(GL.GL_SHADER_STORAGE_BUFFER,2,buffers[2])
             upload(3,post ?: floatArrayOf(0f))
         } else if(operation==3) {
             require(encoded.size%3==0)
             val config=requireNotNull(outputPlan)
             if(outputCoefficients!==config) {
-                upload(2,outputParameters(config));outputCoefficients=config;coefficients=null
+                upload(2,outputParameters(config));outputCoefficients=config;coefficients=null;formationCoefficients=null
+            } else GL.glBindBufferBase(GL.GL_SHADER_STORAGE_BUFFER,2,buffers[2])
+            allocate(3,4)
+        } else if(operation==4) {
+            require(encoded.size%8==0 && count<=QualifiedFilmDevelopmentCompute.MAX_SAMPLES)
+            val config=requireNotNull(formationPlan)
+            if(formationCoefficients!==config) {
+                upload(2,config.coefficients());formationCoefficients=config;outputCoefficients=null;coefficients=null
             } else GL.glBindBufferBase(GL.GL_SHADER_STORAGE_BUFFER,2,buffers[2])
             allocate(3,4)
         } else {
@@ -232,6 +243,37 @@ vec3 outputChain(vec3 src) {
 }
 void main() {
     uint i=gl_GlobalInvocationID.x;if(i>=uint(size)) return;
+    if(operation==4) {
+        uint k=i*8u;float h=encoded[k],a=encoded[k+1u],s=encoded[k+2u];
+        float c=encoded[k+3u],d=encoded[k+4u],b=encoded[k+5u];
+        float localRate=encoded[k+6u];int layer=int(encoded[k+7u]);
+        bool interactive=coefficients[1]>0.0,ledger=coefficients[2]>0.0;
+        for(int step=0;step<int(coefficients[0]);step++) {
+            int z=16+step*8;int action=int(coefficients[z]);
+            float f=clamp(coefficients[z+1]*(action<=1 ? localRate : 1.0),0.0,1.0);
+            if(action<=1) {
+                float activated=clamp(a,0.0,1.0),rate=f;
+                if(interactive) {
+                    if(ledger) {
+                        activated=clamp(activated+coefficients[z+2]*f*(1.0-activated),0.0,1.0);
+                        if(coefficients[z+4]!=0.0) rate*=pow(max(activated,0.000001),coefficients[z+4]);
+                    } else if(step==int(coefficients[4])) activated=pow(clamp(activated+coefficients[z+2]*(1.0-activated),0.0,1.0),coefficients[z+3]);
+                    rate=clamp(rate*(1.0-coefficients[z+5]*activated)*(coefficients[3]>0.0 ? coefficients[8+min(layer,2)] : 1.0),0.0,1.0);
+                }
+                float reactive=h*activated,amount=reactive*rate;h=max(0.0,h-amount);s+=amount;
+                if(ledger) a=h>0.00000001 ? clamp(max(0.0,reactive-amount)/h,0.0,1.0) : 0.0;
+                if(action==1 && coefficients[7]>0.0) { float dye=min(c,amount*coefficients[5]);c=max(0.0,c-dye);d+=dye; }
+            } else if(action==2) a+=(1.0-a)*f;
+            else if(action==3) { float amount=s*f;s=max(0.0,s-amount);b+=amount; }
+            else if(action==5) s*=1.0-f;
+            else if(action==4) { h*=1.0-f;b*=1.0-f;if(ledger && h<=0.00000001) a=0.0; }
+            else if(action==6) d*=1.0-f;
+            else if(action==7 && interactive) d*=1.0-f*coefficients[6];
+            if(interactive) d*=1.0-coefficients[z+6];
+        }
+        uint o=i*6u;linear[o]=h;linear[o+1u]=a;linear[o+2u]=s;
+        linear[o+3u]=c;linear[o+4u]=d;linear[o+5u]=b;return;
+    }
     if(operation==3) {
         vec3 result=outputChain(vec3(encoded[i*3u],encoded[i*3u+1u],encoded[i*3u+2u]));
         linear[i*3u]=result.r;linear[i*3u+1u]=result.g;linear[i*3u+2u]=result.b;return;

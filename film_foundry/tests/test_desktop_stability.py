@@ -199,7 +199,7 @@ def test_folded_settings_keep_values_and_language_keeps_workspace_position(panel
     assert len(panel.chemical_stain._views)==bindings
     assert "Tone" in panel.sections["scan.curves"].header.text()
     assert panel.preview_button.master is panel.preview_actions
-    assert panel.clear_preview_cache_button.master is panel.preview_actions
+    assert panel.clear_cache_action in panel.utilities_menu.actions()
     opened=[];monkeypatch.setattr(panel,"_open_editor",lambda module:opened.append(module))
     for button in (panel.material_editor_link,panel.process_editor_link,panel.scanner_editor_link):button.qt.click()
     assert opened==["film_foundry.tools.run_film_material_editor","film_foundry.tools.run_develop_process_editor","film_foundry.tools.run_scanner_render_editor"]

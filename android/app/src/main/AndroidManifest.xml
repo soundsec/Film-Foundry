@@ -31,5 +31,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name="com.filmfoundry.app.ui.ExperimentalMaterialActivity" android:exported="false"
+            android:screenOrientation="portrait" android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
     </application>
 </manifest>

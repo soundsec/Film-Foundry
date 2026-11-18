@@ -1,5 +1,6 @@
 """A finished medium illuminates another material; each stage stays independent."""
 from copy import deepcopy
+from dataclasses import replace
 import json
 import math
 from pathlib import Path
@@ -22,6 +23,20 @@ def select_body(source, body_id=None):
     if not isinstance(source, (DevelopedNegative, MediumBody)):
         raise ValueError('Optical relay requires a finished medium, not a latent or unfinished state')
     return source
+
+
+def receiver_shape(body, relay):
+    if relay.output_shape:
+        return relay.output_shape
+    return body.frame_shape[:2] if isinstance(body,DevelopedNegative) else next(iter(body.fields.values())).shape[:2]
+
+
+def limit_projection(body, relay, long_edge):
+    shape=receiver_shape(body,relay)
+    if not long_edge or max(shape)<=long_edge:
+        return relay
+    scale=long_edge/max(shape)
+    return replace(relay,output_shape=tuple(max(1,round(n*scale)) for n in shape))
 
 
 def _view(relay):
@@ -106,7 +121,7 @@ def expose_on_film(source, config, relay=None, *, body_id=None, source_name='', 
     from film_foundry.core.engine import expose_linear_to_latent
     relay = OpticalRelay.from_value(relay)
     body = select_body(source, body_id)
-    shape = relay.output_shape or (body.frame_shape[:2] if isinstance(body, DevelopedNegative) else next(iter(body.fields.values())).shape[:2])
+    shape = receiver_shape(body, relay)
     record = _record(source, relay, {'kind': 'film', 'family': config.film.medium_family,
                     'receiver_exposure_ev': config.look.exposure_ev}, shape, body_id=body_id, source_name=source_name)
     image = project_medium(source, relay, body_id=body_id)
@@ -123,7 +138,7 @@ def expose_on_family(source, family_name, material, relay=None, *, body_id=None,
     from film_foundry.app.material_families import family
     relay = OpticalRelay.from_value(relay)
     body = select_body(source, body_id)
-    shape = relay.output_shape or (body.frame_shape[:2] if isinstance(body, DevelopedNegative) else next(iter(body.fields.values())).shape[:2])
+    shape = receiver_shape(body, relay)
     group_id = str(uuid4())
     record = _record(source, relay, {'kind': 'family', 'family': family_name, 'group_id': group_id, 'seed': seed},
                      shape, body_id=body_id, source_name=source_name)

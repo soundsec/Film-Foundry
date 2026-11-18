@@ -114,7 +114,10 @@ TIPS.update({
               'Sets equilibrium moisture during air drying. Initial iron-paper humidity also affects exposure; operation settings apply to this interval.')})
 
 
-class _Number(QtWidgets.QDoubleSpinBox):
+from film_foundry.ui.material_controls import ResetNumber,viewing_control,sync_source_preview
+
+
+class _Number(ResetNumber):
     def textFromValue(self,value):return f'{value:.6f}'.rstrip('0').rstrip('.')
 
 
@@ -125,10 +128,14 @@ class SheetLabWindow(MaterialLabWindow):
         self.session=MaterialLabSession(kind);self.kind=kind;self.busy=False;self._closing=False;self.last_error=None
         self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='sheet-'+kind)
         self.signals=_Signals(self);self.signals.done.connect(self._completed)
-        self.setWindowTitle('Film Foundry · '+text(*TITLES[kind]));self.resize(1180,800);self.setMinimumSize(820,580)
+        self.setWindowTitle('Film Foundry · '+text(*TITLES[kind]));self.resize(1180,800);self.setMinimumSize(820,540)
         root=QtWidgets.QWidget();self.setCentralWidget(root);layout=QtWidgets.QVBoxLayout(root)
         heading=QtWidgets.QHBoxLayout();layout.addLayout(heading)
-        title=QtWidgets.QLabel(text(*TITLES[kind])+" · "+text("实验中","Experimental"));title.setStyleSheet('font-size:22px;font-weight:600;padding:8px');heading.addWidget(title);heading.addStretch()
+        title=QtWidgets.QLabel(text(*TITLES[kind])+" · "+text("实验中","Experimental"));title.setObjectName('materialPageTitle');heading.addWidget(title)
+        self.install_material_selection(heading)
+        heading.addStretch()
+        from film_foundry.ui.context_guide import install_material_guide
+        install_material_guide(self,heading)
         self.layout_button=QtWidgets.QPushButton();heading.addWidget(self.layout_button)
         self.layout_button.clicked.connect(lambda:self.set_workspace_layout('studio' if self._workspace_layout=='compact' else 'compact'))
         self.file_bar=QtWidgets.QWidget();bar=QtWidgets.QHBoxLayout(self.file_bar);bar.setContentsMargins(0,0,0,0);layout.addWidget(self.file_bar)
@@ -137,17 +144,22 @@ class SheetLabWindow(MaterialLabWindow):
             button=QtWidgets.QPushButton(text(*label));bar.addWidget(button);button.clicked.connect(callback)
         self._add_recipe_menu(bar)
         bar.addStretch()
+        self.source_polarity_note=QtWidgets.QLabel()
+        self.source_polarity_note.setWordWrap(True)
+        self.source_polarity_note.setObjectName('sectionNote')
+        self.source_polarity_note.setText(text('负感印相：若输入普通正片，将得到明暗反转的影像。这是材料特性；也可先生成底片，再从「光学来源」接触印相。',
+            'Negative-working print: a normal positive image produces reversed tones. This is the material response. You can also make a negative first, then contact-print it using Optical source.'))
+        layout.addWidget(self.source_polarity_note)
         from film_foundry.ui.material_processing import install_processing_bar
         install_processing_bar(self,layout)
-        self.flow_bar=QtWidgets.QHBoxLayout();layout.addLayout(self.flow_bar);self.flow_buttons={};self.flow_sequence=()
+        from film_foundry.ui.stage_button import StageStrip
+        self.flow_bar=StageStrip();layout.addWidget(self.flow_bar);self.flow_buttons={};self.flow_sequence=()
         self.workspace_splitter=QtWidgets.QSplitter();layout.addWidget(self.workspace_splitter,1)
         self.controls_scroll,self.controls,self.left=self._panel();self.workspace_splitter.addWidget(self.controls_scroll)
         self.config_tabs=QtWidgets.QTabWidget();self.left.addWidget(self.config_tabs)
+        self.config_tabs.setTabBarAutoHide(True)
         self.material_group=QtWidgets.QGroupBox(text('材料 · 开始后冻结','Material · frozen after starting'))
         material_layout=QtWidgets.QVBoxLayout(self.material_group);self.material_sections=QtWidgets.QToolBox();material_layout.addWidget(self.material_sections)
-        from film_foundry.ui.theme import colors
-        palette=colors()
-        self.material_sections.setStyleSheet(f'QToolBox::tab {{background:{palette.surface};border:0;border-bottom:1px solid {palette.border};padding:0 8px;min-height:26px;text-align:left;}} QToolBox::tab:selected {{background:{palette.selected};color:{palette.text};font-weight:600;}}')
         self.material_controls={};definition=self.session.material_type()
         self.material_rows={};known=set();sections=list(design.SECTIONS[kind])
         for _,_,keys in sections:known.update(keys)
@@ -160,7 +172,8 @@ class SheetLabWindow(MaterialLabWindow):
         self.config_tabs.addTab(self.material_group,text('材料','Material'))
         self.process_group=QtWidgets.QGroupBox(text('处理步骤','Processing'));process_layout=QtWidgets.QVBoxLayout(self.process_group)
         self.operation_choice=QtWidgets.QComboBox();process_layout.addWidget(self.operation_choice)
-        self.operation_stack=QtWidgets.QStackedWidget();process_layout.addWidget(self.operation_stack)
+        from film_foundry.ui.current_page_stack import CurrentPageStack
+        self.operation_stack=CurrentPageStack();process_layout.addWidget(self.operation_stack)
         self.operation_controls={};self.operation_pages={}
         self.enhancement_intent={}
         for operation,function in self.session.module.OPERATION_FUNCTIONS.items():
@@ -191,6 +204,8 @@ class SheetLabWindow(MaterialLabWindow):
                     'Advance air drying and retain paper moisture. Cyanotype also oxidizes to blue; other image pools remain unchanged.'))
         self.empty_page=self.operation_stack.addWidget(QtWidgets.QWidget())
         self.execute_button=QtWidgets.QPushButton(text('执行此步','Run this step'));process_layout.addWidget(self.execute_button)
+        self.execute_button.setObjectName('primaryAction')
+        self.step_note=QtWidgets.QLabel();self.step_note.setWordWrap(True);process_layout.addWidget(self.step_note)
         self.execute_button.clicked.connect(lambda:self.process(self.operation_choice.currentData()))
         self.standard_button=QtWidgets.QPushButton(text('按当前参数完成标准流程','Complete reference process'));process_layout.addWidget(self.standard_button)
         self.standard_button.setToolTip(text('用于尚未开始的片张。按材料声明的步骤顺序执行，使用各步骤当前设置；误开、碱损伤和指纹需单独施加。','For a fresh sheet. Uses the family reference sequence and current step settings. Opening, alkali damage and handling are separate actions.'))
@@ -205,22 +220,27 @@ class SheetLabWindow(MaterialLabWindow):
         metric_row=QtWidgets.QHBoxLayout();preview.addLayout(metric_row);self.metric_bars=[]
         for _ in range(3):
             progress=QtWidgets.QProgressBar();progress.setRange(0,1000);progress.setTextVisible(True);progress.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            progress.setStyleSheet(f'QProgressBar::chunk {{background:{palette.selected};}}');metric_row.addWidget(progress);self.metric_bars.append(progress)
+            progress.setObjectName('materialMetric');metric_row.addWidget(progress);self.metric_bars.append(progress)
         self.body_choice=QtWidgets.QComboBox();self.body_choice.hide()
         self.view_group=QtWidgets.QGroupBox(text('观察','Observation'));view_layout=QtWidgets.QHBoxLayout(self.view_group);form=QtWidgets.QFormLayout();view_layout.addLayout(form)
-        self.view_ev=self._number(form,text('观看曝光 EV','Viewing EV'),0,-10,10);preview.addWidget(self.view_group)
+        form.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.view_ev=viewing_control(form,text('观看曝光 EV','Viewing EV'),0,-10,10);preview.addWidget(self.view_group)
         self.inspection=QtWidgets.QComboBox();self.inspection.addItem(text('成像观察','Image'),'image');form.addRow(text('查看','Inspect'),self.inspection)
         self.inspection.setToolTip(text('材料分布图只作检查，导出始终使用成像观察。','Material maps are diagnostic only. Export always uses the image observer.'))
         self.view_form=form;self.view_angle=self.light_angle=None
         if kind in TITLES:
             self.angle_form=QtWidgets.QFormLayout();view_layout.addLayout(self.angle_form)
-            self.view_angle=self._number(self.angle_form,text('观看倾角 °','View angle °'),15,-80,80)
-            self.light_angle=self._number(self.angle_form,text('光源倾角 °','Light angle °'),-30,-80,80)
+            self.angle_form.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
+            self.view_angle=viewing_control(self.angle_form,text('观看倾角 °','View angle °'),15,-80,80)
+            self.light_angle=viewing_control(self.angle_form,text('光源倾角 °','Light angle °'),-30,-80,80)
             self.view_angle.valueChanged.connect(self.request_preview);self.light_angle.valueChanged.connect(self.request_preview)
         self.view_group.setToolTip(text('只改变观看与导出，不改变材料形成，也不进入下一次光学曝光。','Changes observation/export only, never formation or the next optical exposure.'))
-        save_bar=QtWidgets.QHBoxLayout();preview.addLayout(save_bar);self.save_buttons={}
-        for key,zh,en in (('state','保存状态','Save state'),('products','保存最终介质','Save medium'),('png','导出图像','Export image')):
-            button=QtWidgets.QPushButton(text(zh,en));save_bar.addWidget(button);button.clicked.connect(lambda checked=False,k=key:self.save_dialog(k));self.save_buttons[key]=button
+        from film_foundry.ui.material_controls import SaveFooter
+        self.save_footer=SaveFooter();save_bar=QtWidgets.QGridLayout(self.save_footer);save_bar.setContentsMargins(0,0,0,0)
+        preview.addWidget(self.save_footer);self.save_buttons={}
+        for i,(key,zh,en) in enumerate((('state','保存材料状态','Save state'),('products','保存最终介质','Save medium'),('png','导出图像…','Export image…'))):
+            button=QtWidgets.QPushButton(text(zh,en));save_bar.addWidget(button,i//2,i%2,1,2 if key=='png' else 1);button.clicked.connect(lambda checked=False,k=key:self.save_dialog(k));self.save_buttons[key]=button
+            if key=='png':button.setObjectName('primaryAction')
         self.history_toggle=self.inspector.history_button;self.history=self.inspector.history
         self.status=QtWidgets.QLabel();layout.addWidget(self.status)
         self.progress=QtWidgets.QProgressBar();self.progress.setRange(0,0);layout.addWidget(self.progress);self.progress.hide()
@@ -228,7 +248,12 @@ class SheetLabWindow(MaterialLabWindow):
         self.view_ev.valueChanged.connect(self.request_preview)
         self.inspection.currentIndexChanged.connect(self.request_preview)
         self.right_scroll,self.right_controls,self.right_layout=self._panel();self.workspace_splitter.addWidget(self.right_scroll)
-        self.set_workspace_layout('compact');self._sync()
+        from film_foundry.ui.preferences import load_preferences
+        self.set_workspace_layout(load_preferences().get('workspace_layout','compact'));self._sync()
+        from film_foundry.ui.layout_memory import install_material_layout
+        install_material_layout(self,(1180,800))
+        for control in self.material_controls.values():
+            (control.currentIndexChanged if isinstance(control,QtWidgets.QComboBox) else control.valueChanged).connect(self._sync_material_selection)
         from film_foundry.ui import material_structure_controls
         material_structure_controls.setup(self)
         if kind=='paper':self.material_controls['kind'].currentIndexChanged.connect(self._sync)
@@ -255,21 +280,26 @@ class SheetLabWindow(MaterialLabWindow):
             control.setCurrentIndex(control.findData(value));form.addRow(label,control)
         else:
             low,high=RANGES.get(key,(0,1));control=_Number();control.setRange(low,high);control.setDecimals(6);control.setValue(value)
-            control.setSingleStep(.05 if high<=10 else 1);control.setKeyboardTracking(False);form.addRow(label,control)
+            from film_foundry.ui.numeric_units import apply_unit
+            control.set_reset_value(value);control.setSingleStep(.05 if high<=10 else 1);control.setKeyboardTracking(False);form.addRow(apply_unit(control,label),control)
         control.setToolTip(text(*TIPS[key]) if key in TIPS else label)
         return control
 
     def set_workspace_layout(self,mode):
         if mode not in ('compact','studio'):raise ValueError('Unknown layout')
+        if getattr(self,'_workspace_layout',None)==mode:return
         self._workspace_layout=mode
         if mode=='studio':
             self.config_tabs.removeTab(self.config_tabs.indexOf(self.process_group));self.right_layout.addWidget(self.process_group);self.right_scroll.show();self.process_group.show()
-            self.workspace_splitter.setSizes([310,560,310])
+            self.workspace_splitter.setSizes([350,500,350])
         else:
             self.right_layout.removeWidget(self.process_group)
-            if self.config_tabs.indexOf(self.process_group)<0:self.config_tabs.addTab(self.process_group,text('工艺','Process'))
-            self.right_scroll.hide();self.workspace_splitter.setSizes([340,840,0])
+            if self.config_tabs.indexOf(self.process_group)<0:self.config_tabs.insertTab(1,self.process_group,text('工艺','Process'))
+            self.right_scroll.hide();self.workspace_splitter.setSizes([440,720,0])
         self.workspace_splitter.setStretchFactor(1,1)
+        from film_foundry.ui.stage_button import sync_tab_titles
+        sync_tab_titles(self)
+        if hasattr(self,'layout_memory'):self.layout_memory.apply('workspace')
         self.layout_button.setText(text('单侧布局','Compact') if mode=='compact' else text('双侧布局','Studio'))
         self.layout_button.setToolTip(text('切换单侧分页 / 左材料右工艺','Switch compact tabs / materials left, processing right'))
 
@@ -293,7 +323,14 @@ class SheetLabWindow(MaterialLabWindow):
         operation=self.operation_choice.currentData()
         if operation:
             label=design.STEP_NAMES[self.kind].get(operation,OPS[operation]);self.execute_button.setText(text(*label))
-        for key,button in self.flow_buttons.items():button.setChecked(key==operation)
+        from film_foundry.ui.stage_button import visited_operations, operation_status
+        visited=visited_operations(self.session)
+        for key,button in self.flow_buttons.items():
+            button.setChecked(key==operation)
+            name=text(*design.STEP_NAMES[self.kind].get(key,OPS[key]))
+            available = key in self.session.operations
+            button.set_stage(name, operation_status(visited,(key,),available), available=available, visited=bool(visited and key in visited))
+        self._enable_execute()
 
     def _select_step(self,operation):
         self.operation_choice.setCurrentIndex(self.operation_choice.findData(operation))
@@ -303,20 +340,24 @@ class SheetLabWindow(MaterialLabWindow):
         sequence=design.WORKFLOWS[self.kind]
         if self.kind=='paper' and self.material_controls['kind'].currentData()=='color':sequence=tuple('bleach_fix' if x=='fix' else x for x in sequence)
         if self.flow_sequence!=sequence:
-            while self.flow_bar.count():self.flow_bar.takeAt(0).widget().deleteLater()
+            self.flow_bar.clear()
             self.flow_buttons={};self.flow_sequence=sequence
             for i,operation in enumerate(sequence):
                 label=design.STEP_NAMES[self.kind].get(operation,OPS[operation])
-                button=QtWidgets.QPushButton(f'{i+1}  '+text(*label));button.setCheckable(True)
-                button.clicked.connect(lambda checked=False,op=operation:self._select_step(op));self.flow_bar.addWidget(button);self.flow_buttons[operation]=button
+                from film_foundry.ui.stage_button import StageButton
+                button=StageButton(i+1,compact=True);button.set_stage(text(*label),'')
+                button.clicked.connect(lambda checked=False,op=operation:self._select_step(op));self.flow_bar.add_stage(button);self.flow_buttons[operation]=button
         for op,button in self.flow_buttons.items():
-            button.setEnabled(not self.busy);button.setToolTip(text('配置本步；只能在允许的阶段执行。','Configure this step. Execution requires a valid material stage.'))
+            button.setEnabled(not self.busy)
 
     def _sync(self):
         session=self.session;state=session.state;group=session.group
+        negative_print=self.kind in ('paper','cyanotype','platinum') and not (self.kind=='paper' and self.material_controls['kind'].currentData()=='direct_positive')
+        self.source_polarity_note.setVisible(negative_print and session.image is not None and state is None and group is None
+            and session.optical_source is None and session.optical_reference is None)
         self.processing_bar.sync()
         self._sync_recipe_actions()
-        self.file_bar.setEnabled(not self.busy);self.process_group.setEnabled(not self.busy);self.view_group.setEnabled(not self.busy)
+        self.file_bar.setEnabled(not self.busy);self.process_group.setEnabled(not self.busy);self.view_group.setEnabled(not self.busy or getattr(self,'_observing',False))
         self.material_group.setEnabled(not self.busy)
         editable=not self.busy and ((state is None and group is None) or getattr(self,'_planning_batch',False))
         for control in self.material_controls.values():control.setEnabled(editable)
@@ -368,11 +409,13 @@ class SheetLabWindow(MaterialLabWindow):
             self.angle_form.setRowVisible(self.view_angle,modern);self.angle_form.setRowVisible(self.light_angle,modern)
         from film_foundry.ui import material_structure_controls
         material_structure_controls.sync(self)
+        self._sync_material_selection()
         if not self.busy:
             stage=text(*STAGES[state.stage]) if state else text('最终介质','Final medium') if group else text('等待曝光','Ready to expose') if session.image is not None else text('打开照片或光学来源','Open image or optical source')
             shape=next(iter(state.fields.values())).shape[:2] if state else next(iter(group.bodies[0].fields.values())).shape[:2] if group else session.image.shape[:2] if session.image is not None else None
-            self.status.setText(stage+(f' · {shape[1]} × {shape[0]}' if shape else '')+(f' · {state.elapsed_seconds:g} s' if state else ''))
+            self.status.setText(stage+(f' · {shape[1]} × {shape[0]}' if shape else '')+(f' · {state.elapsed_seconds:g} s' if state else '')+' · '+session.source_name)
             self.inspector.sync()
+            sync_source_preview(self)
             selected_map=self.inspection.currentData();self.inspection.blockSignals(True);self.inspection.clear();self.inspection.addItem(text('成像观察','Image'),'image')
             for key in sheet_inspection.options(session):self.inspection.addItem(text(*design.INSPECT[key]),key)
             self.inspection.setCurrentIndex(max(0,self.inspection.findData(selected_map)));self.inspection.blockSignals(False)
@@ -383,7 +426,12 @@ class SheetLabWindow(MaterialLabWindow):
                     key,value=values[i];bar.setValue(round(min(1,max(0,value))*1000));bar.setFormat(text(*design.METRICS[key])+f'  {value:.0%}')
                     bar.setToolTip(text('由当前材料场抽样统计；不改变材料或推进工艺。','Sampled from the current material fields; does not change material or advance processing.'))
 
-    def _enable_execute(self):self.execute_button.setEnabled(not self.busy and self.operation_choice.currentData() in self.session.operations)
+    def _enable_execute(self):
+        operation=self.operation_choice.currentData()
+        self.execute_button.setEnabled(not self.busy and operation in self.session.operations)
+        from film_foundry.ui.material_workflow import step_requirement
+        flows=[(text(*design.STEP_NAMES[self.kind].get(op,OPS[op])),(op,)) for op in self.flow_sequence]
+        self.step_note.setText(step_requirement(self.session,operation,flows))
 
     @staticmethod
     def _set_value(control,value):
@@ -405,9 +453,8 @@ class SheetLabWindow(MaterialLabWindow):
                         control.setToolTip(text('上一操作使用空间分布，当前数字是下一次操作设置，不是恢复出的分布。','The recorded step used a spatial field. This number configures the next step; it does not reconstruct that field.'))
                     else:self._set_value(control,event[key])
 
-    def process(self,operation):
-        if not self.processing_bar.source_ready():return False
-        material=self._values(self.material_controls);seed=int(self.seed.value());params=self._values(self.operation_controls.get(operation,{}))
+    def _operation_parameters(self,operation):
+        params=self._values(self.operation_controls.get(operation,{}))
         if self.kind=='wet':
             if operation=='load_enhancer' and self.enhancement_intent['enabled'].isChecked():
                 from film_foundry.app.wet_plate_intent import silver_supply_parameters
@@ -419,6 +466,11 @@ class SheetLabWindow(MaterialLabWindow):
         if self.kind!='wet' and self.session.state is not None and self.session.state.schema_version<(2 if self.kind=='paper' else 3):
             for key in ('region','position_x','position_y','radius','coverage','temperature_c'):
                 if operation in ('wash','clear'):params.pop(key,None)
+        return params
+
+    def process(self,operation):
+        if not self.processing_bar.source_ready():return False
+        material=self._values(self.material_controls);seed=int(self.seed.value());params=self._operation_parameters(operation)
         return self._submit(lambda:self.session.process(operation,params,material,seed),text(*OPS[operation]))
 
     def run_standard(self):

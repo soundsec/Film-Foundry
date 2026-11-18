@@ -14,7 +14,8 @@ def _capture_controls(owner):
     return {
         'values': {key: value.get() for key, value in vars(owner).items() if isinstance(value, ObservableValue)},
         'state': {key: deepcopy(getattr(owner, key)) for key in (
-            '_recipe_base', '_profiles', '_frame_identity', '_path_seed_offsets',
+            '_recipe_base', '_profiles', '_frame_identity', '_path_seed_offsets', '_frame_exposure_offsets',
+            '_scan_version_path', '_film_task_context', '_film_task_context_key',
             '_principle_chemistry', '_expert_operating_mode', '_legacy_effect_controls', '_effect_intent_model')},
         'labels': {key: value.get() for key, value in owner._profile_labels.items()},
         'curves': {key: editor.read() for key, editor in owner.curve_editors.items()},
@@ -71,7 +72,7 @@ class FilmWorkspaceFiles(MaterialWorkspaceFiles):
                     'Use electronic film rolls for roll sessions; this package saves photo or medium sources.'))
             mode = owner.pipeline_mode.get()
             if mode in ('full', 'develop', 'expose'):
-                paths = (owner._selected_photos if mode == 'full' and owner.input_path.get() in owner._selected_photos
+                paths = (owner._selected_photos if owner.input_path.get() in owner._selected_photos
                          else iter_images(Path(owner.input_path.get())))
                 active_path = owner.input_path.get()
             else:
@@ -103,7 +104,9 @@ class FilmWorkspaceFiles(MaterialWorkspaceFiles):
         try:
             owner._active_roll = None
             owner._apply_session_payload(workspace.session)
-            owner._selected_photos = [str(p) for p in workspace.sources] if workspace.session['pipeline_mode'] == 'full' else []
+            owner._selected_photos = [str(p) for p in workspace.sources] if workspace.session['pipeline_mode'] in ('full','expose','develop') else []
+            if owner._selected_photos:
+                owner.input_path.set(owner._selected_photos[workspace.active])
             owner._sync_selected_photos()
             owner.set_workspace_layout(workspace.layout, persist=False)
             self.source_names = dict(zip((str(p.resolve()) for p in workspace.sources), workspace.source_names))
@@ -120,4 +123,5 @@ class FilmWorkspaceFiles(MaterialWorkspaceFiles):
             raise
         finally:
             owner._auto_preview_ready = ready
+        owner.edit_tools.initialize()
         owner._preview_edited()

@@ -183,7 +183,9 @@ def test_desktop_background_restore_missing_presets_and_rollback(panel, tmp_path
     assert files.last_error is None
     assert panel._workspace_layout == 'studio' and len(panel._selected_photos) == 2
     assert panel.input_path.get() == panel._selected_photos[1]
-    assert panel._session_payload()['config'] == before
+    # JSON stores position tuples as lists; compare the persisted recipe values.
+    assert json.loads(json.dumps(panel._session_payload()['config'])) == json.loads(json.dumps(before))
+    assert not panel.edit_tools.history.can_undo
     # Saving after loading uses the complete recipe, despite missing preset files.
     assert files.save_to(path); wait(lambda: not files.busy); assert files.last_error is None
     stable = panel._session_payload(); selection = list(panel._selected_photos)

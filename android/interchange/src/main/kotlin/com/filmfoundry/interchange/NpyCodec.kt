@@ -21,7 +21,10 @@ class FloatNd(val shape: IntArray, val values: FloatArray) {
 }
 
 sealed class NpyValue {
-    data class Float32(val array: FloatNd) : NpyValue()
+    /** Float32 in memory; selected independent appearance fields may use IEEE binary16 on disk. */
+    data class Float32(val array: FloatNd,val storageBits: Int=32) : NpyValue() {
+        init { require(storageBits==16 || storageBits==32) }
+    }
     data class UnicodeScalar(val text: String) : NpyValue()
 }
 
@@ -47,7 +50,16 @@ object NpyCodec {
         }
         when (value) {
             is NpyValue.Float32 -> {
-                output.write(header("<f4", value.array.shape))
+                output.write(header(if(value.storageBits==16) "<f2" else "<f4", value.array.shape))
+                if(value.storageBits==16) {
+                    for(v in value.array.values) {
+                        require(v.isFinite() && v in -65504f..65504f) { "Value exceeds finite FP16 storage" }
+                        scratch.putShort(binary16(v).toShort())
+                        if(!scratch.hasRemaining()) flushChunk()
+                    }
+                    if(scratch.position()!=0) flushChunk()
+                    return
+                }
                 val values=value.array.values;val floats=scratch.asFloatBuffer()
                 var offset=0
                 while(offset<values.size) {
@@ -76,6 +88,23 @@ object NpyCodec {
     }
 
     fun decode(bytes: ByteArray): NpyValue = read(ByteArrayInputStream(bytes), bytes.size.toLong())
+
+    /** Round to nearest, ties to even; subnormals and signed zero are retained. */
+    private fun binary16(value: Float): Int {
+        val bits=value.toRawBits();val sign=(bits ushr 16) and 0x8000
+        val exponent=((bits ushr 23) and 255)-127+15
+        val mantissa=bits and 0x7fffff
+        if(exponent< -10) return sign
+        val shift=if(exponent<=0) 14-exponent else 13
+        val significand=if(exponent<=0) mantissa or 0x800000 else mantissa
+        var result=if(exponent<=0) significand ushr shift else (exponent shl 10) or (significand ushr shift)
+        val remainder=significand and ((1 shl shift)-1);val halfway=1 shl (shift-1)
+        if(remainder>halfway || remainder==halfway && result and 1!=0) result++
+        return sign or result
+    }
+
+    /** Nearest IEEE binary16 value, expressed as Float32. Ties round to even. */
+    fun roundBinary16(value: Float): Float = halfToFloat(binary16(value))
 
     /** Reads one NPY without closing the stream. maxBytes includes header and payload. */
     fun read(input: InputStream, maxBytes: Long = MAX_BYTES): NpyValue = readValue(input, maxBytes, true)!!

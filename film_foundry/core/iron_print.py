@@ -228,7 +228,11 @@ def validate_body(body):
         ('cyanotype_reflection_v' if cyan else 'noble_reflection_v')+str(body.schema_version),spec,cls.MATERIAL,version=body.schema_version)
 
 def observe(body,view=ViewingConditions()):
-    m=validate_body(body);f=body.fields;iron=f['ferric']+f['ferrous']
+    m=validate_body(body);f=body.fields
+    from .observation_compute import sheet
+    accelerated=sheet(body,m,view,'cyanotype' if body.family==CYAN_FAMILY else 'platinum')
+    if accelerated is not None:return s.illuminate(accelerated,body,view)
+    iron=f['ferric']+f['ferrous']
     if body.schema_version>=2:
         if body.family==CYAN_FAMILY:
             pigment=f['blue_pigment'][...,None]

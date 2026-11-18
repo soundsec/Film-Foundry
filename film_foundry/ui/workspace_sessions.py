@@ -41,6 +41,8 @@ class WorkspaceSessions:
         payload=owner._session_payload();payload.pop('created_at',None)
         payload['desktop_work']={
             'selected_photos':list(owner._selected_photos),'layout':owner._workspace_layout,
+            'view':{'page':next((key for key,index in owner.page_index.items() if index==owner.navigation.currentRow()),'scan'),
+                    'comparison':owner.result_view.mode,'divider':owner.result_view.divider},
             'roll_path':str(owner._active_roll.path) if owner._active_roll is not None else None,
             'expert':owner.expert_mode.get(),'expert_mode':owner._expert_operating_mode,
             'principle_chemistry':asdict(owner._principle_chemistry) if owner._principle_chemistry is not None else None,
@@ -63,7 +65,11 @@ class WorkspaceSessions:
         owner=self.owner
         film=pages is None or owner.film_workspace in pages or owner.editor_host in pages
         changed=[]
-        if film and self.film_snapshot()!=self.film_saved:changed.append(owner.film_workspace)
+        if film:
+            current=self.film_snapshot();saved=deepcopy(self.film_saved)
+            # Navigating controls or comparing images is not an unsaved edit.
+            for payload in (current,saved):payload.get('desktop_work',{}).pop('view',None)
+            if current!=saved:changed.append(owner.film_workspace)
         for page in owner._material_windows.values():
             if pages is not None and page not in pages:continue
             if self.material_snapshot(page)!=self.material_saved.get(page):changed.append(page)
@@ -127,7 +133,7 @@ class WorkspaceSessions:
                 payload=self.film_snapshot()
                 path=work_directory()/(datetime.now().strftime('%Y%m%d-%H%M%S-')+uuid4().hex[:6]+'.json')
                 save_session(path,payload)
-                source=payload['paths'].get('input') or payload['paths'].get('developed_medium')
+                source=payload['paths'].get('developed_medium' if payload['pipeline_mode'] in ('scan','develop_latent') else 'input')
                 remember_work(path,'session',Path(source).name if source else text('胶片会话','Film session'))
                 self.film_saved=payload
             materials=[page for page in pages if page in owner._material_windows.values()]
@@ -152,41 +158,63 @@ class WorkspaceSessions:
 
     def open_work(self,path,kind):
         owner=self.owner
+        if kind=='process':return owner.open_film_process_workspace(path)
+        if kind=='session' and (owner._processing or self.pending):
+            owner.status.set(text('请等待当前任务完成后再打开会话。','Wait for the current task before opening a session.'));return False
         def open_now():
             try:
                 if kind=='print':owner._open_print_workspace().open_project(path);return
                 if kind=='film':owner._film_workspace_files.open_from(path);return
                 if kind=='material':owner._workspace_files.open_from(path);return
                 payload=load_session(path)
-                from film_foundry.model.config import DarkroomConfig
-                DarkroomConfig.from_dict(payload['config'])
-                roll_path=payload.get('desktop_work',{}).get('roll_path')
-                from film_foundry.app.electronic_roll import RollSession
-                roll=RollSession(roll_path) if roll_path else None
-                from film_foundry.ui.film_workspace_io import _capture_controls,_restore_controls
-                previous=_capture_controls(owner);photos=list(owner._selected_photos)
-                ready=owner._auto_preview_ready;owner._auto_preview_ready=False
-                try:
-                    owner._active_roll=None;owner._apply_session_payload(payload)
-                    desktop=payload.get('desktop_work',{})
-                    owner._selected_photos=list(desktop.get('selected_photos',[]));owner._sync_selected_photos()
-                    owner.set_workspace_layout(desktop.get('layout',owner._workspace_layout),persist=False)
-                    owner._expert_operating_mode=desktop.get('expert_mode',owner._expert_operating_mode)
-                    owner.expert_mode.set(desktop.get('expert',owner.expert_mode.get()))
-                    chemistry=desktop.get('principle_chemistry')
-                    if chemistry is not None:owner._principle_chemistry=DarkroomConfig.from_dict({'chemistry':chemistry}).chemistry
-                    owner.expert_operation.blockSignals(True);owner.expert_operation.setCurrentIndex(owner.expert_operation.findData(owner._expert_operating_mode));owner.expert_operation.blockSignals(False)
-                    owner._update_expert_visibility()
-                    for bank,config in desktop.get('editors',{}).items():
-                        owner.open_embedded_editor(bank)
-                        owner._editor_windows[bank]._set_controls_from_config(DarkroomConfig.from_dict(config))
-                    owner._active_roll=roll
-                    owner.mode_choice.qt.setEnabled(roll is None);owner.pages[owner.page_index['film']].qt.setEnabled(roll is None)
-                except Exception:
-                    _restore_controls(owner,previous);owner._selected_photos=photos;owner._sync_selected_photos();raise
-                finally:owner._auto_preview_ready=ready
-                owner._preview_session.clear();owner.show_workbench();owner._preview_edited()
+                self.apply_film(payload)
                 self.mark_saved('session');remember_work(path,'session')
             except Exception as exc:QtWidgets.QMessageBox.warning(owner.root.qt,text('无法打开工作','Cannot open work'),str(exc))
         if kind in ('material','film','print'):open_now()  # Each package owns its replacement guard.
         else:self.protect(open_now,pages=[owner.film_workspace])
+
+    def apply_film(self,payload):
+        """Restore a validated parameter payload, without saving or running output."""
+        owner=self.owner
+        from film_foundry.model.config import DarkroomConfig
+        DarkroomConfig.from_dict(payload['config'])
+        roll_path=payload.get('desktop_work',{}).get('roll_path')
+        from film_foundry.app.electronic_roll import RollSession
+        roll=RollSession(roll_path) if roll_path else None
+        from film_foundry.ui.film_workspace_io import _capture_controls,_restore_controls
+        previous=_capture_controls(owner);photos=list(owner._selected_photos)
+        previous_roll=owner._active_roll;previous_layout=owner._workspace_layout
+        owner._preview_timer.stop();owner._preview_pending=False
+        ready=owner._auto_preview_ready;owner._auto_preview_ready=False
+        try:
+            owner._active_roll=None;owner._apply_session_payload(payload)
+            desktop=payload.get('desktop_work',{})
+            owner._selected_photos=list(desktop.get('selected_photos',[]));owner._sync_selected_photos()
+            owner.set_workspace_layout(desktop.get('layout',owner._workspace_layout),persist=False)
+            owner._expert_operating_mode=desktop.get('expert_mode',owner._expert_operating_mode)
+            owner.expert_mode.set(desktop.get('expert',owner.expert_mode.get()))
+            chemistry=desktop.get('principle_chemistry')
+            if chemistry is not None:owner._principle_chemistry=DarkroomConfig.from_dict({'chemistry':chemistry}).chemistry
+            owner.expert_operation.blockSignals(True);owner.expert_operation.setCurrentIndex(owner.expert_operation.findData(owner._expert_operating_mode));owner.expert_operation.blockSignals(False)
+            owner._update_expert_visibility()
+            for bank,config in desktop.get('editors',{}).items():
+                owner.open_embedded_editor(bank)
+                owner._editor_windows[bank]._set_controls_from_config(DarkroomConfig.from_dict(config))
+            owner._active_roll=roll
+            owner.mode_choice.qt.setEnabled(roll is None);owner.pages[owner.page_index['film']].qt.setEnabled(roll is None)
+            owner._sync_task_navigation()
+            view=desktop.get('view',{})
+            page=owner.page_index.get(view.get('page'))
+            if page is not None:owner._navigate_workspace(page)
+            comparison=view.get('comparison','result')
+            if comparison in owner.result_view.MODES:
+                owner.result_view.divider=max(0.,min(1.,float(view.get('divider',.5))))
+                owner.edit_tools.comparison.setCurrentIndex(owner.edit_tools.comparison.findData(comparison))
+                owner.result_view.set_comparison_mode(comparison)
+        except Exception:
+            owner._active_roll=previous_roll
+            _restore_controls(owner,previous);owner._selected_photos=photos;owner._sync_selected_photos()
+            owner.set_workspace_layout(previous_layout,persist=False);raise
+        finally:owner._auto_preview_ready=ready
+        owner.edit_tools.initialize()
+        owner._preview_session.clear();owner.show_workbench();owner._preview_edited()

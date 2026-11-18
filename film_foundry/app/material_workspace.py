@@ -109,7 +109,7 @@ def _check_package(path,manifest):
                 if not _contained(sources/name,path).is_file():raise ValueError('Workspace source is missing')
 
 
-def save_material_workspace(path,documents,*,active=0):
+def save_material_workspace(path,documents,*,active=0,formation_precision=None):
     target=Path(path).absolute()
     if target.suffix.lower()!='.ffworkspace':raise ValueError('Choose a .ffworkspace directory package')
     if target.resolve()!=target:raise ValueError('Workspace must not be a symbolic link or junction')
@@ -143,7 +143,7 @@ def save_material_workspace(path,documents,*,active=0):
                 sidecar=original.with_suffix(original.suffix+'.json')
                 if sidecar.is_file():copy_source(sidecar,name+'.json')
             formation=session.state if session.state is not None else session.group
-            if formation is not None:material_families.save(directory/'formation.npz',formation,precision=session.storage_precision)
+            if formation is not None:material_families.save(directory/'formation.npz',formation,precision=formation_precision or session.storage_precision)
             if session.image is not None:
                 atomic_savez(directory/'exposure.npz',compression_level=1,parallel_compression=thread_count()>1,durable=True,image=session.image)
             reference=session.optical_reference

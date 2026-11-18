@@ -14,7 +14,7 @@ def settings_path():
 
 
 def load_settings():
-    defaults = dict(workspace=str(app_root()), source_folders=[], recent_work=[], leave_policy='ask',
+    defaults = dict(workspace=str(app_root()), source_folders=[], recent_work=[], last_interrupted_batch=None, leave_policy='ask',
                     fast_mode=False, quality='standard', expert=False, expert_mode='expected',
                     resize=False, long_edge=1600, sidebar_items={}, hidden_folders=[])
     path = settings_path()

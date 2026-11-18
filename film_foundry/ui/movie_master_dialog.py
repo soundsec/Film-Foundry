@@ -47,7 +47,7 @@ class MovieMasterDialog(QtWidgets.QDialog):
         self.preview=QtWidgets.QLabel(text('光学母带可在此观察所选帧','Select an optical master to observe a frame'))
         self.preview.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.preview.setMinimumHeight(180)
-        self.preview.setStyleSheet('background:#242424;color:#ddd;')
+        self.preview.setStyleSheet('background:#242424;color:#ffffff;')
         layout.addWidget(self.preview,1)
         self.status=QtWidgets.QLabel(text('等待材料来源','Ready for a material source'))
         self.status.setWordWrap(True);layout.addWidget(self.status)

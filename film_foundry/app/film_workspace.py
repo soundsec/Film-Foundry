@@ -3,12 +3,14 @@
 Original bytes are copied once, without decoding or recompressing images. The
 manifest owns only its listed files; replacement refuses foreign content.
 """
+from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass
 import json
 from pathlib import Path
 import shutil
 
+from film_foundry.app.workspace_jobs import exposure_offsets, validate_exposure_offset
 from film_foundry.app.source_seed import normalize_offsets, offset_for, validate_offset
 from film_foundry.core.atomic_io import atomic_output_directory, atomic_write_json, strict_json_load
 from film_foundry.core.engine import seed_from_path
@@ -50,6 +52,8 @@ def snapshot_film_workspace(session, sources, *, active=0, layout='compact', sou
     if layout not in ('compact', 'studio'):
         raise ValueError('Invalid film workspace layout')
     offsets = normalize_offsets(payload.get('path_seed_offsets'))
+    exposures = exposure_offsets(payload.get('frame_exposure_offsets'))
+    payload['frame_exposure_offsets'] = {str(p.resolve()): exposures[str(p.resolve())] for p in paths if str(p.resolve()) in exposures}
     payload['path_seed_offsets'] = {
         str(p.resolve()): offset_for(p, offsets) if offset_for(p, offsets) is not None else seed_from_path(original, 0)
         for p, original in zip(paths, original_paths)
@@ -97,6 +101,8 @@ def _read_package(root):
         name = _filename(entry.get('file'))
         if name != f'{index + 1:06d}_{_filename(entry.get("name"))}':
             raise ValueError('Invalid ordered film source')
+        if 'exposure_offset_ev' in entry:
+            validate_exposure_offset(entry['exposure_offset_ev'])
         names = [name]
         if entry.get('sidecar') is not None:
             if entry['sidecar'] != name + '.json':
@@ -126,6 +132,7 @@ def save_film_workspace(path, workspace):
         layout=workspace.layout, source_names=workspace.source_names or None)
     payload = deepcopy(workspace.session)
     offsets = payload.pop('path_seed_offsets')
+    exposures = payload.pop('frame_exposure_offsets', {})
     # Complete settings are authoritative; historical preset paths/run outputs
     # must never become dependencies or write destinations on another computer.
     payload.pop('run', None); payload.pop('batch', None)
@@ -148,6 +155,8 @@ def save_film_workspace(path, workspace):
             if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                 raise ValueError(f'Film source changed while saving: {source.name}')
             entry = {'file': name, 'name': workspace.source_names[index], 'seed_offset': offset_for(source, offsets)}
+            if str(source.resolve()) in exposures:
+                entry['exposure_offset_ev'] = exposures[str(source.resolve())]
             sidecar = source.with_suffix(source.suffix + '.json')
             if is_scanner_raw_tiff(source) and sidecar.is_file():
                 shutil.copy2(sidecar, directory / (name + '.json'))
@@ -169,13 +178,15 @@ def load_film_workspace(path):
     payload = deepcopy(manifest['session'])
     sources = tuple(root / 'sources' / entry['file'] for entry in manifest['sources'])
     active = manifest['active']; mode = payload['pipeline_mode']
-    source = sources[active] if len(sources) == 1 or mode == 'full' else root / 'sources'
+    per_frame = mode in ('develop','expose') and any('exposure_offset_ev' in e for e in manifest['sources'])
+    source = sources[active] if len(sources) == 1 or mode == 'full' or per_frame else root / 'sources'
     paths = payload['paths'] = {'input': '', 'developed_medium': '', 'negative': '',
         'output': str(root.parent / (root.stem + '-results'))}
     if mode in ('full', 'develop', 'expose'):
         paths['input'] = str(source)
     else:
         paths['developed_medium'] = paths['negative'] = str(source)
+    payload['frame_exposure_offsets'] = exposure_offsets({str(p.resolve()):entry.get('exposure_offset_ev',0) for p,entry in zip(sources,manifest['sources'])})
     payload['path_seed_offsets'] = {str(p.resolve()): entry['seed_offset'] for p, entry in zip(sources, manifest['sources'])}
     payload.setdefault('ui_options', {})['scan_output_near_source'] = False
     return FilmWorkspace(payload, sources, active, manifest['layout'], tuple(entry['name'] for entry in manifest['sources']))
@@ -194,12 +205,14 @@ def start_film_workspace_run(workspace, output, *, control=None, on_result=None)
     destination = root / ('latent' if mode == 'expose' else 'medium' if mode in ('develop', 'develop_latent') else 'images')
     destination.mkdir()
     items = []
+    stems = Counter(source.stem.casefold() for source in workspace.sources)
     polarity = developed_medium_contract(config)['image_polarity']
     for index, source in enumerate(workspace.sources):
+        item_dir = destination / f'{index+1:06d}' if stems[source.stem.casefold()]>1 else destination
         if mode == 'full': target = destination / f'{index + 1:06d}' / ('scan.' + config.output.format.lower().lstrip('.'))
-        elif mode == 'scan': target = output_path_for(source, destination, config.output.format)
-        elif mode == 'expose': target = latent_path_for(source, destination)
-        else: target = planned_developed_path(source, destination, image_polarity=polarity)
+        elif mode == 'scan': target = output_path_for(source, item_dir, config.output.format)
+        elif mode == 'expose': target = latent_path_for(source, item_dir)
+        else: target = planned_developed_path(source, item_dir, image_polarity=polarity)
         items.append({'input': str(source), 'output': str(target), 'status': 'pending', 'elapsed_seconds': 0.})
     payload['run'] = {'id': run_id, 'directory': str(root), 'actual_output': str(destination),
         'status': 'pending', 'inputs': [str(p) for p in workspace.sources], 'selection_layout': 'numbered'}

@@ -469,6 +469,11 @@ class ScannerConfig:
     spectral_observation_profile: SpectralObservationProfile | None = None
 
     def __post_init__(self) -> None:
+        from film_foundry.contracts.scan_framing import rectangle, straighten_angle, base_reference_rgb
+        self.crop_rect = rectangle(self.crop_rect)
+        self.straighten_degrees = straighten_angle(self.straighten_degrees)
+        self.base_sample_rect = rectangle(self.base_sample_rect)
+        self.base_reference_rgb = base_reference_rgb(self.base_reference_rgb)
         if self.spectral_observation_profile is not None:
             self.spectral_observation_profile = SpectralObservationProfile.from_value(self.spectral_observation_profile)
     # New scanner controls are orthogonal to the developed-medium identity.
@@ -548,6 +553,10 @@ class ScannerConfig:
     scan_normalize_mode: str = "luma"
     scan_black_percentile: float = 0.3
     scan_white_percentile: float = 99.7
+    crop_rect: tuple[float,float,float,float] | None = None
+    straighten_degrees: float = 0.
+    base_sample_rect: tuple[float,float,float,float] | None = None  # Legacy saved region
+    base_reference_rgb: Vector3 | None = None
 
 
 @dataclass(slots=True)
@@ -708,6 +717,8 @@ class FilmBorderConfig:
     advance_marker_offset: tuple[float, float] = (0.0, 0.0)
     advance_marker_style: str = "legacy"
     factory_exposure_ev: float = 0.0
+    # Relative linear RGB lamp radiance, before material/process response.
+    factory_light_color_rgb: tuple[float, float, float] = (1.0, 1.0, 1.0)
     factory_exposure_variation: float = 0.0
     frame_number: int | None = None
     advance_direction: str = "right"
@@ -727,6 +738,9 @@ class FilmBorderConfig:
     imprint_font: str = "legacy"
     imprint_position_xy: tuple[float, float] | None = None
     imprint_scale: float = 1.0
+    # None preserves the selected historical lamp's colour and strength.
+    imprint_light_color_rgb: tuple[float, float, float] | None = None
+    imprint_exposure_ev: float = 0.0
 
 
 @dataclass(slots=True)

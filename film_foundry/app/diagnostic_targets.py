@@ -20,6 +20,12 @@ SWATCHES = (
 
 @lru_cache(maxsize=12)
 def _target(kind, long_edge):
+    if kind == 'astronaut':
+        from pathlib import Path
+        from PIL import Image
+        with Image.open(Path(__file__).resolve().parents[1]/'assets'/'astronaut.png') as photo:
+            photo.thumbnail((long_edge,long_edge),Image.Resampling.LANCZOS)
+            return np.asarray(photo.convert('RGB'), dtype=np.float32) / 255.
     if kind not in TARGETS:
         raise ValueError(f'Unknown diagnostic target: {kind}')
     w = max(96, min(2048, int(long_edge)))

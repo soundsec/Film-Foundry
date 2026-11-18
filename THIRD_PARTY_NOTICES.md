@@ -111,3 +111,7 @@ dependencies, not part of this runtime list.
 - DNG decoding: [rawpy](https://github.com/letmaik/rawpy), MIT; its LibRaw dependency is LGPL-2.1/CDDL-1.0 dual licensed. The wheel retains the original license terms.
 - Ultra HDR JPEG: [imagecodecs](https://github.com/cgohlke/imagecodecs), BSD-3-Clause, using [libultrahdr](https://github.com/google/libultrahdr), Apache-2.0/MIT. No gain-map formula is copied into the formation pipeline.
 - Original notices are retained in `third_party_licenses/input-codecs/`. These describe source-runtime dependencies; regenerate the actual packaged inventory before distributing a new executable.
+
+## Sample photograph
+
+The Eileen Collins portrait is from NASA Great Images, distributed in the public domain with scikit-image. [Image credits](https://scikit-image.org/docs/stable/api/skimage.data.html#skimage.data.astronaut).

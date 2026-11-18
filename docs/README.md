@@ -2,8 +2,9 @@
 
 | 文档 | 内容 |
 | --- | --- |
-| [开发中源码快照 / Source checkpoint](DEVELOPMENT_SNAPSHOT.md) | 2026-11-10 中间留档；新增流程、界面、分享和兼容边界，不是新安装包 |
+| [开发中源码快照 / Source checkpoint](DEVELOPMENT_SNAPSHOT.md) | 2026-11-18 非正式源码的新增功能、运行入口与兼容范围 |
 | [桌面使用指南](DESKTOP_GUIDE.md) | 安装、任务、预览、预设、扫描、导出、CLI 与材料母带 |
+| [桌面翻译指南](TRANSLATING.md) | 导出模板、制作和导入界面语言包 |
 | [材料、工艺与参数参考](REFERENCE.md) | 统一模型、参数字典、光谱、事故、性能与借鉴来源 |
 | [效果展示与配方](SHOWCASE.md) | 风格对照、同潜影不同冲洗、颗粒／MTF／光晕局部 |
 | [更新记录](CHANGELOG.md) | 当前开发快照、桌面0.4.0、Android 0.1.0与历史版本变化 |

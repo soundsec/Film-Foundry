@@ -583,16 +583,8 @@ def estimate_negative_base_transmittance(
     )
 
 
-def balance_negative_base(
-    negative_linear: np.ndarray,
-    base_percentile: float = 99.5,
-    base_samples: np.ndarray | None = None,
-    known_base_transmittance_rgb: np.ndarray | None = None,
-    *,
-    consume_input: bool = False,
-) -> np.ndarray:
-    """去除片基/橙罩颜色；有边框样本时优先使用边框。"""
-    negative_linear = np.asarray(negative_linear, dtype=np.float32)
+def negative_base_reference(negative_linear, base_percentile, base_samples, known_base_transmittance_rgb):
+    """Return the scanner-domain RGB divisor used for clear-base balancing."""
     if known_base_transmittance_rgb is not None:
         known = np.asarray(known_base_transmittance_rgb, dtype=np.float32)
         if known.size != 3 or not np.all(np.isfinite(known)):
@@ -609,6 +601,20 @@ def balance_negative_base(
             raise ValueError("base_samples must contain finite RGB samples")
         samples = np.clip(samples, 1e-6, 1.0).reshape(-1, 3)
         base = np.percentile(samples, 50.0, axis=0).astype(np.float32, copy=False)
+    return base
+
+
+def balance_negative_base(
+    negative_linear: np.ndarray,
+    base_percentile: float = 99.5,
+    base_samples: np.ndarray | None = None,
+    known_base_transmittance_rgb: np.ndarray | None = None,
+    *,
+    consume_input: bool = False,
+) -> np.ndarray:
+    """去除片基/橙罩颜色；有边框样本时优先使用边框。"""
+    negative_linear = np.asarray(negative_linear, dtype=np.float32)
+    base = negative_base_reference(negative_linear,base_percentile,base_samples,known_base_transmittance_rgb)
     denominator = np.maximum(base, 1e-6).reshape(1, 1, 3)
     if (
         consume_input

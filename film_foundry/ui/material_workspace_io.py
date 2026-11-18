@@ -79,7 +79,10 @@ class MaterialWorkspaceFiles(QtCore.QObject):
         owner.workspace_menu.setText(text('正在保存…','Saving…') if operation=='save' else text('正在打开…','Opening…'))
         def done(task):
             try:result=task.result();error=None
-            except Exception as exc:result=None;error=str(exc)
+            except Exception as exc:
+                from film_foundry.app.crash_journal import record_exception
+                record_exception('Workspace '+operation,exc)
+                result=None;error=str(exc)
             self.completed.emit(result,error,operation,str(path))
         self.pool.submit(action).add_done_callback(done)
         return True

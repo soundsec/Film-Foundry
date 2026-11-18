@@ -152,6 +152,21 @@ def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
         positions[name]=value
     if not math.isfinite(config.factory_exposure_ev) or not -4<=config.factory_exposure_ev<=4:
         raise ValueError('Factory exposure must be within -4 to +4 EV')
+    light_colors={}
+    for name in ('factory_light_color_rgb','imprint_light_color_rgb'):
+        value=getattr(config,name)
+        if value is None and name=='imprint_light_color_rgb':
+            light_colors[name]=None
+            continue
+        try:
+            value=tuple(float(v) for v in value)
+        except (TypeError,ValueError) as exc:
+            raise ValueError(name+' requires three linear RGB values within 0–1') from exc
+        if len(value)!=3 or any(not math.isfinite(v) or not 0<=v<=1 for v in value):
+            raise ValueError(name+' requires three linear RGB values within 0–1')
+        light_colors[name]=value
+    if not math.isfinite(config.imprint_exposure_ev) or not -4<=config.imprint_exposure_ev<=4:
+        raise ValueError('Imprint exposure must be within -4 to +4 EV')
     if not math.isfinite(config.factory_exposure_variation) or not 0<=config.factory_exposure_variation<=1:
         raise ValueError('Factory exposure variation must be within 0–1')
     if config.advance_direction not in {'left','right'}:
@@ -186,6 +201,7 @@ def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
         advance_marker_style=config.advance_marker_style,
         **positions,
         factory_exposure_ev=float(config.factory_exposure_ev),
+        **light_colors,
         factory_exposure_variation=float(config.factory_exposure_variation),
         frame_number=None if config.frame_number is None else int(config.frame_number),
         advance_direction=config.advance_direction,
@@ -203,6 +219,7 @@ def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
         imprint_font=config.imprint_font,
         imprint_position_xy=position,
         imprint_scale=float(config.imprint_scale),
+        imprint_exposure_ev=float(config.imprint_exposure_ev),
     )
 
 
@@ -331,6 +348,15 @@ def edge_imprint_is_active(config: FilmBorderConfig) -> bool:
     return style != "none" and bool(edge_imprint_label(config))
 
 
+def imprint_exposure_rgb(config: FilmBorderConfig) -> np.ndarray:
+    """Resolve relative linear lamp dose; the selected style remains the gate."""
+    if config.imprint_style=='none':return np.zeros(3,np.float32)
+    color,strength=_EDGE_IMPRINT_EXPOSURE[config.imprint_style]
+    if config.imprint_light_color_rgb is not None:
+        color=np.asarray(config.imprint_light_color_rgb,dtype=np.float32)
+    return (color*float(strength))*2.**config.imprint_exposure_ev
+
+
 def apply_edge_imprint_to_linear(
     image_linear: np.ndarray,
     border_config: FilmBorderConfig,
@@ -350,9 +376,8 @@ def apply_edge_imprint_to_linear(
     mask = _render_imprint_mask((height, width), validated)
     if mask is None or float(np.max(mask)) <= 1e-8:
         return image_linear, None
-    color, strength = _EDGE_IMPRINT_EXPOSURE[str(validated.imprint_style)]
     flashed = image_linear.copy()
-    flashed += mask[..., None] * (color * float(strength))
+    flashed += mask[..., None] * imprint_exposure_rgb(validated)
     return flashed, mask
 
 

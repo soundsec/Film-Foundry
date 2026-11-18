@@ -33,6 +33,10 @@ def srgb_to_linear(image: Array) -> Array:
 def linear_to_srgb(image: Array, *, consume_input: bool = False) -> Array:
     """把近似线性 RGB 编码回归一化 sRGB。"""
     image = np.asarray(image, dtype=np.float32)
+    if image.ndim==3 and image.shape[-1]==3:
+        from .observation_compute import run
+        accelerated=run('encode_srgb',[image],[0.])
+        if accelerated is not None:return accelerated
     can_consume = (
         consume_input
         and image.dtype == np.float32

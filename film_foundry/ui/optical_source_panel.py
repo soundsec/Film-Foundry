@@ -19,6 +19,8 @@ class OpticalSourcePanel(QtWidgets.QGroupBox):
         super().__init__(text('光学来源 · ','Optical source · ')+Path(path).name,parent)
         if not choices:raise ValueError('No final material bodies')
         self.source_path=str(path);self.choices=choices;default=OpticalRelay()
+        self.local_exposures=()
+        self.receiver=parent
         layout=QtWidgets.QVBoxLayout(self);row=QtWidgets.QHBoxLayout();layout.addLayout(row)
         left=QtWidgets.QFormLayout();right=QtWidgets.QFormLayout();row.addLayout(left,1);row.addLayout(right,1)
         self.body=QtWidgets.QComboBox()
@@ -31,14 +33,40 @@ class OpticalSourcePanel(QtWidgets.QGroupBox):
         self.ev=number(left,text('接收曝光 EV','Receiver exposure EV'),default.exposure_ev,-20,20)
         self.seconds=number(left,text('相对曝光时间 s','Relative exposure time s'),default.exposure_seconds,0,86400)
         self.filters=[number(right,text('滤色密度 '+channel,channel+' filter density'),default.filter_density_rgb[i],0,10) for i,channel in enumerate(('R','G','B'))]
+        self.grade=QtWidgets.QComboBox();self.grade.addItem(text('手动 RGB','Manual RGB'),None)
+        for label in ('00','0','0.5','1','1.5','2','2.5','3','3.5','4','4.5','5'):self.grade.addItem(label,-.5 if label=='00' else float(label))
+        right.addRow(text('可变反差号数（近似）','VC grade (approx.)'),self.grade)
+        def set_grade():
+            grade=self.grade.currentData()
+            if grade is None:return
+            for control,value in zip(self.filters,(0,max(0,grade-2)*.15,max(0,2-grade)*.15)):
+                blocker=QtCore.QSignalBlocker(control);control.setValue(value);del blocker
+        self.grade.currentIndexChanged.connect(set_grade)
+        for control in self.filters:control.valueChanged.connect(lambda:self.grade.setCurrentIndex(0))
         self.filters[1].setToolTip(text('阻挡绿光，提高可变反差纸反差；并非成片色调调整。','Filters green light, raising VC paper contrast. This is exposure filtration.'))
         self.filters[2].setToolTip(text('阻挡蓝光，降低可变反差纸反差。','Filters blue light, lowering VC paper contrast.'))
         self.setToolTip(text('直接观察最终介质后形成下一材料的曝光；不调用扫描反相、调色或归一化，不改来源。相对RGB剂量不是实测光谱或lux·s。',
             'Expose the next material by observing the final medium directly. No scan inversion, color grading or normalization; the source is unchanged. Relative RGB dose, not a measured spectrum or lux·s.'))
         self.body.currentIndexChanged.connect(self.body_changed);self.body_changed()
         actions=QtWidgets.QHBoxLayout();actions.addStretch();layout.addLayout(actions)
+        self.local_button=QtWidgets.QPushButton()
+        self.local_button.clicked.connect(self.edit_local)
+        actions.addWidget(self.local_button);self.update_local()
         cancel=QtWidgets.QPushButton(text('取消','Cancel'));cancel.clicked.connect(self.cancelled);actions.addWidget(cancel)
         apply=QtWidgets.QPushButton(text('载入曝光来源','Load exposure source'));apply.setObjectName('primaryAction');apply.clicked.connect(self.applied);actions.addWidget(apply)
+
+    def update_local(self):
+        self.local_button.setText(text('遮挡 / 加光…','Dodge / burn…')+' ('+str(len(self.local_exposures))+')')
+
+    def edit_local(self):
+        from film_foundry.ui.print_exposures import PrintExposures
+        body,relay=self.selection()
+        dialog=PrintExposures(self,self.source_path,body,relay)
+        try:
+            if dialog.exec()==QtWidgets.QDialog.DialogCode.Accepted:
+                self.local_exposures=tuple(dialog.regions);self.update_local()
+        finally:
+            dialog.deleteLater()
 
     def body_changed(self):
         entry=self.choices[self.body.currentIndex()]
@@ -46,4 +74,4 @@ class OpticalSourcePanel(QtWidgets.QGroupBox):
 
     def selection(self):
         return self.body.currentData(),OpticalRelay(mode=self.mode.currentData(),exposure_ev=self.ev.value(),
-            exposure_seconds=self.seconds.value(),filter_density_rgb=tuple(control.value() for control in self.filters))
+            local_exposures=self.local_exposures,exposure_seconds=self.seconds.value(),filter_density_rgb=tuple(control.value() for control in self.filters))

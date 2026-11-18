@@ -6,6 +6,29 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class ProcessProgramDraftTest {
+    @Test fun leavingTracksBathChangesAndInvalidRawControlsButNotNavigation() {
+        val source=mapOf("program_key" to "color_negative","time_min" to 8.0)
+        val draft=ProcessProgramDraft(source)
+        val initial=mapOf("time_min" to "8.0","developer_type" to "standard","chemistry" to 0)
+        draft.select(1);assertFalse(draft.hasChanges(initial,initial))
+        assertTrue(draft.hasChanges(initial,initial+("time_min" to "-")))
+        assertTrue(draft.hasChanges(initial,initial+("time_min" to "")))
+        assertTrue(draft.hasChanges(initial,initial+("developer_type" to "fine_grain")))
+        assertFalse(draft.hasChanges(initial,initial))
+        assertTrue(draft.edit(0,draft.steps[0]+("temperature_c" to 29.0)))
+        assertTrue(draft.hasChanges(initial,initial))
+        assertEquals("custom",draft.build(emptyMap())["program_key"])
+        assertFalse(source.containsKey("process_steps"))
+        draft.setFree(false,"color_negative")
+        assertFalse(draft.hasChanges(initial,initial)) // Edited rows are unused in the restored native process.
+    }
+    @Test fun leavingTracksCustomReorderingAndRestoration() {
+        val source=mapOf("program_key" to "custom","process_steps" to ProcessSteps.template("color_negative"))
+        val draft=ProcessProgramDraft(source)
+        draft.move(1);assertTrue(draft.hasChanges(emptyMap(),emptyMap()))
+        draft.move(-1);assertFalse(draft.hasChanges(emptyMap(),emptyMap()))
+        draft.remove();assertTrue(draft.hasChanges(emptyMap(),emptyMap()))
+    }
     @Test fun openingAndBrowsingANamedProgramDoesNotConvertItToCustom() {
         val source=mapOf("program_key" to "color_reversal","developer_type" to "lab_mix","future_option" to mapOf("amount" to .7))
         val draft=ProcessProgramDraft(source);draft.select(2)

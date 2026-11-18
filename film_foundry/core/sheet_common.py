@@ -11,7 +11,7 @@ import math
 import numpy as np
 from film_foundry.core import material_defects as defects
 from film_foundry.core.material_family import MediumBody, ProductGroup, ViewingConditions, frame_observation
-from film_foundry.core.material_arrays import freeze_array
+from film_foundry.core.material_arrays import freeze_array,array_bounds
 from film_foundry.core.material_metadata import ProcessAnnotations
 from film_foundry.core.material_family import cached_body_validation
 
@@ -24,7 +24,10 @@ def number(value, name, low=0., high=1.):
 
 def image_rgb(image):
     image=np.asarray(image,dtype=np.float32)
-    if image.ndim!=3 or image.shape[-1]!=3 or min(image.shape[:2])<=0 or not np.isfinite(np.min(image)) or not np.isfinite(np.max(image)) or np.min(image)<0:
+    if image.ndim!=3 or image.shape[-1]!=3 or min(image.shape[:2])<=0:
+        raise ValueError('Exposure requires finite nonnegative HxWx3 linear RGB')
+    low,high=array_bounds(image)
+    if not math.isfinite(low) or not math.isfinite(high) or low<0:
         raise ValueError('Exposure requires finite nonnegative HxWx3 linear RGB')
     return image
 
@@ -39,7 +42,7 @@ def validate_fields(fields,spec,limits=None):
             raise ValueError(f'Invalid shape for {key}')
         if shape is not None and a.shape[:2]!=shape:raise ValueError('Sheet fields must share geometry')
         shape=a.shape[:2]
-        low=float(np.min(a));high=float(np.max(a))
+        low,high=array_bounds(a)
         if not math.isfinite(low) or not math.isfinite(high) or low<0:raise ValueError(f'Invalid pool {key}')
         if key not in ('dose','residue'):
             limit=2. if key in ('ferric','ferrous','spent_ferric','iron_removed') else 1.

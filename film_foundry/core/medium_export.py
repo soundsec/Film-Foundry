@@ -382,6 +382,7 @@ def _save_full_developed_medium_materials(
                         negative=negative,
                         provenance=provenance if config.output.watermark_metadata else None,
                         border_width_px=scanner_raw_border_px,
+                        clear_base_reference_rgb=_clear_base_scanner_sample(config,negative).reshape(3),
                     ),
                 )
                 paths["scanner_raw_sidecar"] = str(scanner_raw_sidecar_path)

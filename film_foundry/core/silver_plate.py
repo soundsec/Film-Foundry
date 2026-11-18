@@ -12,6 +12,7 @@ from film_foundry.core.material_family import MediumBody,ProductGroup,ViewingCon
 from film_foundry.core import material_defects as defects
 from film_foundry.core.material_metadata import ProcessAnnotations
 from film_foundry.core.material_family import cached_body_validation
+from film_foundry.core.material_arrays import array_bounds
 from film_foundry.core import plate_baths as baths, material_structure as ms, scaled_structure as scaled
 from film_foundry.core import plate_gold
 
@@ -84,7 +85,8 @@ def _field_names(version):
 
 def _validate_ranges(fields,version):
     for key,value in fields.items():
-        if np.any(value<0) or (not (version>=4 and key in plate_gold.UNBOUNDED) and np.any(value>1)):
+        low,high=array_bounds(value)
+        if low<0 or (not (version>=4 and key in plate_gold.UNBOUNDED) and high>1):
             raise ValueError('Plate field outside its range: '+key)
 
 
@@ -314,6 +316,12 @@ def observe(body,view=ViewingConditions()):
     if v[2]<=0:raise ValueError("View must face the front of the plate")
     if not math.isfinite(view.exposure_ev) or not -20<=view.exposure_ev<=20:raise ValueError("Invalid viewing exposure")
     f=body.fields
+    if body.schema_version==4:
+        from .observation_compute import run
+        accelerated=run('observe_plate',[f[k] for k in ('polish_x','polish_y','roughness','damage','pit_depth','gold',
+                        'metal_reflectance','particle_reflectance','microtexture','particles','halide','tarnish')],
+                        [*l,*v,*light,*background,2**view.exposure_ev])
+        if accelerated is not None:return accelerated
     # Polishing texture changes local normals, not a final image overlay.
     modern=body.schema_version>=2
     nx=(f["polish_x"]-.5)*.10 if modern else np.sin(f["polish_x"]*2*np.pi)*.01

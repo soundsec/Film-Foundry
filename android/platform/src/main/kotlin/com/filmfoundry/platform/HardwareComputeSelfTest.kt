@@ -92,6 +92,43 @@ class HardwareComputeSelfTest(private val factory: ()->SrgbRowCompute={ GlesSrgb
                 measure("scan_output",outputInput.size/3,2e-6f,2e-5f) { it.encodeOutput(outputInput,outputPlan) ?: outputPlan.reference(outputInput) }
             }
         }
+        checkActive();progress("film_development")
+        val formationPlan=com.filmfoundry.kernel.FilmDevelopmentPlan.prepare(
+            mapOf("program_key" to "color_reversal","developer_exhaustion" to .3),emptyMap(),true)
+        val samples=8192*3
+        val pools=FloatArray(samples*8) { i -> when(i%8) {
+            0,3 -> 1f;1 -> (i/8%251)/250f;6 -> .7f+(i/8%17)/60f;7 -> (i/8%3).toFloat();else -> 0f
+        } }
+        val expected=formationPlan.reference(pools)
+        val cpuTimes=mutableListOf<Long>();val gpuTimes=mutableListOf<Long>()
+        var formationError=0.0;var failure: String?=null
+        val formation=try {
+            val start=System.nanoTime()
+            try { QualifiedFilmDevelopmentCompute(factory(),{backend=it},selectByTiming=false) }
+            finally { initializationNs+=System.nanoTime()-start }
+        } catch(error: Exception) { failure="CPU fallback: ${error.message}";null }
+        formation.use { compute ->
+            fun cpuSample(timed: Boolean) {
+                checkActive();val start=System.nanoTime();formationPlan.reference(pools)
+                if(timed)cpuTimes+=System.nanoTime()-start
+            }
+            fun gpuSample(timed: Boolean) {
+                checkActive();if(failure!=null || compute==null)return
+                val start=System.nanoTime();val actual=compute.develop(pools,formationPlan);val elapsed=System.nanoTime()-start
+                if(actual==null) { failure="CPU fallback: $backend";return }
+                for(i in actual.indices) {
+                    val delta=abs(actual[i]-expected[i])
+                    if(delta>3e-6f+abs(expected[i])*3e-5f) { failure="GPU output differs from CPU";return }
+                    formationError=maxOf(formationError,delta.toDouble())
+                }
+                if(timed)gpuTimes+=elapsed
+            }
+            repeat(2) {cpuSample(false);gpuSample(false)}
+            repeat(7) {if(it%2==0) {cpuSample(true);gpuSample(true)} else {gpuSample(true);cpuSample(true)}}
+        }
+        fun median(values: List<Long>)=values.sorted()[values.size/2]/1e6
+        results+=Measurement("film_development",8192,median(cpuTimes),if(failure==null)median(gpuTimes) else null,
+            if(failure==null)formationError else null,failure ?: backend)
         checkActive()
         return Report(initializationNs/1_000_000.0,results)
     }

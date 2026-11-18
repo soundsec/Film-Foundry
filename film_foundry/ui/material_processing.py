@@ -5,14 +5,16 @@ from film_foundry.ui.curve_editor import text
 from film_foundry.app.material_processing import processing_info
 
 
-class MaterialProcessingBar(QtWidgets.QGroupBox):
+class MaterialProcessingBar(QtWidgets.QWidget):
     def __init__(self, owner):
-        super().__init__(text('处理设置 · 实验中', 'Processing settings · Experimental'))
+        super().__init__()
+        self.setAccessibleName(text('处理设置 · 实验中','Processing settings · Experimental'))
         self.owner = owner
         owner.setWindowTitle(owner.windowTitle()+' · '+text('实验中','Experimental'))
         self.reload_timer=QtCore.QTimer(self);self.reload_timer.setSingleShot(True);self.reload_timer.setInterval(180)
         self.reload_timer.timeout.connect(self._reload_fresh)
         form = QtWidgets.QHBoxLayout(self)
+        form.setContentsMargins(0,0,0,0);form.setSpacing(8)
         self.full_precision=QtWidgets.QCheckBox(text('全高精度保存','Full-precision storage'))
         self.full_precision.setToolTip(text('默认仅外观字段以FP16保存，反应库存保持FP32。勾选保留全部FP32；不改变形成算法，也不恢复已损失的精度。','By default selected appearance fields are stored as FP16, chemistry stays FP32. Check to keep FP32 throughout storage; cannot recover prior quantization.'))
         form.addWidget(self.full_precision)
@@ -26,7 +28,7 @@ class MaterialProcessingBar(QtWidgets.QGroupBox):
         # Retain the existing data-only draft field and legacy zero=original.
         owner.work_size = QtWidgets.QSpinBox(self); owner.work_size.setRange(0, 2147483647)
         owner.work_size.setValue(1600); owner.work_size.hide()
-        self.actual = QtWidgets.QLabel(); form.addWidget(self.actual, 1)
+        self.actual = QtWidgets.QLabel();self.actual.setObjectName('sectionNote');form.addWidget(self.actual, 1)
         self.apply = QtWidgets.QPushButton(text('应用尺寸', 'Apply size')); form.addWidget(self.apply)
         self.apply.setToolTip(text('重新读取原始来源；已有处理需确认后重新开始。', 'Reload the original source. Existing processing is replaced only after confirmation.'))
         self.limit.toggled.connect(self._changed); self.edge.valueChanged.connect(self._changed)
@@ -88,7 +90,34 @@ class MaterialProcessingBar(QtWidgets.QGroupBox):
 
 def install_processing_bar(owner, layout):
     owner.processing_bar = MaterialProcessingBar(owner)
-    layout.addWidget(owner.processing_bar)
+    index=layout.indexOf(owner.file_bar)
+    layout.removeWidget(owner.file_bar)
+    # Keep source actions on the title line. The compact menu fits even when
+    # translated labels or accessibility fonts make the individual buttons wide.
+    heading = layout.itemAt(0).layout()
+    sources = QtWidgets.QToolButton()
+    sources.setText(text('来源与文件', 'Source & files'))
+    sources.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+    menu = QtWidgets.QMenu(sources)
+    size_action=QtWidgets.QWidgetAction(sources)
+    size_action.setDefaultWidget(owner.processing_bar)
+    def sync_sources():
+        menu.clear()
+        for button in owner.file_bar.findChildren(QtWidgets.QAbstractButton):
+            if button.isHidden():continue
+            if button.menu():
+                action = menu.addMenu(button.menu())
+                action.setText(button.text())
+            else:
+                action = menu.addAction(button.text(), button.click)
+            action.setEnabled(button.isEnabled())
+        menu.addSeparator();menu.addAction(size_action)
+    menu.aboutToShow.connect(sync_sources)
+    sources.setMenu(menu)
+    heading.insertWidget(1, sources)
+    owner.file_bar.hide()
+    owner.processing_row = owner.processing_bar
+    size_action.setText(text("形成尺寸与精度","Formation size and precision"))
 
 
 def batch_processing_details(owner):

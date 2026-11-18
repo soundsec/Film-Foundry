@@ -47,6 +47,9 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
     val captureHud=LinearLayout(activity)
     private val captureLensControls=FrameLayout(activity)
     private val captureQuickHost=FrameLayout(activity)
+    private var finderCoach: FinderCoachOverlay?=null
+    private var finderGuidesEnabled=false
+    private var finderGuideRequested=false
     private var quick: FinderQuickControls?=null
     val quickControls: FinderQuickControls get()=quick ?: FinderQuickControls(this).also { quick=it }
     var onCaptureTouchDown: (Float,Float)->Unit={_,_->}
@@ -85,6 +88,19 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
     val developActions=LinearLayout(activity).apply { orientation=LinearLayout.HORIZONTAL;setPadding(dp(12),dp(6),dp(12),dp(6));setBackgroundColor(surface) }
     private var developScroller: ScrollView?=null
     val loadingSurface=FrameLayout(activity).apply { setBackgroundColor(Color.BLACK) }
+    private var veil: View?=null
+    fun fadeToBlack(ms: Long, then: ()->Unit) {
+        val cover=View(activity).apply { setBackgroundColor(Color.BLACK);alpha=0f;isClickable=true }
+        veil?.let { body.removeView(it) }
+        veil=cover
+        body.addView(cover,FrameLayout.LayoutParams(-1,-1))
+        cover.animate().alpha(1f).setDuration(ms).withEndAction { if(veil===cover) then() }
+    }
+    fun liftVeil(ms: Long=0) {
+        val cover=veil ?: return
+        if(ms<=0L) { body.removeView(cover);veil=null;return }
+        cover.animate().alpha(0f).setDuration(ms).withEndAction { if(veil===cover) { body.removeView(cover);veil=null } }
+    }
     private val nav=linkedMapOf<Page,TextView>()
     val status=TextView(activity)
     val pause=Button(activity)
@@ -96,7 +112,19 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
     var onPageChanged: (Page)->Unit={}
     var onBeforeBack: ()->Boolean={ false }
     var onHelpRequested: (Page)->Unit={ select(Page.SETTINGS_GUIDE) }
-    fun openGuide(from: Page=selected) { onHelpRequested(from) }
+    fun openGuide(from: Page=selected) { if(from==Page.CAPTURE) showFinderGuide() else onHelpRequested(from) }
+    fun showFinderGuide() { finderGuideRequested=true;tryFinderGuide() }
+    fun resumeFinderGuides() { finderGuidesEnabled=true;tryFinderGuide() }
+    fun pauseFinderGuides() { finderGuidesEnabled=false;finderGuideRequested=false;finderCoach?.stop() }
+    private fun tryFinderGuide() {
+        val target=finderCoach ?: return
+        val frame=target.parent as? View ?: return
+        if(!finderGuidesEnabled || selected!=Page.CAPTURE || !frame.isShown || frame.width<=frame.height) return
+        val prefs=activity.getSharedPreferences("mobile_ui",android.content.Context.MODE_PRIVATE)
+        if(!finderGuideRequested && prefs.getBoolean("finder_gesture_guide_v1",false)) return
+        closeCaptureMenu();closeQuickControls();target.reveal(autoDismiss=!finderGuideRequested);finderGuideRequested=false
+        prefs.edit().putBoolean("finder_gesture_guide_v1",true).apply()
+    }
     fun scrollToTop(page: Page) { (when(page) { Page.SCAN->scanScroller;Page.DEVELOP->developScroller;else->scrolls[page] as? ScrollView })?.let { scroll -> scroll.post { scroll.scrollTo(0,0) } } }
     fun copy(zh: String,en: String)=if(activity.resources.configuration.locales[0].language == "zh") zh else en
     fun dp(value: Int)=(value*activity.resources.displayMetrics.density).toInt()
@@ -160,6 +188,7 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
             val scroll: View=if(page == Page.CAPTURE) object: FrameLayout(activity) {
                 private var dismissingMenu=false
                 override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+                    if(finderCoach?.consume(event)==true) return true
                     if(event.actionMasked==android.view.MotionEvent.ACTION_DOWN) {
                         onCaptureTouchDown(event.rawX,event.rawY)
                         fun inside(view: View): Boolean {
@@ -190,6 +219,12 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
                 menuScroll.clipToOutline=true;menuScroll.isFillViewport=false
                 addView(menuScroll,FrameLayout.LayoutParams(dp(300),-2,android.view.Gravity.TOP or android.view.Gravity.END).apply { setMargins(dp(8),dp(12),dp(120),dp(12)) })
                 addView(captureDock,FrameLayout.LayoutParams(dp(104),-1,android.view.Gravity.END).apply { rightMargin=dp(8) })
+                addView(Button(activity).apply {
+                    text="?";tag="camera_action";contentDescription=copy("取景器手势提示","Viewfinder gesture guide")
+                    styleButton(this);setOnClickListener { showFinderGuide() }
+                },FrameLayout.LayoutParams(dp(44),dp(44),android.view.Gravity.TOP or android.view.Gravity.END).apply { rightMargin=dp(128);topMargin=dp(8) })
+                finderCoach=FinderCoachOverlay(this@MobileShell).also { addView(it,FrameLayout.LayoutParams(-1,-1)) }
+                addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_->tryFinderGuide() }
             } else if(page == Page.LOADING) loadingSurface
             else if(page == Page.VIEWER) viewerSurface
             else if(page == Page.SCAN) object: LinearLayout(activity) {
@@ -277,6 +312,7 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
     }
     fun select(page: Page,remember: Boolean=true) {
         closeQuickControls()
+        if(page!=Page.CAPTURE) { finderGuideRequested=false;finderCoach?.stop() }
         if(page != selected) {
             if(page.parent != page && remember) history.add(selected) else if(page.parent == page) history.clear()
         }
@@ -299,8 +335,9 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
             item.background=if(key == page.parent) rounded(if(ivory) "#E9E0D1" else "#302B23",18) else null
         }
         onPageChanged(page)
+        if(page==Page.CAPTURE) tryFinderGuide()
     }
-    fun back() { if(selected==Page.SCAN && scanFocused) { focusScan(false);return };if(closeCaptureMenu() || closeQuickControls() || onBeforeBack()) return;select(if(history.isNotEmpty()) history.removeAt(history.lastIndex) else if(selected.parent != selected) selected.parent else Page.START,false) }
+    fun back() { if(finderCoach?.dismiss()==true) return;if(selected==Page.SCAN && scanFocused) { focusScan(false);return };if(closeCaptureMenu() || closeQuickControls() || onBeforeBack()) return;select(if(history.isNotEmpty()) history.removeAt(history.lastIndex) else if(selected.parent != selected) selected.parent else Page.START,false) }
     private fun showCaptureMenu(open: Boolean) {
         menuScroll.visibility=if(open) View.VISIBLE else View.GONE
         navigationIcon(menuArrow,if(open) NavigationIcon.DOWN else NavigationIcon.UP,true)
@@ -363,6 +400,7 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
     fun settingsEntry(zh: String,en: String,zhDetail: String,enDetail: String,page: Page) {
         shortcut(pages.getValue(Page.SETTINGS),zh,en,zhDetail,enDetail) { select(page) }
     }
+    fun settingsShortcut(zh: String,en: String,zhDetail: String,enDetail: String,run: ()->Unit)=shortcut(pages.getValue(Page.SETTINGS),zh,en,zhDetail,enDetail,run)
     /** Secondary navigation uses quiet rows; filled buttons remain for committing actions. */
     fun shortcut(parent: LinearLayout,zh: String,en: String,zhDetail: String="",enDetail: String="",run: ()->Unit): LinearLayout {
         val row=LinearLayout(activity).apply {
@@ -585,7 +623,7 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
         button.refreshDrawableState()
     }
     fun decorate(view: View=root) {
-        if(view is FilmLoadingView) return // Mechanical scene owns its fixed neutral palette.
+        if(view is FilmLoadingView || view is FilmUnloadingView) return // Mechanical scene owns its fixed neutral palette.
         when(view) {
             is CompoundButton -> { view.setTextColor(ink);view.textSize=14f;view.minHeight=dp(48);view.buttonTintList=ColorStateList.valueOf(accent) }
             is Button -> styleButton(view,view.tag == "primary")

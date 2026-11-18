@@ -55,6 +55,14 @@ def test_new_window_workflow_layout_storage_and_immutable_view(kind,tmp_path,mon
     window=create_material_window(kind);window.show()
     try:
         window._submit(lambda:window.session.open_image(path,0),'open');wait(window)
+        source=window.session.image
+        assert window.source_polarity_note.isVisible()==(kind!='wet')
+        if kind=='paper':
+            choice=window.material_controls['kind'];original=choice.currentData()
+            choice.setCurrentIndex(choice.findData('direct_positive'))
+            assert not window.source_polarity_note.isVisible()
+            choice.setCurrentIndex(choice.findData(original))
+            assert window.source_polarity_note.isVisible() and window.session.image is source
         window.set_workspace_layout('studio');_application().processEvents()
         assert window.right_scroll.isVisible() and window.process_group.parent() is window.right_controls
         assert window.process_group.isVisible()
@@ -71,15 +79,15 @@ def test_new_window_workflow_layout_storage_and_immutable_view(kind,tmp_path,mon
         window.view_ev.setValue(.5);window.refresh_preview();wait(window)
         assert window.session.state is before and window.viewer.source is not None
         archive=tmp_path/'medium.ffmaterial.npz'
-        monkeypatch.setattr(QtWidgets.QFileDialog,'getSaveFileName',lambda *a,**k:(str(archive),''))
-        results=[];window.result_ready.connect(results.append);window.save_dialog('products');wait(window)
+        results=[];window.result_ready.connect(results.append);window.save_dialog('products')
+        window._export_dialog.path.setText(str(archive));window._export_dialog.apply();wait(window)
         assert len(results)==1 and results[0]['family']==kind
         assert load(archive).bodies[0].family==window.session.module.FAMILY
         window._submit(lambda:window.session.load(archive),'load',restore_controls=True);wait(window)
         assert window.material_controls['coating_variation'].value()==.4
         assert not window.execute_button.isEnabled()
-        png=tmp_path/'result.png';monkeypatch.setattr(QtWidgets.QFileDialog,'getSaveFileName',lambda *a,**k:(str(png),''))
-        window.save_dialog('png');wait(window)
+        png=tmp_path/'result.png'
+        window.save_dialog('png');window._export_dialog.path.setText(str(png));window._export_dialog.apply();wait(window)
         with Image.open(png) as image:
             assert image.size==(64,48)
             assert json.loads(image.info['FilmFoundryObservation'])['view']['exposure_ev']==.5
@@ -148,7 +156,7 @@ def test_specific_workflow_guides_cyanotype_and_maps_never_become_export(tmp_pat
     window=create_material_window('cyanotype');window.show()
     try:
         window._submit(lambda:window.session.open_image(path,0),'load');wait(window)
-        assert tuple(window.flow_buttons)==('expose','wash','oxidize')
+        assert tuple(window.flow_buttons)==('expose','wash','oxidize','dry')
         assert window.material_sections.itemText(0) in ('纸与刷涂','Paper & brushing')
         for operation,next_op in (('expose','wash'),('wash','oxidize')):
             window.flow_buttons[operation].click();assert window.operation_choice.currentData()==operation
@@ -157,8 +165,39 @@ def test_specific_workflow_guides_cyanotype_and_maps_never_become_export(tmp_pat
         before=window.session.state
         window.inspection.setCurrentIndex(window.inspection.findData('binding'));window.refresh_preview();wait(window)
         assert window.session.state is before
-        png=tmp_path/'image-export.png';monkeypatch.setattr(QtWidgets.QFileDialog,'getSaveFileName',lambda *a,**k:(str(png),''))
+        png=tmp_path/'image-export.png'
         expected=np.uint8(window.session.preview(window.conditions())*255+.5)
-        window.save_dialog('png');wait(window)
+        window.save_dialog('png');window._export_dialog.path.setText(str(png));window._export_dialog.apply();wait(window)
         with Image.open(png) as result:np.testing.assert_array_equal(np.asarray(result),expected)
     finally:window.close();_application().processEvents()
+
+
+def test_wet_stage_strip_expands_selection_and_preserves_each_number(tmp_path, monkeypatch):
+    from film_foundry.ui.qt import QtCore
+    monkeypatch.setenv("FILM_FOUNDRY_UI_SETTINGS", str(tmp_path / "ui.json"))
+    window = create_material_window("wet")
+    window.resize(1024, 576)
+    window.show()
+    try:
+        _application().processEvents()
+        strip = window.flow_bar
+        buttons = strip.buttons
+        assert len(buttons) == 8 and all(b.show_title for b in buttons)
+        assert len({b.y() for b in buttons}) == 1
+        assert all(b.isVisible() and strip.rect().contains(b.geometry()) for b in buttons)
+        narrow = sum(b.compact_widths()[0] for b in buttons) + 150
+        strip.setFixedWidth(narrow)
+        _application().processEvents()
+        collapsed = next(b for b in buttons if not b.show_title)
+        assert collapsed.stage_title in collapsed.toolTip()
+        assert all(b.width() >= b.compact_widths()[0] for b in buttons)
+        collapsed.click()
+        assert collapsed.isChecked() and collapsed.show_title
+        assert collapsed.width() > collapsed.compact_widths()[1]
+        assert window.flow_buttons[window.operation_choice.currentData()] is collapsed
+        collapsed.click()
+        assert collapsed.isChecked()
+        assert all(strip.rect().contains(b.mapTo(strip, QtCore.QPoint(b.width()-1, 0))) for b in buttons)
+        assert window.session.state is None
+    finally:
+        window.close()

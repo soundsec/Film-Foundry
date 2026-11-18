@@ -45,7 +45,7 @@ where = ["."]
 include = ["film_foundry*"]
 
 [tool.setuptools.package-data]
-film_foundry = ["presets/*.json", "presets/*/*.json", "assets/*.svg", "assets/*.png", "assets/*.ico", "assets/*.bin"]
+film_foundry = ["presets/*.json", "presets/*/*.json", "assets/*.svg", "assets/*.png", "assets/*.ico", "assets/*.bin", "assets/selection_examples.sqlite3"]
 
 [tool.pytest.ini_options]
 testpaths = ["film_foundry/tests"]

@@ -58,7 +58,7 @@ def test_partial_save_resume_and_old_history_is_not_invented(tmp_path):
     session=MaterialLabSession('integral');session.image=image()
     session.process('expose',seed=19);session.process('eject')
     session.process('spread',{'temperature_c':26.,'solar_warming':5.})
-    path=tmp_path/'state.npz';session.save(path)
+    path=tmp_path/'state.npz';session.save(path,precision='full')
     resumed=MaterialLabSession('integral');resumed.load(path)
     resumed.process('advance',{'seconds':30});resumed.process('advance',{'seconds':45});resumed.process('stabilize')
     recipe=resumed.recipe();spread=recipe['steps'][2]['parameters']

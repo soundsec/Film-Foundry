@@ -35,6 +35,7 @@ def capture(window):
         'body_index':max(0,window.body_choice.currentIndex()),
         'material_section':window.material_sections.currentIndex(),
         'process_tab':window.config_tabs.currentWidget() is window.process_group,
+        'view_tab':window.config_tabs.currentWidget() is window.view_group,
         'spread_section':window.workflow.spread_sections.currentIndex() if hasattr(window,'workflow') and hasattr(window.workflow,'spread_sections') else 0,
         'histogram':window.inspector.histogram_button.isChecked(),'history':window.inspector.history_button.isChecked(),
         'brightness':window.inspector.histogram.brightness,'logarithmic':window.inspector.histogram.logarithmic}
@@ -88,6 +89,7 @@ def restore(window,draft):
         if index<0:raise ValueError('Invalid pending source body')
         panel.body.setCurrentIndex(index)
         if pending['body'] is not None and panel.mode.currentData()!=relay.mode:raise ValueError('Invalid pending source mode')
+        panel.local_exposures=relay.local_exposures;panel.update_local()
         panel.mode.setCurrentIndex(panel.mode.findData(relay.mode));panel.ev.setValue(relay.exposure_ev);panel.seconds.setValue(relay.exposure_seconds)
         for control,value in zip(panel.filters,relay.filter_density_rgb):control.setValue(value)
         panel.setToolTip(panel.toolTip()+'\n'+text('此来源尚未载入，应用时仍需原介质文件。','This pending source still requires the original material file when applied.'))
@@ -102,9 +104,11 @@ def restore_presentation(window,draft):
     window.material_sections.setCurrentIndex(draft['material_section'])
     choice=window.workflow.choice if hasattr(window,'workflow') else window.operation_choice
     choice.setCurrentIndex(choice.findData(draft['operation']))
-    if draft['layout']=='compact':window.config_tabs.setCurrentWidget(window.process_group if draft['process_tab'] else window.material_group)
+    if draft.get('view_tab'):window.config_tabs.setCurrentWidget(window.view_group)
+    elif draft['layout']=='compact':window.config_tabs.setCurrentWidget(window.process_group if draft['process_tab'] else window.material_group)
     if hasattr(window,'workflow') and hasattr(window.workflow,'spread_sections'):
         window.workflow.spread_sections.setCurrentIndex(draft['spread_section'])
     inspector=window.inspector
-    inspector.histogram.brightness=draft['brightness'];inspector.histogram.logarithmic=draft['logarithmic'];inspector.histogram.update()
+    # Legacy fields remain readable, but opening work must not replace the
+    # user's shared histogram preferences (or affect other open documents).
     inspector.histogram_button.setChecked(draft['histogram']);inspector.history_button.setChecked(draft['history'])

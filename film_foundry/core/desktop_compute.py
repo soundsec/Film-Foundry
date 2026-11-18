@@ -40,12 +40,16 @@ def status():
         opencl=_opencl_status()
         development=sys.modules.get('film_foundry.core.development_compute')
         grain=sys.modules.get('film_foundry.core.grain_compute')
+        transfer=sys.modules.get('film_foundry.core.transfer_compute')
+        observation=sys.modules.get('film_foundry.core.observation_compute')
         active=('cuda' if selected=='cuda' and _runtime is not None and _failure is None else
                 'opencl' if selected=='opencl' and opencl is not None and opencl['initialized'] and opencl['failure'] is None else 'cpu')
         return dict(requested=os.environ.get('FILM_FOUNDRY_COMPUTE','cpu'),
                     initialized=_runtime is not None, failure=_failure, calls=_calls,blur_calls=_blur_calls,
                     spectral_calls=_spectral_calls, paper_calls=_paper_calls, rotary_calls=_rotary_calls, edge_contact_calls=_edge_calls, noise_calls=_noise_calls, auto_backend=_auto_backend,
                     development_calls=development.status() if development is not None else {'cuda':0,'opencl':0},
+                    transfer_calls=transfer.status() if transfer is not None else {'cuda':0,'opencl':0},
+                    observation_calls=observation.status() if observation is not None else {},
                     resident_grain_calls=grain.status() if grain is not None else 0,
                     active_backend=active, cuda_device=_cuda_device, opencl=opencl)
 

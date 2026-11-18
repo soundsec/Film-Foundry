@@ -21,7 +21,8 @@ class CameraEffectsDialog(private val activity: ComponentActivity,private val sh
     private fun c(zh: String,en: String)=shell.copy(zh,en)
     fun open(initial: Map<String,Any?>,film: Map<String,Any?>,capture: Map<String,Any?>,
         selected: Map<String,Any?> = emptyMap(),previewOnly: Boolean=false,imprintOnly: Boolean=false,
-        initialAutoAdvance: Boolean?=null,saveAutoAdvance: (Boolean)->Unit={},save: (Map<String,Any?>)->Unit): AlertDialog {
+        initialAutoAdvance: Boolean?=null,saveAutoAdvance: (Boolean)->Unit={},
+        initialMirror: Boolean?=null,saveMirror: (Boolean)->Unit={},save: (Map<String,Any?>)->Unit): AlertDialog {
         val request=CameraEffectsPreview.Request(film,capture,selected)
         val landscapePrint=imprintOnly && activity.resources.configuration.orientation==android.content.res.Configuration.ORIENTATION_LANDSCAPE
         val panel=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;setPadding(shell.dp(20),shell.dp(12),shell.dp(20),shell.dp(18)) }
@@ -55,6 +56,9 @@ class CameraEffectsDialog(private val activity: ComponentActivity,private val sh
         val exposure=SeekBar(activity).apply { max=80;progress=40;visibility=if(imprintOnly) android.view.View.GONE else android.view.View.VISIBLE };panel.addView(exposure)
         val autoAdvance=initialAutoAdvance?.let { value -> CheckBox(activity).apply {
             text=c("自动过片","Auto advance");isChecked=value;panel.addView(this)
+        } }
+        val mirror=initialMirror?.let { value -> CheckBox(activity).apply {
+            text=c("反光板","Reflex mirror");isChecked=value;panel.addView(this)
         } }
         val sectionBar=LinearLayout(activity)
         val sectionScroll=HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled=false;addView(sectionBar);visibility=if(imprintOnly) android.view.View.GONE else android.view.View.VISIBLE };panel.addView(sectionScroll)
@@ -130,7 +134,7 @@ class CameraEffectsDialog(private val activity: ComponentActivity,private val sh
         }
         shell.note(effectsPanel,"多个分量会叠加曝光；每个分量的位置身份保存后固定。","Components add exposure and keep their identity after saving.")
         shell.note(dirtPanel,"片门脏物","Gate dirt")
-        shell.note(dirtPanel,"灰尘、碎屑、毛发与飞虫可同时使用，位置保持固定。齿孔与边字在胶卷设置中。","Combine dust, debris, hair and insects with fixed positions. Sprockets and edge markings are in film settings.")
+        shell.note(dirtPanel,"灰尘、碎屑、毛发与飞虫可同时使用，位置保持固定。齿孔与厂印在拍摄首页的下一卷默认设置中。","Combine dust, debris, hair and insects with fixed positions. Sprockets and factory marks are in Next-roll defaults on Camera home.")
         val dirt=listOf("dust" to c("片门灰尘","Gate dust"),"debris" to c("片门碎屑","Gate debris"),"hair" to c("毛发","Hair"),"insect" to c("飞虫","Insect"))
             .associate { (key,label)->key to CheckBox(activity).apply { text=label;isChecked=initial[key]==true;dirtPanel.addView(this);setOnCheckedChangeListener { _,_->changed() } } }
         val printContent=if(landscapePrint) LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL } else printPanel
@@ -233,7 +237,10 @@ class CameraEffectsDialog(private val activity: ComponentActivity,private val sh
             .setNegativeButton(c("取消","Cancel"),null).setPositiveButton(if(previewOnly) c("关闭","Close") else c("保存到之后的曝光","Save for future exposures"),null).create()
         dialog.setOnDismissListener { closed.set(true);handler.removeCallbacks(launch);preview.setImageDrawable(null);displayed?.recycle();displayed=null }
         dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            runCatching { if(!previewOnly) snapshot().also(CameraEffectsPreview::validate).also(save).also { autoAdvance?.let { saveAutoAdvance(it.isChecked) } } }.onSuccess { dialog.dismiss() }.onFailure { message.text=it.message }
+            runCatching { if(!previewOnly) snapshot().also(CameraEffectsPreview::validate).also(save).also {
+                autoAdvance?.let { saveAutoAdvance(it.isChecked) }
+                mirror?.let { saveMirror(it.isChecked) }
+            } }.onSuccess { dialog.dismiss() }.onFailure { message.text=it.message }
         } };shell.decorate(panel);dialog.show()
         if(landscapePrint) dialog.window?.setLayout((activity.resources.displayMetrics.widthPixels*.94).toInt(),android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
         dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
