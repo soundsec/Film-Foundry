@@ -2075,6 +2075,7 @@ TEXTS = {'\nCtrl+Tab to switch; right-click lists all pages. Switching preserves
  'Reflective receiver viewing; transmission for the cleared silver negative.': '接收片反射观看，已清理银负片透射观看。',
  'Refresh Curve': '刷新曲线',
  'Refresh Preview': '刷新预览',
+ 'Refresh curve': '刷新曲线',
  'Refresh sources': '刷新来源',
  'Region {w} × {h} px · Frame {fw} × {fh} px · Origin ({x}, {y})': '选区 {w} × {h} px · 全幅 {fw} × {fh} px · 起点 ({x}, '
                                                                    '{y})',

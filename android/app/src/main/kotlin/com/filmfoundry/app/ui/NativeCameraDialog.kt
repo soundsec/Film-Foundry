@@ -15,7 +15,7 @@ fun showNativeCameraDialog(activity: ComponentActivity,shell: MobileShell,lenses
     apply: (NativeCameraCatalog.Lens,NativeCaptureSettings,Boolean)->Unit) {
     fun text(zh: String,en: String)=shell.copy(zh,en)
     val panel=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;setPadding(shell.dp(16),shell.dp(8),shell.dp(16),shell.dp(16)) }
-    val picker=Spinner(activity).apply { minimumHeight=shell.dp(48);adapter=ArrayAdapter(activity,android.R.layout.simple_spinner_dropdown_item,lenses.map { it.label(activity.resources.configuration.locales[0].language=="zh") }) }
+    val picker=Spinner(activity).apply { minimumHeight=shell.dp(48);adapter=ArrayAdapter(activity,android.R.layout.simple_spinner_dropdown_item,lenses.map { it.label(shell.words.chineseFallback) }) }
     panel.addView(picker)
     shell.note(panel,"自动镜头由系统选择或融合；固定镜头按系统开放能力使用。切换不改变胶卷，采集期间不能切换。","Auto lenses may switch or fuse in the system. Fixed lenses depend on device access. The roll stays loaded; switching is disabled during capture.")
     val body=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL };panel.addView(body)

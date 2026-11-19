@@ -35,12 +35,36 @@ class MaterialProbe(QtCore.QObject):
             self.actions.append((size,action))
         settings.addSeparator()
         settings.addAction(text('清除钉点','Clear pins'),self.clear)
+        owner.viewer.probe_overlay=self.draw_pins
         owner.viewer.viewport().installEventFilter(self)
 
     def clear(self):
         self.pins.clear();self.readout.hide()
+        self.owner.viewer.viewport().update()
+
+    def draw_pins(self,painter):
+        viewer=self.owner.viewer
+        group=self.owner.session.group
+        if (not self.aperture or not self.pins or group is None or viewer.result is None
+                or viewer.result.cacheKey()!=self.cache_key or self.index>=len(group.bodies)):
+            return
+        body=group.bodies[self.index]
+        if body.body_id!=self.body_id:return
+        h,w=next(iter(body.fields.values())).shape[:2]
+        top,bottom,left,right=(0,0,0,0) if self.owner.kind=='plate' else observation_border(body,(h,w),self.conditions)
+        width,height=w+left+right,h+top+bottom
+        points=[]
+        for i,(u,v) in enumerate(self.pins,1):
+            x,y=int(u*w)+left,int(v*h)+top
+            q=self.turns%4
+            if q==1:x,y=height-1-y,x
+            elif q==2:x,y=width-1-x,height-1-y
+            elif q==3:x,y=y,width-1-x
+            points.append((i,x,y))
+        viewer.draw_probe_points(painter,points)
 
     def show_pins(self):
+        self.owner.viewer.viewport().update()
         group=self.owner.session.group
         if not self.aperture or not self.pins or self.cache_key is None or group is None:
             self.readout.hide();return
@@ -66,7 +90,7 @@ class MaterialProbe(QtCore.QObject):
         group=owner.session.group
         inspection=getattr(owner,'inspection',None)
         if group is None or (inspection is not None and inspection.currentData()!='image'):
-            self.readout.hide();return
+            self.readout.hide();owner.viewer.viewport().update();return
         self.index=min(index,len(group.bodies)-1)
         self.body_id=group.bodies[self.index].body_id
         self.conditions=view;self.turns=owner.session.scan_adjustments.get('rotation_quarters',0)

@@ -22,7 +22,7 @@ import com.filmfoundry.platform.MovieSources
 import com.filmfoundry.platform.MovieSource
 import androidx.camera.view.PreviewView
 import java.util.concurrent.Executors
-import java.util.Locale
+import com.filmfoundry.app.ui.MobileLanguages
 import com.filmfoundry.app.ui.MobileShell
 import com.filmfoundry.app.ui.ViewfinderBaffles
 import com.filmfoundry.mobile.R
@@ -135,17 +135,10 @@ class ProcessHostActivity : ComponentActivity() {
     private var cameraCatalogReady: (() -> Unit)?=null
     private var cameraRollback: Pair<com.filmfoundry.platform.NativeCameraCatalog.Lens,com.filmfoundry.platform.NativeCaptureSettings>?=null
     override fun attachBaseContext(newBase: Context) {
-        val language=newBase.getSharedPreferences("mobile_ui",Context.MODE_PRIVATE).getString("language","system")
-        val context=if(language in listOf("zh","en")) {
-            // Only override language. Copying the full startup configuration also pins portrait,
-            // dimensions, font scale and density after the capture page rotates the Activity.
-            val config=Configuration()
-            config.setLocale(Locale.forLanguageTag(language!!));config.setLayoutDirection(Locale.forLanguageTag(language))
-            newBase.createConfigurationContext(config)
-        } else newBase
-        super.attachBaseContext(context)
+        super.attachBaseContext(MobileLanguages.configured(newBase))
     }
-    private fun copy(zh: String,en: String)=if(resources.configuration.locales[0].language == "zh") zh else en
+    private val words by lazy { MobileLanguages.forContext(this) }
+    private fun copy(zh: String,en: String)=words.text(zh,en)
     private fun installCameraSounds() {
         cameraSounds=com.filmfoundry.app.session.CameraSounds.get(this)
         val card=shell.card(MobileShell.Page.SETTINGS,"相机音效","Camera sounds",
@@ -242,7 +235,7 @@ class ProcessHostActivity : ComponentActivity() {
             cameraRollback=if(cameraReady) selectedCamera?.let { it to nativeSettings } else null
             selectedCamera=lens;nativeSettings=settings;failedTarget=null
             if(shell.selected==MobileShell.Page.CAPTURE) bindCamera(force=true)
-            else { getSharedPreferences("native_camera",MODE_PRIVATE).edit().putString("lens",lens.key).apply();cameraRollback=null;status.text=copy("已选择：","Selected: ")+lens.label(resources.configuration.locales[0].language=="zh") }
+            else { getSharedPreferences("native_camera",MODE_PRIVATE).edit().putString("lens",lens.key).apply();cameraRollback=null;status.text=copy("已选择：","Selected: ")+lens.label(words.chineseFallback) }
     }
     private fun nativeFlashAvailable()=selectedCamera?.characteristics?.get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE)==true && rollActions?.captureTarget()?.startsWith("motion")!=true
     private fun openFinderLens(anchor: View) {
@@ -250,7 +243,7 @@ class ProcessHostActivity : ComponentActivity() {
         if(!cameraReady || importing || samplingLight || bindingCamera || rollActions?.captureInProgress()==true || cameraChoices.isEmpty()) return
         val choices=cameraChoices.toList()
         shell.quickControls.choices("lens",anchor,copy("镜头","Lenses"),copy("系统开放的真实相机；自动镜头由系统调度。","Actual system-accessible cameras; automatic lenses are managed by the system."),
-            choices.map { it.label(resources.configuration.locales[0].language=="zh") },choices.indexOfFirst { it.key==selectedCamera?.key }) { index ->
+            choices.map { it.label(words.chineseFallback) },choices.indexOfFirst { it.key==selectedCamera?.key }) { index ->
             if(camera===adapter && cameraReady && !bindingCamera && !importing && rollActions?.captureInProgress()!=true && choices[index].key!=selectedCamera?.key)
                 applyNativeCameraSelection(choices[index],adapter.nativeRequests(),isoUnlocked)
         }
@@ -318,10 +311,11 @@ class ProcessHostActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         val preferences=getSharedPreferences("mobile_ui",Context.MODE_PRIVATE)
         val theme=preferences.getString("theme","dark") ?: "dark"
-        setTheme(if(theme == "ivory") R.style.Theme_FilmFoundry_Ivory else R.style.Theme_FilmFoundry_Dark)
+        val palette=com.filmfoundry.app.ui.MobilePalette.entries.firstOrNull { it.key==theme } ?: com.filmfoundry.app.ui.MobilePalette.DARK
+        setTheme(palette.style)
         super.onCreate(savedInstanceState)
         movies=MovieSources(filesDir,AndroidMovieProbe::read)
-        shell=MobileShell(this,theme == "ivory",savedInstanceState?.getString("mobile_page") ?: "start")
+        shell=MobileShell(this,palette,savedInstanceState?.getString("mobile_page") ?: "start")
         status=shell.status
         status.text=copy("装卷后逐格拍摄","Load a roll to capture frames")
         val cameraPanel=shell.cameraSurface
@@ -502,7 +496,7 @@ class ProcessHostActivity : ComponentActivity() {
         val wanted=if(capture) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         if(requestedOrientation != wanted) requestedOrientation=wanted
         val darkCanvas=capture || shell.selected==MobileShell.Page.VIEWER
-        val background=if(darkCanvas) android.graphics.Color.BLACK else if(shell.ivory) 0xFFF2EEE5.toInt() else 0xFF141414.toInt()
+        val background=if(darkCanvas) android.graphics.Color.BLACK else shell.palette.background
         window.decorView.setBackgroundColor(background)
         window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(background))
         window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS or android.view.WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION)

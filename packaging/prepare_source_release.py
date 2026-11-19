@@ -92,7 +92,7 @@ def copy_public_docs(source: Path, target: Path, *, include_root: bool = True) -
 def copy_android_sources(source: Path, target: Path) -> int:
     android = source / "android"
     files = [android / name for name in (
-        "README.md", "build.gradle.kts", "settings.gradle.kts", "gradle.properties",
+        "README.md", "TRANSLATING.md", "build.gradle.kts", "settings.gradle.kts", "gradle.properties",
         "gradlew.bat", "gradle/libs.versions.toml", "gradle/wrapper/gradle-wrapper.jar",
         "gradle/wrapper/gradle-wrapper.properties",
     )]
@@ -101,12 +101,13 @@ def copy_android_sources(source: Path, target: Path) -> int:
         files.append(android / module / "build.gradle.kts")
         files.extend(path for path in (android / module / "src").rglob("*")
                      if path.is_file() and path.suffix in suffixes
+                     and not path.is_relative_to(android / "app/src/debug/assets/languages")
                      and not any(part.startswith(".") or part == "__pycache__"
                                  for part in path.relative_to(android).parts))
     # Reproducible presets and isolated tests, not local one-off review probes.
     files.extend(android / "tools" / name for name in (
         "sync_phone_presets.py", "sync_creative_presets.py", "phone_preset_fields.py",
-        "sync_seasonal_collection.py", "run_device_tests.py", "collect_runtime_notices.py",
+        "sync_seasonal_collection.py", "run_device_tests.py", "collect_runtime_notices.py", "mobile_language.py",
     ))
     for path in sorted(files):
         destination = target / path.relative_to(source)

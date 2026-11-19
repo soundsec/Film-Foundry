@@ -6,6 +6,35 @@ import android.widget.*
 import androidx.activity.ComponentActivity
 import kotlin.math.roundToInt
 
+internal fun LinearLayout.addParameterReadout(shell: MobileShell, title: String): Button {
+    val row = LinearLayout(context).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
+    val label = TextView(context).apply { text = title; textSize = 14f; setTextColor(shell.ink) }
+    row.addView(label, LinearLayout.LayoutParams(0, -2, 1f))
+    val readout = Button(context).apply { tag = "parameter_value"; shell.styleButton(this) }
+    row.addView(readout, LinearLayout.LayoutParams(-2, -2))
+    addView(row, LinearLayout.LayoutParams(-1, -2))
+    return readout
+}
+
+internal fun editParameterNumber(activity: ComponentActivity, shell: MobileShell, title: String, initial: String,
+    inputType: Int, range: ClosedFloatingPointRange<Double>, detail: String, resetLabel: String,
+    reset: () -> Unit, apply: (String) -> Boolean) {
+    val panel=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;setPadding(shell.dp(20),shell.dp(8),shell.dp(20),shell.dp(8)) }
+    val draft=EditText(activity).apply { this.inputType=inputType;setText(initial);setSelectAllOnFocus(true) }
+    shell.field(panel,draft,title,detail)
+    val dialog=AlertDialog.Builder(activity).setTitle(title).setView(panel)
+        .setNegativeButton(shell.copy("取消","Cancel"),null).setNeutralButton(resetLabel) { _,_->reset() }
+        .setPositiveButton(shell.copy("应用","Apply"),null).create()
+    dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        val text=draft.text.toString().trim()
+        val parsed=text.toDoubleOrNull()
+        if(text.isNotEmpty() && (parsed==null || !parsed.isFinite() || parsed !in range)) {
+            draft.error=shell.copy("请输入范围内的数值","Enter a value within the range")
+        } else if(apply(text)) dialog.dismiss()
+    } }
+    dialog.show()
+}
+
 /** Touch editing of an existing draft field. Values and validation stay with its owner. */
 class TouchParameterControl(
     private val activity: ComponentActivity,private val shell: MobileShell,parent: LinearLayout,
@@ -19,18 +48,19 @@ class TouchParameterControl(
     private val onEditFinished: ()->Unit={},
     private val temperature: Boolean=false,
 ) {
-    private val slider=SeekBar(activity)
-    private val value=Button(activity)
+    private val slider=shell.parameterRuler()
+    private val value: Button
     private var fallback=range.start
     init {
-        val group=shell.field(parent,input,title,restore=::reset)
+        val group=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;tag=title }
+        group.addView(input)
         input.visibility=View.GONE
-        val row=LinearLayout(activity).apply { gravity=android.view.Gravity.CENTER_VERTICAL }
+        parent.addView(group,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=shell.dp(8) })
         slider.max=if(temperature) TemperatureScale.STEPS else ((range.endInclusive-range.start)/step).roundToInt()
         slider.contentDescription=title
-        row.addView(slider,LinearLayout.LayoutParams(0,shell.dp(48),1f))
-        shell.styleButton(value);value.minWidth=shell.dp(104);value.minHeight=shell.dp(48)
-        row.addView(value,LinearLayout.LayoutParams(-2,-2));group.addView(row)
+        slider.resetValue=::reset
+        value=group.addParameterReadout(shell,title)
+        group.addView(slider,LinearLayout.LayoutParams(-1,shell.dp(48)))
         value.setOnClickListener { editNumber() }
         slider.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar?,progress: Int,user: Boolean) {
@@ -59,24 +89,14 @@ class TouchParameterControl(
         value.contentDescription=title+": "+value.text+shell.copy("，点按输入数值",". Tap to enter a value")
     }
     private fun editNumber() {
-        val panel=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;setPadding(shell.dp(20),shell.dp(8),shell.dp(20),shell.dp(8)) }
-        val draft=EditText(activity).apply { inputType=input.inputType;setText(if(active()) input.text.toString() else "");setSelectAllOnFocus(true) }
-        shell.field(panel,draft,title,shell.copy("范围：${range.start}–${range.endInclusive}$unit；留空沿用$inheritedLabel。","Range: ${range.start}–${range.endInclusive}$unit; blank inherits $inheritedLabel."))
-        val dialog=AlertDialog.Builder(activity).setTitle(title).setView(panel)
-            .setNegativeButton(shell.copy("取消","Cancel"),null)
-            .setNeutralButton(resetLabel) { _,_->reset() }
-            .setPositiveButton(shell.copy("应用","Apply"),null).create()
-        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            val text=draft.text.toString().trim();val parsed=text.toDoubleOrNull()
-            if(text.isNotEmpty() && (parsed==null || !parsed.isFinite() || parsed !in range)) {
-                draft.error=shell.copy("请输入范围内的数值","Enter a value within the range");return@setOnClickListener
-            }
+        val detail=shell.copy("范围：${range.start}–${range.endInclusive}$unit；留空沿用$inheritedLabel。","Range: ${range.start}–${range.endInclusive}$unit; blank inherits $inheritedLabel.")
+        editParameterNumber(activity,shell,title,if(active()) input.text.toString() else "",input.inputType,range,detail,resetLabel,::reset) { text ->
             onEditStarted()
-            try { if(!prepareEdit()) return@setOnClickListener
-                input.error=null;input.setText(text);refresh();dialog.dismiss()
+            try {
+                if(!prepareEdit()) return@editParameterNumber false
+                input.error=null;input.setText(text);refresh();true
             } finally { onEditFinished() }
-        } }
-        dialog.show()
+        }
     }
     private fun prepareEdit()=runCatching(beforeEdit).onFailure { Toast.makeText(activity,it.message,Toast.LENGTH_LONG).show() }.isSuccess
     private fun reset() { input.error=null;if(onReset!=null) onReset.invoke() else input.setText("");refresh() }

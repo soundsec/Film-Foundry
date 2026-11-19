@@ -18,7 +18,7 @@ class ProcessIncidentControls(private val activity: ComponentActivity,private va
     private val explanation=TextView(activity)
     private val tools=mutableListOf<Button>()
     private val modes=mutableListOf<Button>()
-    private val slider=SeekBar(activity)
+    private val slider=shell.parameterRuler()
     private val value=Button(activity)
     private val strengthRow=LinearLayout(activity)
     private lateinit var undo: Button

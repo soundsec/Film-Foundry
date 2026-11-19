@@ -269,7 +269,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
     private var completedDevelopmentRoll: String?=null
     private var rollPage=0
     private var resultPage=0
-    private fun copy(zh: String, en: String) = if(activity.resources.configuration.locales[0].language == "zh") zh else en
+    private fun copy(zh: String, en: String) = shell.copy(zh,en)
     private fun button(column: LinearLayout, zh: String, en: String, action: () -> Unit): Button = Button(activity).also {
         it.text = copy(zh,en); it.setOnClickListener { if(available() && !running) action() }; controls.add(it); column.addView(it);shell.styleButton(it)
     }
@@ -290,26 +290,28 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         val start=shell.card(MobileShell.Page.START,"片仓 · 尚未装卷","Camera · no roll loaded")
         startHeading=start.getChildAt(0) as TextView
         start.addView(startSummary)
-        shell.note(start,"装卷开始，未拍完可随时继续。","Load film to start. Resume unfinished rolls anytime.")
-        val skipLoading=CheckBox(activity).apply {
-            text=copy("跳过装填过程","Skip the loading sequence")
-            isChecked=preferences.getBoolean("skip_loading",false)
-            setOnCheckedChangeListener { _,checked -> preferences.edit().putBoolean("skip_loading",checked).apply() }
-        }
-        start.addView(skipLoading)
-        val skipUnloading=CheckBox(activity).apply {
-            text=copy("跳过退出过程","Skip the unloading sequence")
-            isChecked=preferences.getBoolean("skip_unloading",false)
-            setOnCheckedChangeListener { _,checked -> preferences.edit().putBoolean("skip_unloading",checked).apply() }
-        }
-        start.addView(skipUnloading)
-        shell.note(start,"跳过只省去牵片或开盖取卷。结束拍摄仍会渐黑。","Skipping omits threading or opening the back. Ending a shoot still fades to black.")
-        button(start,"装填／切换胶卷与规格","Load / switch film & format") { loadDialog() }
-        autoAdvance.text=copy("自动过片","Auto advance")
-        autoAdvance.isChecked=preferences.getBoolean("auto_advance",true)
         startShooting=button(start,"启动／继续拍摄","Start / continue shooting") {
             if(current == null) loadDialog(continueSelected=true) else continueShooting(current!!)
-        }.also { it.tag="primary";shell.styleButton(it,true) }
+        }.also {
+            it.tag="primary";shell.styleButton(it,true)
+            it.layoutParams=LinearLayout.LayoutParams(-1,-2).apply { topMargin=shell.dp(10);bottomMargin=shell.dp(12) }
+        }
+        shortcut(start,"装填／切换胶卷与规格","Load / switch film & format") { loadDialog() }
+        shell.explanation(start,"装卷与退卷动画","Loading and unloading animations") { options ->
+            options.addView(CheckBox(activity).apply {
+                text=copy("跳过装填过程","Skip the loading sequence")
+                isChecked=preferences.getBoolean("skip_loading",false)
+                setOnCheckedChangeListener { _,checked -> preferences.edit().putBoolean("skip_loading",checked).apply() }
+            })
+            options.addView(CheckBox(activity).apply {
+                text=copy("跳过退出过程","Skip the unloading sequence")
+                isChecked=preferences.getBoolean("skip_unloading",false)
+                setOnCheckedChangeListener { _,checked -> preferences.edit().putBoolean("skip_unloading",checked).apply() }
+            })
+            shell.note(options,"跳过只省去牵片或开盖取卷。结束拍摄仍会渐黑。","Skipping omits threading or opening the back. Ending a shoot still fades to black.")
+        }
+        autoAdvance.text=copy("自动过片","Auto advance")
+        autoAdvance.isChecked=preferences.getBoolean("auto_advance",true)
         val column=shell.card(MobileShell.Page.CAPTURE,"拍摄设置","Camera settings")
         fun menuButton(zh: String,en: String,action: ()->Unit)=button(column,zh,en) {
             shell.closeCaptureMenu();action()
@@ -442,15 +444,12 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         scanFeedback=ScanPreviewFeedback(shell,shell.scanPreviewSurface)
         scanComparison=ScanComparison(shell,shell.scanPreviewSurface)
         shell.scanOverlaySurface.bringToFront()
-        val scanRotate=Button(activity).apply {
-            text="90° ↻";tag="camera_action";setTextColor(android.graphics.Color.WHITE);setBackgroundColor(0xD0222222.toInt());textSize=14f;setPadding(0,0,0,0)
+        shell.scanToolbarIcon(NavigationIcon.ROTATE).apply {
             contentDescription=copy("顺时针旋转90°，保存和导出沿用此方向","Rotate clockwise 90 degrees; saved and exported photos follow")
             tooltipText=contentDescription
             setOnClickListener { if(!running && available()) { stages.rotateOutput();orientScanImage() } }
         }
-        shell.scanOverlaySurface.addView(scanRotate,android.widget.FrameLayout.LayoutParams(shell.dp(60),shell.dp(48),android.view.Gravity.TOP or android.view.Gravity.START).apply { topMargin=shell.dp(8);marginStart=shell.dp(64) })
         scanImage.addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_ -> orientScanImage() }
-        shell.scanFocusButton.bringToFront()
         val scanRefresh=button(scanPanel,"刷新扫描预览","Refresh scan preview") { scanResult?.let { openScanner(it,null,null,true) } ?: status(copy("请先选择底片","Choose a developed frame first")) }.apply {
             contentDescription=copy("刷新扫描预览","Refresh scan preview");tooltipText=contentDescription
             minWidth=0;minimumWidth=0;setPadding(0,shell.dp(8),0,shell.dp(8))
@@ -462,7 +461,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
                 scanExportAfterSave.isChecked=album;saveScan(result)
             }
         } ?: status(copy("请先选择底片","Choose a developed frame first")) }.also {
-            it.tag="primary";shell.styleButton(it,true);it.layoutParams=LinearLayout.LayoutParams(shell.dp(72),-2)
+            it.tag="primary";shell.styleButton(it,true);it.layoutParams=LinearLayout.LayoutParams(shell.dp(64),-2)
             it.contentDescription=copy("扫描并保存到软件图库","Scan and save to the app Library");it.minWidth=0;it.setPadding(shell.dp(6),shell.dp(8),shell.dp(6),shell.dp(8))
         }
         scanBatchWithSettings=button(shell.scanActions,"扫描本批","Scan batch") {
@@ -1000,9 +999,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
     private fun negativeRotation(id: String)=OutputOrientation.normalized(preferences.getInt("view_rotation_negative_$id",0))
     private fun orientScanImage() {
         if(!::stages.isInitialized) return
-        val bitmap=(scanImage.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap ?: return
-        val size=OutputOrientation.size(bitmap.width,bitmap.height,stages.rotationDegrees)
-        shell.scanImageSize(size.first,size.second);orientOutputView(scanImage,stages.rotationDegrees)
+        orientOutputView(scanImage,stages.rotationDegrees)
     }
     private fun rotateViewedImage() {
         if(!canBrowse() || metadataBusy || image.pageLoading || image.drawable==null || viewerSceneLight) return
@@ -1402,7 +1399,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
                     .putString("film_factory_pattern_v1",RecipeJson.text(patterns)).apply() })
         }
         val label=TextView(activity);panel.addView(label)
-        val age=SeekBar(activity).apply { max=100;progress=preferences.getInt("film_age",0) };panel.addView(age)
+        val age=shell.parameterRuler().apply { max=100;progress=preferences.getInt("film_age",0) };panel.addView(age)
         panel.addView(TextView(activity).apply { text=copy("自然沿用材料的颗粒强度，细腻或明显相应减弱或加强；关闭同时停用染料颗粒与银粒。仅对新装胶卷生效，扫描不会重新生成颗粒。","Natural keeps the stock's grain strength; Fine and Pronounced reduce or increase it. Off disables dye and silver grain. Applies to new rolls; scanning does not regenerate grain.") })
         val grain=Spinner(activity).apply {
             adapter=ArrayAdapter(activity,android.R.layout.simple_spinner_dropdown_item,listOf(copy("关闭","Off"),copy("细腻","Fine"),copy("自然（推荐）","Natural (recommended)"),copy("明显颗粒","Pronounced")))
@@ -2120,14 +2117,16 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         fun number(label: String,value: Double,low: Double,high: Double,step: Double,default: Double,temperature: Boolean=false): EditText {
             shell.note(panel,label,label)
             val row=LinearLayout(activity).apply { gravity=android.view.Gravity.CENTER_VERTICAL };panel.addView(row)
-            val slider=SeekBar(activity).apply { max=if(temperature) TemperatureScale.STEPS else ((high-low)/step).toInt();progress=if(temperature) TemperatureScale.progress(value) else ((value-low)/step).toInt().coerceIn(0,max) }
+            val slider=shell.parameterRuler().apply { max=if(temperature) TemperatureScale.STEPS else ((high-low)/step).toInt();progress=if(temperature) TemperatureScale.progress(value) else ((value-low)/step).toInt().coerceIn(0,max) }
             val input=EditText(activity).apply {
                 contentDescription=label;setSingleLine(true)
                 inputType=android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
                 setText(if(step>=1) value.toInt().toString() else "%.1f".format(java.util.Locale.ROOT,value))
             }
             row.addView(slider,LinearLayout.LayoutParams(0,shell.dp(52),1f));row.addView(input,LinearLayout.LayoutParams(shell.dp(100),shell.dp(52)))
-            row.addView(shell.resetButton(label) { input.error=null;input.setText(default.toString()) },LinearLayout.LayoutParams(shell.dp(48),shell.dp(48)))
+            val resetLampValue = { input.error=null;input.setText(default.toString()) }
+            slider.resetValue=resetLampValue
+            row.addView(shell.resetButton(label,resetLampValue),LinearLayout.LayoutParams(shell.dp(48),shell.dp(48)))
             slider.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(bar: SeekBar?,n: Int,user: Boolean) { if(user) {
                     val v=if(temperature) TemperatureScale.kelvin(n) else low+n*step;input.setText(if(step>=1) v.toInt().toString() else "%.1f".format(java.util.Locale.ROOT,v));input.setSelection(input.text.length)
@@ -2594,7 +2593,8 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         stages.beginScanSession(result.resultId,result.opticalPath,library.roll(result.sourceRollId).scannerRecipe,savedRecipe,savedId,resumeSession,negativeRotation(result.resultId))
         pendingScanPreview=false
         scanResult=result;scanCaption.text=resultLabel(result);scanCaption.contentDescription=null;shell.select(MobileShell.Page.SCAN)
-        shell.scanTitle.text=frameLabel(result.sourceFrameIndex);shell.scanTitle.contentDescription=resultLabel(result)
+        shell.scanTitle.text=result.sourceFrameIndex.toString().padStart(2,'0')
+        (shell.scanTitle.parent as android.view.View).contentDescription=copy("返回上一页","Go back")+" · "+resultLabel(result)
         savePhoto.isEnabled=false;scanBatchWithSettings.isEnabled=false
         if(running || captureInProgress() || !available()) { scanFeedback.finish();pendingScanPreview=true;return }
         val frozen=runCatching { stages.currentScanObservation(library.roll(result.sourceRollId).scannerRecipe,references.stats(result.sourceRollId)) }.getOrElse {
@@ -2623,7 +2623,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             val token=pageToken ?: image.requestPage(requireNotNull(pageKey))
             if(!image.presentPage(token,bitmap)) { bitmap.recycle();return false }
             displayCacheKey?.let { thumbnails.put(it,bitmap) }
-        } else { view.setImageBitmap(bitmap);if(view===scanImage) { val size=OutputOrientation.size(bitmap.width,bitmap.height,stages.rotationDegrees);shell.scanImageSize(size.first,size.second);orientScanImage();scanComparison.offer(bitmap,stages.rotationDegrees) };if(old !== bitmap) old?.recycle() }
+        } else { view.setImageBitmap(bitmap);if(view===scanImage) { orientScanImage();scanComparison.offer(bitmap,stages.rotationDegrees) };if(old !== bitmap) old?.recycle() }
         return true
     }
     private fun saveScan(result: DevelopedResult) {

@@ -277,7 +277,7 @@ class FinderQuickControls(private val shell: MobileShell) {
             if(card!==this) return
             val moved=gesture.move(screenX,screenY,shell.dp(24).toFloat())
             if(kotlin.math.abs(gesture.distance)>slop) dragged=true
-            if(moved) commit();invalidate();if(card===this) schedule(true)
+            if(moved) { performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK);commit() };invalidate();if(card===this) schedule(true)
         }
         fun finishFromAnchor(cancelled: Boolean=false) {
             if(card!==this) return

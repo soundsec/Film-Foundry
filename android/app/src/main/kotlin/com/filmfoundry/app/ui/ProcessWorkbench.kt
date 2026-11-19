@@ -77,8 +77,6 @@ class ProcessProgramEditor(private val activity: ComponentActivity,private val s
         }
     }
     private fun numericTools(parent: LinearLayout,specs: List<Parameter>,source: Map<String,Any?>,inherit: Map<String,Any?>?,fields: MutableMap<String,EditText>) {
-        val bar=LinearLayout(activity);parent.addView(HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled=false;addView(bar) })
-        val bodies=specs.map { column().also(parent::addView) };val tabs=mutableListOf<Button>()
         val controls=linkedMapOf<String,TouchParameterControl>()
         fun fallback(spec: Parameter): Double {
             val inherited=(inherit?.get(spec.key) as? Number)?.toDouble()
@@ -86,23 +84,18 @@ class ProcessProgramEditor(private val activity: ComponentActivity,private val s
             if(spec.key=="agitation_time_s") return (fields["time_min"]?.text?.toString()?.toDoubleOrNull() ?: (inherit?.get("time_min") as? Number)?.toDouble() ?: 8.0)*60
             return spec.initial ?: 0.0
         }
-        specs.forEachIndexed { index,spec ->
+        specs.forEach { spec ->
             val input=field(if(inherit!=null) source[spec.key] else source[spec.key] ?: spec.initial);fields[spec.key]=input
-            val control=TouchParameterControl(activity,shell,bodies[index],input,c(spec.zh,spec.en),spec.range,spec.step,
+            val control=TouchParameterControl(activity,shell,parent,input,c(spec.zh,spec.en),spec.range,spec.step,
                 inheritedLabel=if(inherit!=null) c("全局","Global") else c("标准","Standard"),
                 resetLabel=if(inherit!=null) c("沿用全局","Inherit global") else c("使用标准条件","Use standard condition"))
             controls[spec.key]=control;control.refresh(fallback(spec))
-            tabs+=shell.editorTab(bar,spec.zh.substringBefore(" ·"),spec.en.substringBefore(" ·")) {
-                bodies.forEachIndexed { i,body->body.visibility=if(i==index) View.VISIBLE else View.GONE }
-                tabs.forEachIndexed { i,tab->tab.isSelected=i==index }
-            }
         }
         fields["time_min"]?.addTextChangedListener(object: android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?,start: Int,count: Int,after: Int)=Unit
             override fun onTextChanged(s: CharSequence?,start: Int,before: Int,count: Int) { specs.firstOrNull { it.key=="agitation_time_s" }?.let { controls[it.key]?.refresh(fallback(it)) } }
             override fun afterTextChanged(s: android.text.Editable?)=Unit
         })
-        bodies.forEachIndexed { i,body->body.visibility=if(i==0) View.VISIBLE else View.GONE };tabs.firstOrNull()?.isSelected=true
     }
     private fun baths(panel: LinearLayout,source: Map<String,Any?>,inherit: Boolean): Pair<Spinner,Spinner> {
         fun picker(key: String,zh: String,en: String,ids: List<String>,labels: List<String>): Spinner {

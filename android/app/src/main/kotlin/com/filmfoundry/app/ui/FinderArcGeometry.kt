@@ -10,11 +10,15 @@ data class FinderArcGeometry(val x: Float,val y: Float,val radius: Float,val bou
     companion object {
         fun place(width: Float,height: Float,anchorX: Float,anchorY: Float,boundary: Float,bottom: Boolean,unit: Float): FinderArcGeometry {
             val pivot=12*unit
-            val x=if(bottom) anchorX else boundary-pivot
-            val y=if(bottom) boundary+pivot else anchorY
-            val room=if(bottom) minOf(x-100*unit,width-104*unit-x) else minOf(y-8*unit,height-66*unit-y)
-            val depth=if(bottom) y-8*unit else width-104*unit-x
-            val radius=minOf(112*unit,room/.96f,depth-10*unit).coerceAtLeast(unit)
+            val low = if (bottom) 100*unit else 8*unit
+            val high = if (bottom) width-104*unit else height-66*unit
+            val depth = if (bottom) boundary+pivot-8*unit else width-104*unit-boundary+pivot
+            val radius = minOf(112*unit, (high-low)/1.92f, depth-10*unit).coerceAtLeast(unit)
+            val inset = radius*.96f
+            val anchor = if (bottom) anchorX else anchorY
+            val center = if (low+inset <= high-inset) anchor.coerceIn(low+inset, high-inset) else (low+high)/2
+            val x = if (bottom) center else boundary-pivot
+            val y = if (bottom) boundary+pivot else center
             return FinderArcGeometry(x,y,radius,boundary,bottom)
         }
     }

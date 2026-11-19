@@ -8,9 +8,9 @@ import kotlin.math.roundToInt
 /** Normalized text placement, shared by the camera and settings editors. */
 class PrintPlacementControls(private val shell: MobileShell,initial: Map<String,Any?>,compact: Boolean=false,
     private val changed: ()->Unit): LinearLayout(shell.root.context) {
-    private val brightnessBar=SeekBar(context)
-    private val xBar=SeekBar(context)
-    private val yBar=SeekBar(context)
+    private val brightnessBar=shell.parameterRuler()
+    private val xBar=shell.parameterRuler()
+    private val yBar=shell.parameterRuler()
     val brightness get()=brightnessBar.progress/100.0
     val x get()=xBar.progress/100.0
     val y get()=yBar.progress/100.0

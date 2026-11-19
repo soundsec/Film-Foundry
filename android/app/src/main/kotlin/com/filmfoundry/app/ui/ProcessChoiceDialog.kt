@@ -11,12 +11,16 @@ class ProcessChoiceDialog(private val activity: ComponentActivity,private val sh
         val root=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;setPadding(shell.dp(16),shell.dp(8),shell.dp(16),shell.dp(8)) }
         val tabs=LinearLayout(activity);root.addView(HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled=false;addView(tabs) })
         val rows=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL }
-        val scroll=ScrollView(activity).apply { addView(rows) };root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
+        val scroll=SectionScrollView(activity).apply { addView(rows) };root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
         val buttons=mutableListOf<Button>()
         val dialog=AlertDialog.Builder(activity).setTitle(shell.copy("选择冲洗方案","Choose a process"))
             .setView(root).setNegativeButton(shell.copy("取消","Cancel"),null).create()
+        var currentGroup = -1
         fun group(index: Int) {
-            buttons.forEachIndexed { i,b->b.isSelected=i==index };rows.removeAllViews()
+            if (index !in buttons.indices || currentGroup == index) return
+            currentGroup = index
+            shell.selectEditorTab(buttons,index)
+            rows.removeAllViews()
             val items=entries.filter { it.group==index }
             if(items.isEmpty()) shell.note(rows,"暂无保存的配方，可在设置中创建。","No saved recipes. Create one in Settings.")
             items.forEach { entry -> shell.action(rows,entry.label,entry.label) { dialog.dismiss();choose(entry.index) }.apply {
@@ -28,6 +32,7 @@ class ProcessChoiceDialog(private val activity: ComponentActivity,private val sh
         listOf("推荐" to "Recommended","工艺" to "Processes","药液风格" to "Bath styles","我的配方" to "My recipes").forEachIndexed { i,label ->
             buttons+=shell.editorTab(tabs,label.first,label.second) { group(i) }
         }
+        scroll.turnPage = { delta -> group(currentGroup + delta) }
         group(entries.firstOrNull { it.index==selected }?.group ?: 0)
         dialog.show();dialog.window?.setLayout(-1,(activity.resources.displayMetrics.heightPixels*.72).toInt());shell.decorate(root)
     }

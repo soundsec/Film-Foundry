@@ -8,7 +8,7 @@ Film Foundry is an image-creation tool built around materials and processes. Exp
 
 **Desktop 0.4.0 Alpha** · [中文](README.md) · [Release notes](docs/CHANGELOG.md)
 
-**Unofficial source snapshot · 2026-11-18.** The desktop workbench adds two-axis test strips, density probes, full-scale crop previews and process checkpoints. Android includes a one-shot camera for seven experimental materials. The available binaries are still Desktop 0.4.0 Alpha and Android 0.1.0 test builds. [Snapshot notes](docs/DEVELOPMENT_SNAPSHOT.md)
+**Unofficial source snapshot · 2026-11-19.** Android adds a collapsible scan drawer, fine-adjustment rulers, press-and-hold photo comparison and four themes. Port maintainers can bundle community translations. The desktop tour updates its sample automatically, and material probes mark pinned readings on the image. [Snapshot notes](docs/DEVELOPMENT_SNAPSHOT.md)
 
 ## Mobile
 

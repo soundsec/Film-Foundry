@@ -68,22 +68,39 @@ class ScannerCurvePanel(private val activity: ComponentActivity,private val shel
             val dot=CurveChannelDot(activity,shell,index).apply {
                 contentDescription=label;isFocusable=true;setOnClickListener { state.select(index);graph.selected=0;refresh() }
             }
-            tabs+=dot;channels.addView(dot,LayoutParams(shell.dp(48),shell.dp(44)))
+            tabs+=dot;channels.addView(dot,LayoutParams(shell.dp(48),shell.dp(48)))
         }
         histogramCaption.textSize=11f;addView(histogramCaption)
-        addView(graph,LayoutParams(-1,shell.dp(150)))
+        addView(graph,LayoutParams(-1,shell.dp(240)))
         val tools=LinearLayout(activity).apply { gravity=Gravity.CENTER_VERTICAL };addView(tools)
-        enabled.text=shell.copy("启用","On");tools.addView(enabled,LayoutParams(0,shell.dp(44),.8f))
+        enabled.text=shell.copy("启用","On");tools.addView(enabled,LayoutParams(0,shell.dp(48),.8f))
         enabled.setOnCheckedChangeListener { _,checked -> if(!binding) { started();state.enable(checked);changed(state.payload());committed() } }
         shell.styleButton(coordinates);coordinates.minWidth=0;coordinates.textSize=12f;coordinates.setPadding(0,0,0,0)
         coordinates.contentDescription=shell.copy("输入当前点坐标","Enter selected point coordinates")
-        tools.addView(coordinates,LayoutParams(0,shell.dp(44),1.5f));coordinates.setOnClickListener { editPoint() }
+        tools.addView(coordinates,LayoutParams(0,shell.dp(48),1.5f));coordinates.setOnClickListener { editPoint() }
         remove.text="−";remove.contentDescription=shell.copy("删除选中点，端点保留","Delete selected point; endpoints stay")
-        shell.styleButton(remove);remove.minWidth=0;remove.setPadding(0,0,0,0);tools.addView(remove,LayoutParams(0,shell.dp(44),.6f))
+        shell.styleButton(remove);remove.minWidth=0;remove.setPadding(0,0,0,0);tools.addView(remove,LayoutParams(0,shell.dp(48),.6f))
         remove.setOnClickListener { runCatching { val next=state.curve.remove(graph.selected);started();graph.selected=0;edit(next);committed() } }
         shell.action(tools,"↺","↺") { started();graph.selected=0;edit(PiecewiseCurve.identity());committed() }.apply {
-            layoutParams=LayoutParams(0,shell.dp(44),.6f);minWidth=0;setPadding(0,0,0,0)
+            layoutParams=LayoutParams(0,shell.dp(48),.6f);minWidth=0;setPadding(0,0,0,0)
             contentDescription=shell.copy("当前通道恢复直线","Reset this channel")
+        }
+        for(index in 1 until tools.childCount) {
+            (tools.getChildAt(index).layoutParams as LayoutParams).marginStart=shell.dp(4)
+        }
+        // Fit the graph and its action row to the actual scroll viewport, including font and inset changes.
+        shell.scanScroller?.let { viewport ->
+            val bounds=Rect()
+            fun fitGraph() {
+                if(!isShown || tools.height==0 || viewport.height==0) return
+                bounds.set(0,0,tools.width,tools.height)
+                viewport.offsetDescendantRectToMyCoords(tools,bounds)
+                val height=(graph.height+viewport.height-viewport.paddingBottom-bounds.bottom-shell.dp(4))
+                    .coerceIn(shell.dp(144),shell.dp(240))
+                if(graph.layoutParams.height!=height) graph.layoutParams=graph.layoutParams.apply { this.height=height }
+            }
+            addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_->fitGraph() }
+            viewport.addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_->fitGraph() }
         }
         graph.contentDescription=shell.copy("双击曲线加点，拖动调整；点坐标可精确输入","Double tap the curve to add a point; drag to adjust, or tap coordinates for precise input")
         graph.changed=::edit;graph.selectionChanged=::showPoint;graph.editStarted=started;graph.editFinished=committed
@@ -149,7 +166,7 @@ internal class CurveChannelDot(context: android.content.Context,private val shel
     }
 }
 
-private class CurveGraph(context: android.content.Context,private val shell: MobileShell): View(context) {
+internal class CurveGraph(context: android.content.Context,private val shell: MobileShell): View(context) {
     var curve=PiecewiseCurve.identity()
     var selected=0
     var changed: (PiecewiseCurve)->Unit={}
@@ -161,6 +178,8 @@ private class CurveGraph(context: android.content.Context,private val shell: Mob
     private val paint=Paint(Paint.ANTI_ALIAS_FLAG)
     private val margin=shell.dp(16).toFloat()
     private var dragging=false
+    private var grabX=0f
+    private var grabY=0f
     private fun px(x: Double)=margin+x.toFloat()*(width-2*margin)
     private fun py(y: Double)=height-margin-y.toFloat()*(height-2*margin)
     private fun point(e: MotionEvent)=CurvePoint(((e.x-margin)/(width-2*margin)).toDouble().coerceIn(0.0,1.0),((height-margin-e.y)/(height-2*margin)).toDouble().coerceIn(0.0,1.0))
@@ -188,9 +207,18 @@ private class CurveGraph(context: android.content.Context,private val shell: Mob
         paint.color=Color.rgb(65,65,65);paint.strokeWidth=1f
         for(i in 0..4) { val f=i/4.0;canvas.drawLine(px(f),py(0.0),px(f),py(1.0),paint);canvas.drawLine(px(0.0),py(f),px(1.0),py(f),paint) }
         canvas.save();canvas.clipRect(margin,margin,width-margin,height-margin)
+        paint.color=Color.rgb(86,86,86)
+        paint.strokeWidth=shell.dp(1).toFloat()
+        canvas.drawLine(px(0.0),py(0.0),px(1.0),py(1.0),paint)
         paint.color=curveColor;paint.strokeWidth=shell.dp(2).toFloat()
         curve.points.zipWithNext().forEach { (a,b)->canvas.drawLine(px(a.x),py(a.y),px(b.x),py(b.y),paint) }
         curve.points.forEachIndexed { i,p -> paint.color=if(i == selected) Color.WHITE else curveColor;canvas.drawCircle(px(p.x),py(p.y),shell.dp(if(i == selected) 6 else 4).toFloat(),paint) }
+        if (dragging) {
+            val p=curve.points[selected]
+            paint.color=Color.LTGRAY;paint.strokeWidth=1f
+            canvas.drawLine(px(p.x),margin,px(p.x),height-margin,paint)
+            canvas.drawLine(margin,py(p.y),width-margin,py(p.y),paint)
+        }
         canvas.restore()
     }
     override fun performClick(): Boolean { super.performClick();return true }
@@ -198,9 +226,14 @@ private class CurveGraph(context: android.content.Context,private val shell: Mob
         if(event.actionMasked==MotionEvent.ACTION_DOWN) editStarted()
         gestures.onTouchEvent(event)
         when(event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { nearest(event)?.let { selected=it;dragging=true;selectionChanged();invalidate() };parent.requestDisallowInterceptTouchEvent(true) }
-            MotionEvent.ACTION_MOVE -> if(dragging && event.pointerCount == 1) { val p=point(event);runCatching { changed(curve.move(selected,p.x,p.y)) } }
-            MotionEvent.ACTION_UP,MotionEvent.ACTION_CANCEL -> { dragging=false;parent.requestDisallowInterceptTouchEvent(false);editFinished();performClick() }
+            MotionEvent.ACTION_DOWN -> { nearest(event)?.let { selected=it;dragging=true
+                grabX=px(curve.points[it].x)-event.x;grabY=py(curve.points[it].y)-event.y
+                selectionChanged();invalidate()
+            };parent.requestDisallowInterceptTouchEvent(dragging) }
+            MotionEvent.ACTION_MOVE -> if(dragging && event.pointerCount == 1) { val x=((event.x+grabX-margin)/(width-2*margin)).toDouble().coerceIn(0.0,1.0)
+                val y=((height-margin-event.y-grabY)/(height-2*margin)).toDouble().coerceIn(0.0,1.0)
+                runCatching { changed(curve.move(selected,x,y)) } }
+            MotionEvent.ACTION_UP,MotionEvent.ACTION_CANCEL -> { dragging=false;parent.requestDisallowInterceptTouchEvent(false);editFinished();invalidate();if(event.actionMasked==MotionEvent.ACTION_UP) performClick() }
         }
         return true
     }

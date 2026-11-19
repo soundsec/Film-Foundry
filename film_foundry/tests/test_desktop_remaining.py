@@ -74,6 +74,13 @@ def test_gallery_tour_and_native_dialog(desktop,tmp_path):
     for stage in (1,2,3,4):
         tour.next.click();wait(lambda:not tour.busy)
         assert tour.page==stage and tour.viewer.source is not None,tour.status.text()
+        if stage==1:
+            tour.value.setValue(1.0)
+            tour.value.setValue(1.5)
+            assert not tour.next.isEnabled()
+            wait(lambda:tour.next.isEnabled() and not tour.busy)
+            assert tour.config.exposure_ev==1.5
+            assert ('expose',1.5,tour.config.chemistry.time_min,tour.config.look.print_exposure_ev) in tour.images
     tour.next.click()
     assert load_preferences()['tour_seen'] and panel.library_view.tour_banner.isHidden()
     assert panel.edit_tools.capture()==before
@@ -181,3 +188,73 @@ def test_linked_trial_transfers_selected_area(desktop,tmp_path,monkeypatch):
     monkeypatch.setattr(TrialComparison,'exec',inspect)
     strip.compare_all()
     strip.reject()
+
+def test_curve_window_refreshes_current_recipe(desktop,monkeypatch):
+    from film_foundry.ui import characteristic_curve
+    from film_foundry.ui.qt import QtWidgets
+    from film_foundry.model.config import DarkroomConfig
+
+    recipe = DarkroomConfig()
+    seen = []
+    measure = characteristic_curve.measure_curve
+    def record(config):
+        seen.append(config.chemistry.time_min)
+        return measure(config)
+    monkeypatch.setattr(characteristic_curve, 'measure_curve', record)
+    monkeypatch.setattr(desktop, '_config', lambda: recipe)
+    parent = desktop.film_probe.dialog
+    curve = characteristic_curve.show_curve(desktop,parent)
+    assert not curve.isModal() and characteristic_curve.show_curve(desktop,parent) is curve
+    wait(lambda:not curve.busy)
+    before = recipe.chemistry.time_min
+    recipe.chemistry.time_min = before+2
+    curve.findChild(QtWidgets.QPushButton).click()
+    wait(lambda:not curve.busy)
+    assert seen==[before,before+2] and curve.findChild(characteristic_curve.CurvePlot).data is not None
+    curve.close()
+    assert parent._curve_dialog is None
+
+
+def test_material_pin_tracks_bordered_rotated_result(desktop):
+    from types import SimpleNamespace
+    from film_foundry.tests.test_material_recipes import formed
+    from film_foundry.core.material_family import ViewingConditions, observation_border
+    from film_foundry.ui.comparison_view import ComparisonView
+    from film_foundry.ui.material_probe import MaterialProbe
+    from film_foundry.ui.qt import QtCore,QtGui,QtWidgets
+
+    session=formed('integral')
+    session.scan_adjustments['rotation_quarters']=1
+    view=ViewingConditions(include_border=True,border_style='pod_short')
+    body=session.group.bodies[0]
+    h,w=next(iter(body.fields.values())).shape[:2]
+    top,bottom,left,right=observation_border(body,(h,w),view)
+    widget=ComparisonView()
+    owner=SimpleNamespace(session=session,viewer=widget,kind='integral')
+    panel=QtWidgets.QWidget()
+    probe=MaterialProbe(owner,QtWidgets.QMenu(panel),QtWidgets.QVBoxLayout(panel))
+    frame=QtGui.QPixmap(h+top+bottom,w+left+right)
+    frame.fill(QtCore.Qt.GlobalColor.gray)
+    widget.set_pixmap_pair(frame,frame)
+    widget.set_rotation(3)
+    widget.set_comparison_mode('side_by_side')
+    probe.publish(0,view)
+    probe.set_aperture(5)
+    probe.pins=[(5.5/w,7.5/h)]
+    probe.show_pins()
+    assert '(5, 7)' in probe.readout.text()
+    def render_marks():
+        canvas=QtGui.QImage(150,80,QtGui.QImage.Format.Format_ARGB32)
+        canvas.fill(QtCore.Qt.GlobalColor.transparent)
+        painter=QtGui.QPainter(canvas)
+        widget.probe_overlay(painter)
+        painter.end()
+        return canvas
+    # The two rotations cancel. Only the result half carries the five-pixel ring.
+    cx=widget.displayed_result().width()+left+5
+    cy=top+7
+    assert any(render_marks().pixelColor(x,cy).alpha() for x in range(cx+4,cx+8))
+    widget.set_source_held(True)
+    assert not render_marks().pixelColor(cx+5,cy).alpha()
+    probe.clear()
+    assert not probe.pins and probe.readout.isHidden()

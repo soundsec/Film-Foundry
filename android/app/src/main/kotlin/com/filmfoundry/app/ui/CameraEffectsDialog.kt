@@ -53,7 +53,7 @@ class CameraEffectsDialog(private val activity: ComponentActivity,private val sh
         var body=(initial["seed"] as? Number)?.toLong() ?: 14023L;var gate=(initial["gate_seed"] as? Number)?.toLong() ?: body
         var changed: ()->Unit={}
         val exposureCaption=TextView(activity).apply { visibility=if(imprintOnly) android.view.View.GONE else android.view.View.VISIBLE };panel.addView(exposureCaption)
-        val exposure=SeekBar(activity).apply { max=80;progress=40;visibility=if(imprintOnly) android.view.View.GONE else android.view.View.VISIBLE };panel.addView(exposure)
+        val exposure=shell.parameterRuler().apply { max=80;progress=40;visibility=if(imprintOnly) android.view.View.GONE else android.view.View.VISIBLE };panel.addView(exposure)
         val autoAdvance=initialAutoAdvance?.let { value -> CheckBox(activity).apply {
             text=c("自动过片","Auto advance");isChecked=value;panel.addView(this)
         } }
@@ -70,7 +70,7 @@ class CameraEffectsDialog(private val activity: ComponentActivity,private val sh
         listOf("漏光" to "Light leaks","片门" to "Gate dirt","打印" to "Imprint").forEachIndexed { i,label->sectionTabs+=shell.editorTab(sectionBar,label.first,label.second) { selectSection(i) } }
         selectSection(if(imprintOnly) 2 else 0)
         val leakLabel=TextView(activity);effectsPanel.addView(leakLabel)
-        val leak=SeekBar(activity).apply { max=100;progress=((initial["leak"] as? Number)?.toDouble()?.times(100))?.toInt() ?: 0 };effectsPanel.addView(leak)
+        val leak=shell.parameterRuler().apply { max=100;progress=((initial["leak"] as? Number)?.toDouble()?.times(100))?.toInt() ?: 0 };effectsPanel.addView(leak)
         fun slider(bar: SeekBar,action: ()->Unit) { bar.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?,p: Int,user: Boolean)=action()
             override fun onStartTrackingTouch(s: SeekBar?)=Unit;override fun onStopTrackingTouch(s: SeekBar?)=Unit
@@ -115,7 +115,7 @@ class CameraEffectsDialog(private val activity: ComponentActivity,private val sh
                 picker(rows,shapeLabels,shapes.indexOf(component["shape"])) { component["shape"]=shapes[it] }
                 picker(rows,sideLabels,sides.indexOf(component["side"])) { component["side"]=sides[it] }
                 val weight=TextView(activity);rows.addView(weight)
-                val bar=SeekBar(activity).apply { max=100;progress=(((component["strength"] as? Number)?.toDouble() ?: 1.0)*100).toInt().coerceIn(0,100) };rows.addView(bar)
+                val bar=shell.parameterRuler().apply { max=100;progress=(((component["strength"] as? Number)?.toDouble() ?: 1.0)*100).toInt().coerceIn(0,100) };rows.addView(bar)
                 fun caption() {
                     weight.text=c("分量强度 ${bar.progress}% · 0 关闭","Component strength ${bar.progress}% · 0 off")
                     componentButtons.getOrNull(selectedComponent)?.apply {

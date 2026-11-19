@@ -1,4 +1,5 @@
 """Run one cancellable, budgeted computation from a desktop work dialog."""
+from film_foundry.app.preview_budget import Priority
 from film_foundry.app.control import WorkflowCancelled
 from film_foundry.ui.preview_worker import PreviewWorker
 from film_foundry.ui.qt import QtCore, QtWidgets
@@ -17,13 +18,13 @@ class WorkDialog(QtWidgets.QDialog):
         self.status=QtWidgets.QLabel()
         self.status.setWordWrap(True)
 
-    def submit(self,work,publish,status):
+    def submit(self,work,publish,status,priority=Priority.INTERACTIVE):
         if self.busy:return
         self.busy=True
         self.status.setText(status)
         self.running_changed.emit(True)
         self.publish=publish
-        self.flag=self.worker.submit(work)
+        self.flag=self.worker.submit(work,priority)
 
     @QtCore.Slot(object)
     def _finish_work(self,future):

@@ -31,6 +31,8 @@ import kotlin.math.pow
 
 /** A plain one-shot camera. It is not part of the roll, library, or main navigation. */
 class ExperimentalMaterialActivity : ComponentActivity() {
+    override fun attachBaseContext(newBase: android.content.Context) = super.attachBaseContext(MobileLanguages.configured(newBase))
+    private val words by lazy { MobileLanguages.forContext(this) }
     private val worker = Executors.newSingleThreadExecutor()
     private val sounds by lazy { CameraSounds.get(this) }
     private lateinit var camera: SingleStillCamera
@@ -282,6 +284,6 @@ class ExperimentalMaterialActivity : ComponentActivity() {
         return (encoded.coerceIn(0.0, 1.0) * 255.0 + 0.5).toInt()
     }
 
-    private fun text(zh: String, en: String) = if (resources.configuration.locales[0].language == "zh") zh else en
+    private fun text(zh: String, en: String) = words.text(zh,en)
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 }

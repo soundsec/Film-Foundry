@@ -8,6 +8,8 @@ import java.util.concurrent.Executors
 
 /** Silent foreground processing only: no camera, sensors, or hidden automatic task restart. */
 class ProcessingService: Service() {
+    override fun attachBaseContext(newBase: android.content.Context) = super.attachBaseContext(com.filmfoundry.app.ui.MobileLanguages.configured(newBase))
+    private val words by lazy { com.filmfoundry.app.ui.MobileLanguages.forContext(this) }
     private val executor=Executors.newSingleThreadExecutor { runnable -> Thread({ android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);runnable.run() },"FilmFoundry-processing") }
     private val handler=Handler(Looper.getMainLooper())
     private var active: ProcessingWork.Work?=null
@@ -15,7 +17,7 @@ class ProcessingService: Service() {
     private var renewal=0L
     private var lastText=""
     private val notifications get()=getSystemService(NotificationManager::class.java)
-    private fun copy(zh: String,en: String)=if(resources.configuration.locales[0].language=="zh") zh else en
+    private fun copy(zh: String,en: String)=words.text(zh,en)
     private fun notification(job: ProcessingWork.Work): Notification {
         val open=PendingIntent.getActivity(this,0,Intent(this,com.filmfoundry.app.ProcessHostActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val pause=PendingIntent.getService(this,1,Intent(this,ProcessingService::class.java).setAction("pause").putExtra("job_id",job.id),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)

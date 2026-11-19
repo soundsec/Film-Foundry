@@ -24,6 +24,8 @@ Film fast v3 adds monochrome RGB sensitivity and refreshed built-in/seasonal mat
 
 手机端独立实现材料计算，与桌面共享潜影／介质格式和FFC2配方。界面围绕拍摄、胶卷库、图库和设置组织。
 
+第三方译者可从当前源码生成手机文案模板，在调试 APK 中试译，并复用桌面语言包中相同的词条。[翻译与移植说明 / Translation and porting](TRANSLATING.md)
+
 ## 编译
 
 使用JDK 17和Android SDK 37。将`JAVA_HOME`指向JDK 17，在本目录执行：

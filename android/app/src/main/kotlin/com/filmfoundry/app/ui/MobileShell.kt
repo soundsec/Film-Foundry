@@ -11,7 +11,10 @@ import android.widget.*
 import androidx.activity.ComponentActivity
 
 /** Native view shell only. Pages stay mounted; navigation never recreates a workflow session. */
-class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, initialPage: String?) {
+class MobileShell(private val activity: ComponentActivity, val palette: MobilePalette, initialPage: String?) {
+    internal val words = MobileLanguages.forContext(activity)
+    constructor(activity: ComponentActivity, ivory: Boolean, initialPage: String?) : this(activity, if(ivory) MobilePalette.IVORY else MobilePalette.DARK, initialPage)
+    val ivory = palette.inkOn(palette.background) == Color.BLACK
     enum class Page(val key: String, val zh: String, val en: String, val index: String) {
         START("start","拍摄","Camera","01"),LOADING("loading","装填","Load film",""),CAPTURE("capture","拍摄","Camera",""),
         ROLLS("rolls","胶卷库","Rolls","02"),ROLL_DETAIL("roll_detail","胶卷详情","Roll details",""),ROLL_BATCH("roll_batch","冲洗结果","Development results",""),DEVELOP("develop","冲洗","Develop",""),
@@ -30,12 +33,12 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
             else -> this
         }
     }
-    private val bg=Color.parseColor(if(ivory) "#F2EEE5" else "#141414")
-    private val surface=Color.parseColor(if(ivory) "#FAF7F0" else "#20201F")
-    private val ink=Color.parseColor(if(ivory) "#292721" else "#EFEAE1")
-    private val muted=Color.parseColor(if(ivory) "#686257" else "#B5AEA1")
-    private val accent=Color.parseColor(if(ivory) "#815C2E" else "#D7B278")
-    private val line=Color.parseColor(if(ivory) "#D8D1C4" else "#383631")
+    private val bg=palette.background
+    private val surface=palette.panel
+    internal val ink=palette.inkOn(bg)
+    private val muted=palette.muted
+    private val accent=palette.accent
+    private val line=palette.border
     // Keep stateful backgrounds across status updates and own no button lifetime.
     private val styledButtons=java.util.WeakHashMap<Button,Pair<Boolean,String?>>()
     private val navigationIcons=java.util.WeakHashMap<Button,Pair<NavigationIcon,Boolean>>()
@@ -65,23 +68,23 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
     private val task=LinearLayout(activity)
     private val pages=linkedMapOf<Page,LinearLayout>()
     private val scrolls=linkedMapOf<Page,View>()
+    val guideTabs = LinearLayout(activity)
+    internal val guideContent = SectionScrollView(activity)
     private val history=mutableListOf<Page>()
     val cameraSurface=FrameLayout(activity)
     val viewerSurface=FrameLayout(activity)
     val scanPreviewSurface=FrameLayout(activity).apply { setBackgroundColor(0xFF161616.toInt()) }
     val scanOverlaySurface=FrameLayout(activity)
     val scanPresetBar=LinearLayout(activity).apply { orientation=LinearLayout.HORIZONTAL;gravity=android.view.Gravity.CENTER_VERTICAL;setPadding(dp(12),dp(2),dp(12),dp(2));setBackgroundColor(surface) }
-    val scanTools=LinearLayout(activity).apply { orientation=LinearLayout.HORIZONTAL;setPadding(dp(20),dp(6),dp(20),dp(18));setBackgroundColor(surface) }
+    val scanTools=LinearLayout(activity).apply { orientation=LinearLayout.HORIZONTAL;setPadding(dp(12),dp(4),dp(12),dp(4));setBackgroundColor(surface) }
     val scanActions=LinearLayout(activity).apply { orientation=LinearLayout.HORIZONTAL;setPadding(dp(12),dp(2),dp(12),dp(6));setBackgroundColor(surface) }
     val scanUndo=Button(activity)
     val scanRedo=Button(activity)
     val scanTitle=TextView(activity)
-    val scanFocusButton=Button(activity)
     val scanResultBar=LinearLayout(activity).apply { orientation=LinearLayout.HORIZONTAL;visibility=View.GONE;setPadding(dp(8),0,dp(8),0) }
-    private var scanToolScroller: View?=null
-    private var scanFocused=false
-    private var scanScroller: ScrollView?=null
-    private var scanAspect=1.5f
+    private val scanDrawer = ScanAdjustmentDrawer(this)
+    internal var scanScroller: SectionScrollView?=null
+        private set
     val developHeader=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;setPadding(dp(20),dp(8),dp(20),dp(8));setBackgroundColor(surface) }
     val developResultBar=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;visibility=View.GONE;setPadding(dp(16),0,dp(16),dp(4));setBackgroundColor(surface) }
     val developSteps=LinearLayout(activity).apply { orientation=LinearLayout.HORIZONTAL;setPadding(dp(12),dp(4),dp(12),dp(4)) }
@@ -126,7 +129,7 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
         prefs.edit().putBoolean("finder_gesture_guide_v1",true).apply()
     }
     fun scrollToTop(page: Page) { (when(page) { Page.SCAN->scanScroller;Page.DEVELOP->developScroller;else->scrolls[page] as? ScrollView })?.let { scroll -> scroll.post { scroll.scrollTo(0,0) } } }
-    fun copy(zh: String,en: String)=if(activity.resources.configuration.locales[0].language == "zh") zh else en
+    fun copy(zh: String,en: String)=words.text(zh,en)
     fun dp(value: Int)=(value*activity.resources.displayMetrics.density).toInt()
     /** Fixed finder instruments fit their own cells; normal UI text keeps system font scaling. */
     fun fitFinderText(view: TextView,sizeSp: Float,minDp: Int=10) {
@@ -158,12 +161,6 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
                 v.setPadding(maxOf(v.paddingLeft,clearance),maxOf(v.paddingTop,dp(8)),
                     maxOf(v.paddingRight,clearance),maxOf(v.paddingBottom,dp(8)))
             }
-            if(Build.VERSION.SDK_INT>=31) {
-                val radius=maxOf(insets.getRoundedCorner(android.view.RoundedCorner.POSITION_BOTTOM_LEFT)?.radius ?: 0,
-                    insets.getRoundedCorner(android.view.RoundedCorner.POSITION_BOTTOM_RIGHT)?.radius ?: 0)
-                val clearance=maxOf(dp(18),radius/2-(bars?.bottom ?: 0))
-                scanTools.setPadding(dp(20),dp(6),dp(20),clearance)
-            }
             if(selected !in listOf(Page.CAPTURE,Page.LOADING)) {
                 val radius=if(Build.VERSION.SDK_INT>=31) maxOf(
                     insets.getRoundedCorner(android.view.RoundedCorner.POSITION_BOTTOM_LEFT)?.radius ?: 0,
@@ -179,7 +176,7 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
         val back=Button(activity).apply { text="‹";textSize=26f;minWidth=0;setPadding(0,0,0,0);contentDescription=copy("返回上一页","Go back");setOnClickListener { back() };tag="page_back" }
         navigationIcon(back,NavigationIcon.BACK)
         titleRow.addView(back,LinearLayout.LayoutParams(dp(48),dp(48)));heading.textSize=28f;heading.typeface=Typeface.DEFAULT_BOLD;heading.setTextColor(ink);titleRow.addView(heading,LinearLayout.LayoutParams(0,-2,1f))
-        titleRow.addView(Button(activity).apply { text="?";contentDescription=copy("查看本页帮助","Help for this page");setOnClickListener { openGuide() };styleButton(this) },LinearLayout.LayoutParams(dp(48),dp(48)));header.addView(titleRow)
+        titleRow.addView(Button(activity).apply { text="?";tag="page_help";contentDescription=copy("查看本页帮助","Help for this page");setOnClickListener { openGuide() };styleButton(this) },LinearLayout.LayoutParams(dp(48),dp(48)));header.addView(titleRow)
         root.addView(header)
         root.addView(body,LinearLayout.LayoutParams(-1,0,1f))
         for(page in Page.entries) {
@@ -227,38 +224,45 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
                 addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_->tryFinderGuide() }
             } else if(page == Page.LOADING) loadingSurface
             else if(page == Page.VIEWER) viewerSurface
-            else if(page == Page.SCAN) object: LinearLayout(activity) {
-                init {
-                    orientation=VERTICAL
-                    scanActions.setPadding(dp(4),0,dp(4),0)
-                    action(scanActions,"‹","‹") { back() }.apply {
-                        tag="scan_toolbar";contentDescription=copy("返回上一页","Go back");styleButton(this)
-                        layoutParams=LayoutParams(dp(48),dp(48))
-                        navigationIcon(this,NavigationIcon.BACK)
-                    }
-                    scanTitle.apply { textSize=14f;maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END;setTextColor(ink) }
-                    scanActions.addView(scanTitle,LayoutParams(0,-2,1f))
-                    listOf(scanUndo to copy("撤销扫描调整","Undo scan edit"),scanRedo to copy("重做扫描调整","Redo scan edit")).forEachIndexed { index,(button,label) ->
-                        button.text=if(index==0) "↶" else "↷";button.tag="scan_toolbar";button.contentDescription=label;button.tooltipText=label
-                        styleButton(button);scanActions.addView(button,LayoutParams(dp(48),dp(48)));button.isEnabled=false
-                    }
-                    addView(scanActions,LayoutParams(-1,-2))
-                    addView(scanPreviewSurface,LayoutParams(-1,dp(220)))
-                    addView(scanResultBar,LayoutParams(-1,-2))
-                    addView(scanPresetBar,LayoutParams(-1,-2))
-                    addView(ScrollView(activity).apply { isFillViewport=true;clipToPadding=false;addView(content);scanScroller=this },LayoutParams(-1,0,1f))
-                    addView(HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled=false;clipToPadding=false;addView(scanTools,ViewGroup.LayoutParams(-2,-2));scanToolScroller=this },LayoutParams(-1,-2))
-                    scanPreviewSurface.addView(scanFocusButton.apply {
-                        tag="scan_toolbar";contentDescription=copy("展开看图区域","Expand photo view");navigationIcon(this,NavigationIcon.EXPAND,true)
-                        setOnClickListener { focusScan(!scanFocused) }
-                    },FrameLayout.LayoutParams(dp(48),dp(48),android.view.Gravity.TOP or android.view.Gravity.START).apply { setMargins(dp(8),dp(8),dp(8),0) })
-                    scanPreviewSurface.addView(scanOverlaySurface,FrameLayout.LayoutParams(-1,-1))
+            else if(page == Page.SCAN) LinearLayout(activity).apply {
+                orientation=LinearLayout.VERTICAL
+                scanActions.setPadding(dp(4),0,dp(4),0)
+                val backToFrame=LinearLayout(activity).apply {
+                    gravity=android.view.Gravity.CENTER_VERTICAL;minimumHeight=dp(48)
+                    background=android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(line),null,rounded(Color.WHITE,5))
+                    isFocusable=true;contentDescription=copy("返回上一页","Go back");setOnClickListener { back() }
+                    addView(ImageView(activity).apply {
+                        setImageDrawable(NavigationIconDrawable(NavigationIcon.BACK,ColorStateList.valueOf(ink)))
+                        importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    },LinearLayout.LayoutParams(dp(32),dp(32)))
+                    scanTitle.apply { textSize=14f;maxLines=1;setTextColor(ink);importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }
+                    addView(scanTitle,LinearLayout.LayoutParams(-2,-2))
                 }
-                override fun onSizeChanged(w: Int,h: Int,oldw: Int,oldh: Int) {
-                    super.onSizeChanged(w,h,oldw,oldh)
-                    if(scanFocused) return
-                    resizeScanPreview()
+                scanActions.addView(backToFrame,LinearLayout.LayoutParams(0,-2,1f))
+                listOf(scanUndo to copy("撤销扫描调整","Undo scan edit"),scanRedo to copy("重做扫描调整","Redo scan edit")).forEachIndexed { index,(button,label) ->
+                    button.text=if(index==0) "↶" else "↷";button.tag="scan_toolbar";button.contentDescription=label;button.tooltipText=label
+                    styleButton(button);scanActions.addView(button,LinearLayout.LayoutParams(dp(48),dp(48)));button.isEnabled=false
                 }
+                addView(scanActions,LinearLayout.LayoutParams(-1,-2))
+                addView(scanResultBar,LinearLayout.LayoutParams(-1,-2))
+                addView(LinearLayout(activity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(scanPreviewSurface, LinearLayout.LayoutParams(-1, 0, 1f))
+                    addView(scanDrawer, LinearLayout.LayoutParams(-1, -2))
+                }, LinearLayout.LayoutParams(-1, 0, 1f))
+                scanDrawer.controls.apply {
+                    addView(HorizontalScrollView(activity).apply {
+                        isHorizontalScrollBarEnabled = false
+                        addView(scanTools)
+                    }, LinearLayout.LayoutParams(-1, -2))
+                    addView(SectionScrollView(activity).apply {
+                        isFillViewport = true
+                        clipToPadding = false
+                        addView(content)
+                        scanScroller = this
+                    }, LinearLayout.LayoutParams(-1, 0, 1f))
+                }
+                scanPreviewSurface.addView(scanOverlaySurface,FrameLayout.LayoutParams(-1,-1))
             }
             else if(page==Page.DEVELOP) LinearLayout(activity).apply {
                 orientation=LinearLayout.VERTICAL
@@ -267,6 +271,17 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
                 addView(HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled=false;addView(developSteps) },LinearLayout.LayoutParams(-1,-2))
                 addView(ScrollView(activity).apply { isFillViewport=true;clipToPadding=false;addView(content);developScroller=this },LinearLayout.LayoutParams(-1,0,1f))
                 addView(developActions,LinearLayout.LayoutParams(-1,-2))
+            }
+            else if(page==Page.SETTINGS_GUIDE) LinearLayout(activity).apply {
+                orientation=LinearLayout.VERTICAL
+                addView(HorizontalScrollView(activity).apply {
+                    isHorizontalScrollBarEnabled=false
+                    setPadding(dp(12),0,dp(12),dp(4))
+                    addView(guideTabs)
+                },LinearLayout.LayoutParams(-1,-2))
+                guideContent.isFillViewport=true
+                guideContent.addView(content)
+                addView(guideContent,LinearLayout.LayoutParams(-1,0,1f))
             }
             else ScrollView(activity).apply { isFillViewport=true;clipToPadding=false;addView(content) }
             pages[page]=content;scrolls[page]=scroll;body.addView(scroll,FrameLayout.LayoutParams(-1,-1))
@@ -314,6 +329,7 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
         closeQuickControls()
         if(page!=Page.CAPTURE) { finderGuideRequested=false;finderCoach?.stop() }
         if(page != selected) {
+            if(page == Page.SCAN) scanDrawer.settle(false)
             if(page.parent != page && remember) history.add(selected) else if(page.parent == page) history.clear()
         }
         selected=page
@@ -326,18 +342,19 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
         task.visibility=if(capture || page==Page.VIEWER || (page==Page.SCAN && progress.visibility!=View.VISIBLE)) View.GONE else View.VISIBLE
         if(page!=Page.CAPTURE) closeCaptureMenu()
         heading.text=copy(page.zh,page.en)
+        header.findViewWithTag<View>("page_help").visibility=if(page==Page.SETTINGS_GUIDE) View.GONE else View.VISIBLE
         header.findViewWithTag<View>("page_back")?.visibility=if(page.parent == page) View.GONE else View.VISIBLE
         for((key,scroll) in scrolls) scroll.visibility=if(key == page) View.VISIBLE else View.GONE
         for((key,item) in nav) {
             item.isSelected=key == page.parent;item.setTextColor(if(key == page.parent) accent else muted)
             item.typeface=if(key == page.parent) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
             item.compoundDrawables.filterNotNull().forEach { it.setTint(if(key == page.parent) accent else muted) }
-            item.background=if(key == page.parent) rounded(if(ivory) "#E9E0D1" else "#302B23",18) else null
+            item.background=if(key == page.parent) rounded(palette.selected,8) else null
         }
         onPageChanged(page)
         if(page==Page.CAPTURE) tryFinderGuide()
     }
-    fun back() { if(finderCoach?.dismiss()==true) return;if(selected==Page.SCAN && scanFocused) { focusScan(false);return };if(closeCaptureMenu() || closeQuickControls() || onBeforeBack()) return;select(if(history.isNotEmpty()) history.removeAt(history.lastIndex) else if(selected.parent != selected) selected.parent else Page.START,false) }
+    fun back() { if(finderCoach?.dismiss()==true) return;if(closeCaptureMenu() || closeQuickControls() || onBeforeBack()) return;select(if(history.isNotEmpty()) history.removeAt(history.lastIndex) else if(selected.parent != selected) selected.parent else Page.START,false) }
     private fun showCaptureMenu(open: Boolean) {
         menuScroll.visibility=if(open) View.VISIBLE else View.GONE
         navigationIcon(menuArrow,if(open) NavigationIcon.DOWN else NavigationIcon.UP,true)
@@ -348,33 +365,14 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
         if(menuScroll.visibility!=View.VISIBLE) return false
         showCaptureMenu(false);return true
     }
-    fun focusScan(focused: Boolean) {
-        scanFocused=focused
-        navigationIcon(scanFocusButton,if(focused) NavigationIcon.COLLAPSE else NavigationIcon.EXPAND,true)
-        scanFocusButton.contentDescription=if(focused) copy("收起看图区域","Collapse photo view") else copy("展开看图区域","Expand photo view")
-        listOf(scanPresetBar,scanScroller,scanToolScroller).forEach { it?.visibility=if(focused) View.GONE else View.VISIBLE }
-        val parent=scanPreviewSurface.parent as? View ?: return
-        scanPreviewSurface.layoutParams=(scanPreviewSurface.layoutParams as LinearLayout.LayoutParams).apply {
-            weight=if(focused) 1f else 0f;height=if(focused) 0 else previewHeight(parent)
-        }
+    fun scanToolbarIcon(icon: NavigationIcon): Button = Button(activity).also {
+        navigationIcon(it,icon)
+        scanActions.addView(it,scanActions.indexOfChild(scanUndo),LinearLayout.LayoutParams(dp(48),dp(48)))
     }
-    fun scanImageSize(width: Int,height: Int) {
-        if(width<=0 || height<=0) return
-        scanAspect=width.toFloat()/height
-        resizeScanPreview()
-    }
-    private fun previewHeight(parent: View): Int {
-        val controls=scanActions.measuredHeight+scanPresetBar.measuredHeight+(scanToolScroller?.measuredHeight ?: dp(72))+scanResultBar.measuredHeight
-        val available=(parent.height-controls-dp(190)).coerceAtLeast(dp(80))
-        return (parent.width/scanAspect).toInt().coerceIn(minOf(dp(80),available),available)
-    }
-    private fun resizeScanPreview() {
-        if(scanFocused) return
-        val parent=scanPreviewSurface.parent as? View ?: return
-        if(parent.width<=0 || parent.height<=0) return
-        val wanted=previewHeight(parent)
-        if(scanPreviewSurface.layoutParams.height!=wanted) scanPreviewSurface.layoutParams=scanPreviewSurface.layoutParams.apply { height=wanted }
-    }
+    internal fun showScanTool(label: CharSequence, large: Boolean) = scanDrawer.selectTool(label, large)
+
+    internal fun parameterRuler() = ParameterRuler(activity, muted, accent, copy("精调", "Fine"))
+
     fun showScanTaskStatus() { if(selected==Page.SCAN) task.visibility=View.VISIBLE }
     fun pageTitle(title: String) { heading.text=title }
     fun selectionPanel(panel: View,show: Boolean) {
@@ -390,7 +388,7 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
         val panel=LinearLayout(activity).apply {
             orientation=LinearLayout.VERTICAL
             val inset=dp(if(finder) 10 else 16);setPadding(inset,inset,inset,inset)
-            if(!finder) background=rounded(surface,22)
+            if(!finder) background=rounded(surface,8)
             layoutParams=LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(if(finder) 0 else 12) }
         }
         panel.addView(TextView(activity).apply { text=copy(zh,en);textSize=if(finder) 14f else 17f;typeface=Typeface.DEFAULT_BOLD;setTextColor(if(finder) Color.LTGRAY else ink);setPadding(0,0,0,dp(8)) })
@@ -406,7 +404,7 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
         val row=LinearLayout(activity).apply {
             orientation=LinearLayout.HORIZONTAL;gravity=android.view.Gravity.CENTER_VERTICAL
             minimumHeight=dp(64);setPadding(dp(16),dp(12),dp(12),dp(12))
-            background=android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(if(ivory) 0x22815C2E else 0x33FFFFFF),rounded(if(ivory) "#EBE5D9" else "#2A2926",16),null)
+            background=android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(if(ivory) 0x22815C2E else 0x33FFFFFF),rounded(palette.button,8),null)
             isClickable=true;isFocusable=true;contentDescription=listOf(copy(zh,en),copy(zhDetail,enDetail)).filter { it.isNotBlank() }.joinToString(". ");setOnClickListener { run() }
         }
         val text=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL }
@@ -462,7 +460,7 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
     }
     fun explanation(parent: LinearLayout,zh: String,en: String,fill: (LinearLayout)->Unit) {
         val content=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;visibility=View.GONE }
-        val toggle=action(parent,"▸ $zh","▸ $en") { }
+        val toggle=action(parent,"▸ $zh","▸ $en") { }.apply { tag="detail_toggle";styleButton(this) }
         toggle.setOnClickListener { val show=content.visibility!=View.VISIBLE;content.visibility=if(show) View.VISIBLE else View.GONE;toggle.text=(if(show) "▾ " else "▸ ")+copy(zh,en) }
         parent.addView(content);fill(content)
     }
@@ -472,11 +470,11 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
         contentDescription=copy("恢复$title 初始值","Reset $title");tooltipText=contentDescription
         setOnClickListener { restore() }
     }
-    fun resetSection(parent: LinearLayout,title: String,restore: ()->Unit): LinearLayout {
+    fun resetSection(parent: LinearLayout,title: String,atEnd: Boolean=false,restore: ()->Unit): LinearLayout {
         val row=LinearLayout(activity).apply { gravity=android.view.Gravity.CENTER_VERTICAL }
         row.addView(TextView(activity).apply { text=title;textSize=14f;setTextColor(ink) },LinearLayout.LayoutParams(0,-2,1f))
         row.addView(resetButton(title,restore),LinearLayout.LayoutParams(dp(48),dp(48)))
-        parent.addView(row,0);return row
+        parent.addView(row,if(atEnd) parent.childCount else 0);return row
     }
     fun field(parent: LinearLayout,input: EditText,title: String,detail: String="",restore: (()->Unit)?=null,resettable: Boolean=true): LinearLayout {
         val initial=input.text.toString()
@@ -490,7 +488,7 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
         if(resettable) header.addView(resetButton(title) { input.error=null;if(restore!=null) restore() else input.setText(initial) },LinearLayout.LayoutParams(dp(48),dp(48)))
         group.addView(header)
         input.tag="labeled_field";input.hint=copy("留空沿用原值","Blank keeps the existing value")
-        input.minHeight=dp(50);input.background=rounded(if(ivory) "#F5F0E7" else "#181817",12)
+        input.minHeight=dp(50);input.background=rounded(palette.input,6)
         input.setPadding(dp(12),dp(12),dp(12),dp(12));input.setTextColor(ink);input.setHintTextColor(muted);input.textSize=15f
         group.addView(input,LinearLayout.LayoutParams(-1,-2))
         if(detail.isNotBlank()) note(group,detail,detail)
@@ -506,10 +504,31 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
         tag="editor_tab";styleButton(this)
         layoutParams=LinearLayout.LayoutParams(-2,-2).apply { marginEnd=dp(6) }
     }
+    fun selectEditorTab(buttons: List<Button>, index: Int) {
+        buttons.forEachIndexed { i, tab -> tab.isSelected = i == index }
+        val selected = buttons[index]
+        val strip = selected.parent as LinearLayout
+        val scroller = strip.parent as HorizontalScrollView
+        fun reveal() {
+            if (selected.isSelected) scroller.smoothScrollTo(selected.left + (selected.width - scroller.width) / 2, 0)
+        }
+        if (selected.isLaidOut) {
+            selected.post { reveal() }
+        } else {
+            selected.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
+                override fun onLayoutChange(v: View, l: Int, t: Int, r: Int, b: Int, oldL: Int, oldT: Int, oldR: Int, oldB: Int) {
+                    if (r <= l) return
+                    v.removeOnLayoutChangeListener(this)
+                    v.post { reveal() }
+                }
+            })
+        }
+    }
+
     fun listTile(parent: LinearLayout,title: String,detail: String,badge: String,mark: android.graphics.Bitmap?=null,run: ()->Unit): LinearLayout {
         val tile=LinearLayout(activity).apply {
             orientation=LinearLayout.VERTICAL;minimumHeight=dp(88);setPadding(dp(14),dp(14),dp(14),dp(14))
-            background=android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(if(ivory) 0x22815C2E else 0x33FFFFFF),rounded(if(ivory) "#EBE5D9" else "#2A2926",16),null)
+            background=android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(if(ivory) 0x22815C2E else 0x33FFFFFF),rounded(palette.button,8),null)
             isClickable=true;isFocusable=true;contentDescription="$title, $detail, $badge";setOnClickListener { run() }
         }
         val row=LinearLayout(activity).apply { gravity=android.view.Gravity.CENTER_VERTICAL }
@@ -540,6 +559,24 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
         val key=primary to button.tag?.toString()
         if(styledButtons[button]==key) return
         styledButtons[button]=key
+        if(button.tag=="parameter_value") {
+            button.isAllCaps=false;button.textSize=14f;button.minHeight=dp(48);button.minWidth=dp(48)
+            button.minimumWidth=dp(48)
+            button.stateListAnimator=null;button.backgroundTintList=null;button.setTextColor(ink)
+            val outline=GradientDrawable().apply { setColor(surface);cornerRadius=dp(5).toFloat();setStroke(dp(1),line) }
+            val inset=android.graphics.drawable.InsetDrawable(outline,0,dp(9),0,dp(9))
+            button.background=android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(line),inset,null)
+            button.setPadding(dp(12),dp(8),dp(12),dp(8))
+            return
+        }
+        if(button.tag=="detail_toggle") {
+            button.isAllCaps=false;button.textSize=14f;button.minHeight=dp(48)
+            button.gravity=android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
+            button.setPadding(dp(12),dp(6),dp(12),dp(6));button.setTextColor(ink)
+            button.backgroundTintList=null;button.stateListAnimator=null
+            button.background=android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(line),null,rounded(Color.WHITE,6))
+            return
+        }
         if(button.tag=="parameter_reset") {
             button.isAllCaps=false;button.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,dp(24).toFloat());button.minWidth=dp(48);button.minimumWidth=dp(48);button.minHeight=dp(48)
             button.setPadding(0,0,0,0);button.setSingleLine(true);button.stateListAnimator=null
@@ -552,13 +589,13 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
             button.minWidth=dp(64);button.minHeight=dp(48);button.setSingleLine(false);button.maxLines=2;button.ellipsize=null
             button.setPadding(dp(16),dp(8),dp(16),dp(8));button.includeFontPadding=true;button.stateListAnimator=null
             val states=arrayOf(intArrayOf(-android.R.attr.state_enabled),intArrayOf(android.R.attr.state_selected),intArrayOf())
-            val selectedInk=Color.parseColor(if(ivory) "#65451E" else "#F3D3A0")
+            val selectedInk=palette.inkOn(palette.selected)
             button.setTextColor(ColorStateList(states,intArrayOf(muted,selectedInk,muted)))
             fun chip(fill: Int,stroke: Int)=GradientDrawable().apply { setColor(fill);cornerRadius=dp(24).toFloat();setStroke(dp(1),stroke) }
             button.backgroundTintList=null
             button.background=android.graphics.drawable.StateListDrawable().apply {
                 addState(states[0],chip(bg,line))
-                addState(states[1],chip(Color.parseColor(if(ivory) "#EAD8B9" else "#493B2B"),accent))
+                addState(states[1],chip(palette.selected,accent))
                 addState(states[2],chip(surface,line))
             }
             button.foreground=android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(if(ivory) 0x22815C2E else 0x33D7B278),null,chip(Color.WHITE,Color.WHITE))
@@ -582,7 +619,7 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
             button.setTextColor(ColorStateList(states,intArrayOf(0xFF8C9288.toInt(),Color.BLACK,0xFFF4D29B.toInt())))
             button.background=android.graphics.drawable.StateListDrawable().apply {
                 addState(states[0],GradientDrawable().apply { setColor(0xFF171B17.toInt());setStroke(dp(1),0xFF3E453A.toInt());cornerRadius=dp(12).toFloat() })
-                addState(states[1],rounded(accent,12))
+                addState(states[1],rounded(accent,6))
                 addState(states[2],GradientDrawable().apply { setColor(0xFF3D3324.toInt());setStroke(dp(1),0xFFB89B65.toInt());cornerRadius=dp(12).toFloat() })
             }
             button.foreground=android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(0x33FFFFFF),null,rounded(Color.WHITE,12));return
@@ -613,13 +650,14 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
         button.setSingleLine(false);button.maxLines=Int.MAX_VALUE;button.ellipsize=null;button.includeFontPadding=true
         button.setPadding(dp(12),dp(10),dp(12),dp(10))
         val states=arrayOf(intArrayOf(-android.R.attr.state_enabled),intArrayOf(android.R.attr.state_selected),intArrayOf(android.R.attr.state_activated),intArrayOf(android.R.attr.state_pressed),intArrayOf(android.R.attr.state_focused),intArrayOf())
-        button.setTextColor(ColorStateList(states,intArrayOf(muted,bg,bg,bg,bg,if(primary) bg else ink)))
-        val fill=if(primary) accent else if(ivory) Color.parseColor("#EBE5D9") else Color.parseColor("#33312D")
+        val onAccent=palette.inkOn(accent)
+        button.setTextColor(ColorStateList(states,intArrayOf(muted,onAccent,onAccent,onAccent,onAccent,if(primary) onAccent else ink)))
+        val fill=if(primary) accent else palette.button
         // Tint the background directly; keep ripple independent so every OEM
         // receives the same enabled/selected/pressed state, including reuse.
-        button.stateListAnimator=null;button.background=rounded(Color.WHITE,14)
+        button.stateListAnimator=null;button.background=rounded(Color.WHITE,6)
         button.backgroundTintList=ColorStateList(states,intArrayOf(if(ivory) Color.parseColor("#E5E0D8") else Color.parseColor("#292826"),accent,accent,accent,accent,fill))
-        button.foreground=android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(0x33FFFFFF),null,rounded(Color.WHITE,14))
+        button.foreground=android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(0x33FFFFFF),null,rounded(Color.WHITE,6))
         button.refreshDrawableState()
     }
     fun decorate(view: View=root) {
@@ -644,16 +682,23 @@ class MobileShell(private val activity: ComponentActivity, val ivory: Boolean, i
     }
     fun appearance(parent: LinearLayout,theme: String,language: String,change: (String,String)->Unit) {
         note(parent,"外观与语言仅影响界面；切换时保存当前配方草稿。","Appearance and language affect the interface; recipe drafts are saved when switching.")
-        val themes=LinearLayout(activity)
+        var themes=LinearLayout(activity)
         parent.addView(themes)
-        for((key,zh,en) in listOf(Triple("dark","黑色","Dark"),Triple("ivory","米白","Light"))) {
-            val button=action(themes,zh,en,key == theme) { change(key,language) }
-            button.layoutParams=LinearLayout.LayoutParams(0,-2,1f);appearanceControls.add(button)
+        for((index,choice) in MobilePalette.entries.withIndex()) {
+            if(index==2) { themes=LinearLayout(activity);parent.addView(themes) }
+            val button=action(themes,choice.zh,choice.en,choice == palette) { change(choice.key,language) }
+            button.layoutParams=LinearLayout.LayoutParams(0,-2,1f).apply { marginEnd=if(index%2==0) dp(8) else 0;bottomMargin=dp(8) }
+            appearanceControls.add(button)
         }
-        val languages=LinearLayout(activity);parent.addView(languages)
-        for((key,label) in listOf("system" to copy("跟随系统","System"),"zh" to "中文","en" to "English")) {
-            val button=action(languages,label,label,key == language) { change(theme,key) }
-            button.layoutParams=LinearLayout.LayoutParams(0,-2,1f);appearanceControls.add(button)
+        val options=listOf("system" to copy("跟随系统","System"),"zh" to "中文","en" to "English")+MobileLanguages.choices(activity)
+        val selected=language.takeIf { key -> options.any { it.first==key } } ?: "system"
+        for(group in options.chunked(3)) {
+            val row=LinearLayout(activity);parent.addView(row)
+            group.forEachIndexed { index,(key,label) ->
+                val button=action(row,label,label,key==selected) { change(theme,key) }
+                button.layoutParams=LinearLayout.LayoutParams(0,-2,1f).apply { marginEnd=if(index==group.lastIndex) 0 else dp(8);topMargin=if(group.first().first=="system") 0 else dp(8) }
+                appearanceControls.add(button)
+            }
         }
     }
     fun setBusy(active: Boolean) {

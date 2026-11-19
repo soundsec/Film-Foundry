@@ -9,6 +9,7 @@ import com.filmfoundry.workflow.*
 import com.filmfoundry.platform.*
 import com.filmfoundry.interchange.RecipeShareCodec
 import java.util.UUID
+import kotlin.math.roundToInt
 import com.filmfoundry.app.session.ProcessingIncidentDraft
 
 /** Parameter editing only; validation and execution still belong to the shared workflow. */
@@ -83,7 +84,7 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
     private val maskBleach=CheckBox(activity)
     private var maskBleachOverride=prefs.getBoolean("mask_bleach_override",prefs.getBoolean("mask_bleach_extra",false))
     private val maskCaption=TextView(activity)
-    private val maskStrength=SeekBar(activity)
+    private val maskStrength=shell.parameterRuler()
     private val processCapability=TextView(activity)
     private val scannerCapability=TextView(activity)
     private var fallbackProcess: Map<String,Any?> = emptyMap()
@@ -115,11 +116,18 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
     private var fallbackScanner: Map<String,Any?> = emptyMap()
     private var scanAdvancedOpen=false
     private val auto=CheckBox(activity)
-    private val colorStrength=SeekBar(activity)
+    private val colorStrength=shell.parameterRuler()
     private val colorCaption=TextView(activity)
     private val finish=Spinner(activity)
-    private val brightness=SeekBar(activity)
-    private val brightnessCaption=TextView(activity)
+    private val brightness=shell.parameterRuler()
+    private lateinit var gainReadout: Button
+    private val gainTitle get()=copy("扫描增益","Scan gain")
+    private fun updateGainReadout() {
+        if(!::gainReadout.isInitialized) return
+        val ev="%+.2f EV".format(java.util.Locale.ROOT,(brightness.progress-40)/20.0)
+        gainReadout.text=ev + if(brightnessOverride) "" else copy(" · 预设"," · Preset")
+        gainReadout.contentDescription=gainTitle+" · "+gainReadout.text+copy("，点按输入数值",". Tap to enter a value")
+    }
     private var brightnessOverride=prefs.getBoolean("print_brightness_override",false)
     private val incidents=if(prefs.contains("incident_overrides")) runCatching {
         ProcessingIncidentDraft(section(RecipeShareCodec.decode(prefs.getString("incident_overrides","")),"develop"))
@@ -142,6 +150,7 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
     private val normalize=CheckBox(activity)
     private val numbers=linkedMapOf<String,Pair<EditText,ClosedFloatingPointRange<Double>>>()
     private val touchNumbers=linkedMapOf<String,TouchParameterControl>()
+    private var colorMixer: ColorMixerPanel?=null
     private var curveEditor: ScannerCurvePanel?=null
     private var histogramPanel: ScanHistogramPanel?=null
     private var displayedHistogram: DisplayHistogram?=null
@@ -382,8 +391,9 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
                     resetScan(scannerOverlay.keys+numbers.keys+setOf("scan_normalize"),lightness=true)
                 }.show()
         }.apply { layoutParams=LinearLayout.LayoutParams(shell.dp(48),shell.dp(48));contentDescription=copy("恢复当前风格参数","Reset current style parameters") }
-        shell.resetSection(exposure,copy("增益与对比度","Gain & contrast")) { resetScan(setOf("print_contrast"),lightness=true) }
-        shell.resetSection(curves,copy("预设曲线","Preset curves")) { resetScan(setOf("tone_curve","color_curve_rgb")) }
+        brightness.resetValue = {
+            if (!scanBusy && brightnessOverride) resetScan(emptySet(), lightness=true)
+        }
         shell.resetSection(base,copy("片基与极性","Base & polarity")) { resetScan(setOf("remove_base_mask","invert_transmission"),polarity=true) }
         shell.resetSection(levels,copy("预设影调","Preset tone")) { resetScan(setOf("scan_normalize","scan_normalize_strength","scan_black_percentile","scan_white_percentile")) }
         shell.resetSection(advanced,copy("设备响应","Device response")) { resetScan(setOf("scanner_response_matrix","device_response_rgb","scanner_light_color")) }
@@ -427,13 +437,32 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
                     }
                 })
         }
-        exposure.addView(brightnessCaption);brightness.max=80;brightness.progress=(prefs.getInt("print_brightness",0)+40).coerceIn(0,80);exposure.addView(brightness)
-        fun brightnessChanged() { brightnessCaption.text=copy("扫描增益：%+.1f EV".format(java.util.Locale.ROOT,(brightness.progress-40)/20.0),"Scan gain: %+.1f EV".format(java.util.Locale.ROOT,(brightness.progress-40)/20.0)) }
+        gainReadout=exposure.addParameterReadout(shell,gainTitle)
+        gainReadout.setOnClickListener {
+            if(scanBusy) return@setOnClickListener
+            val initial=if(brightnessOverride) ((brightness.progress-40)/20.0).toString() else ""
+            editParameterNumber(activity,shell,gainTitle,initial,InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED,
+                -2.0..2.0,copy("−2 至 +2 EV，按 0.05 EV 取整；留空沿用预设。","−2 to +2 EV in 0.05 EV steps. Leave blank to use the preset."),
+                copy("沿用预设","Use preset"),{ brightness.resetValue?.invoke() }) { text ->
+                if(scanBusy) return@editParameterNumber false
+                if(text.isEmpty()) brightness.resetValue?.invoke() else scanEdit {
+                    brightnessOverride=true;brightness.progress=(text.toDouble()*20+40).roundToInt();updateGainReadout()
+                }
+                true
+            }
+        }
+        brightness.contentDescription=gainTitle
+        brightness.max=80;brightness.progress=(prefs.getInt("print_brightness",0)+40).coerceIn(0,80)
+        exposure.addView(brightness,LinearLayout.LayoutParams(-1,shell.dp(48)).apply { bottomMargin=shell.dp(8) })
         brightness.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(bar: SeekBar?,value: Int,user: Boolean) { brightnessChanged();if(user) { brightnessOverride=true;onObservationChanged() } }
+            override fun onProgressChanged(bar: SeekBar?,value: Int,user: Boolean) {
+                if(user) brightnessOverride=true
+                updateGainReadout()
+                if(user) onObservationChanged()
+            }
             override fun onStartTrackingTouch(bar: SeekBar?) { beginScanEdit() }
             override fun onStopTrackingTouch(bar: SeekBar?) { finishScanEdit() }
-        });brightnessChanged()
+        });updateGainReadout()
         outputSummary.textSize=15f;outputSummary.setTextColor(if(shell.ivory) 0xFF292721.toInt() else 0xFFEFEAE1.toInt());outputSummary.setPadding(0,shell.dp(8),0,shell.dp(8));scanDetails.addView(outputSummary)
         grid.hint=copy("成片长边（像素，2–8192，留空等于底片）","Output long edge (px, 2–8192, blank = film)")
         grid.inputType=InputType.TYPE_CLASS_NUMBER
@@ -442,19 +471,9 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
         for(edge in listOf(1280,1920,3840)) shell.action(edges,"$edge","$edge") { grid.setText(edge.toString()) }.layoutParams=LinearLayout.LayoutParams(0,-2,1f)
         shell.action(scanDetails,"按底片尺寸","Use film size") { grid.setText("") }
         scanner.visibility=android.view.View.GONE;advanced.addView(scanner)
-        shell.action(colors,"分色 HSL…","Color Mixer · HSL…") {
-            if(!scanBusy) {
-                val value=section(editingObservation(scanBase ?: current(),fallbackScanner),"scanner")["color_mixer"]
-                com.filmfoundry.interchange.ColorMixerSettings.normalize(value)
-                val before=scanDraft();beginScanEdit()
-                showColorMixer(shell,colors,value,changed={ rows ->
-                    scannerOverlay=scannerOverlay+("color_mixer" to rows);onObservationChanged()
-                },closed={ accepted ->
-                    if(accepted) finishScanEdit() else {
-                        restoreScanDraft(scanHistory?.cancel() ?: before);scanHistory?.synchronize(scanDraft());onObservationChanged();save()
-                    }
-                })
-            }
+        colorMixer=ColorMixerPanel(shell,colors,{ !scanBusy },::beginScanEdit,::finishScanEdit) { rows ->
+            scannerOverlay=scannerOverlay+("color_mixer" to rows)
+            onObservationChanged()
         }
         colorCaption.visibility=android.view.View.GONE;colors.addView(colorCaption)
         colorStrength.visibility=android.view.View.GONE;colorStrength.max=300;colorStrength.progress=100;colors.addView(colorStrength)
@@ -509,6 +528,7 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
             grid.error=null;grid.setText(initialGrid);auto.isChecked=initialAuto;rotationDegrees=0;delivery=initialDelivery;paintDelivery();save();onObservationChanged()
         } }
         curveEditor=ScannerCurvePanel(activity,shell,{ values -> scannerOverlay=scannerOverlay+values;onObservationChanged() },::finishScanEdit,::beginScanEdit).also { curves.addView(it) }
+        shell.resetSection(curves,copy("预设曲线","Preset curves"),atEnd=true) { resetScan(setOf("tone_curve","color_curve_rgb")) }
         shell.action(advanced,"沿用扫描预设曲线","Use preset curves") { resetScan(setOf("tone_curve","color_curve_rgb")) }
         shell.action(advanced,"另存当前扫描配置","Save scanner configuration") {
             askConfigurationName(activity,shell,copy("扫描配置名称","Scanner configuration name")) { label ->
@@ -526,16 +546,6 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
             normalize.isChecked=(effective["scan_normalize"] ?: values["scan_normalize"]) as? Boolean ?: true
             manual.isChecked=true
         }
-        val levelTabs=LinearLayout(activity);levels.addView(levelTabs)
-        val levelPanels=List(3) { LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;levels.addView(this) } }
-        val levelButtons=mutableListOf<Button>()
-        listOf("强度" to "Strength","黑点" to "Black","白点" to "White").forEachIndexed { index,label ->
-            levelButtons+=shell.action(levelTabs,label.first,label.second) {
-                levelPanels.forEachIndexed { i,panel->panel.visibility=if(i==index) android.view.View.VISIBLE else android.view.View.GONE }
-                levelButtons.forEachIndexed { i,tab->tab.isSelected=i==index }
-            }.apply { layoutParams=LinearLayout.LayoutParams(0,-2,1f) }
-        }
-        levelPanels.forEachIndexed { i,panel->panel.visibility=if(i==0) android.view.View.VISIBLE else android.view.View.GONE };levelButtons[0].isSelected=true
         fun numeric(parent: LinearLayout,key: String,zh: String,en: String,range: ClosedFloatingPointRange<Double>) {
             val field=EditText(activity).apply { hint=copy(zh,en);inputType=InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED;setText(prefs.getString(key,"")) }
             numbers[key]=field to range
@@ -548,9 +558,9 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
         numeric(light,"transmission_light_temperature_k","灯台光源色温","Scan lamp temperature",1000.0..20000.0)
         numeric(exposure,"print_contrast","对比度 · 倍率","Contrast · multiplier",0.25..2.0)
         numeric(colors,"scan_saturation","饱和度 · 倍率","Saturation · multiplier",0.0..3.0)
-        numeric(levelPanels[0],"scan_normalize_strength","影调归一化强度","Tone normalization strength",0.0..1.0)
-        numeric(levelPanels[1],"scan_black_percentile","黑点百分位","Black percentile",0.0..100.0)
-        numeric(levelPanels[2],"scan_white_percentile","白点百分位","White percentile",0.0..100.0)
+        numeric(levels,"scan_normalize_strength","影调归一化强度","Tone normalization strength",0.0..1.0)
+        numeric(levels,"scan_black_percentile","黑点百分位","Black percentile",0.0..100.0)
+        numeric(levels,"scan_white_percentile","白点百分位","White percentile",0.0..100.0)
         for((field,key,zh,en) in listOf(
             listOf(normalize,"normalize","全帧影调归一化","Whole-frame normalization"))) {
             val check=field as CheckBox;check.text=copy(zh as String,en as String);check.isChecked=prefs.getBoolean(key as String,true);levels.addView(check)
@@ -624,20 +634,29 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
         auto.setOnCheckedChangeListener { _,_->onObservationChanged() }
         manual.setOnCheckedChangeListener { _,_->enabled();save();onObservationChanged() }
         val panels=listOf(base,light,exposure,levels,colors,curves,scanDetails,advanced)
+        shell.resetSection(exposure,copy("增益与对比度","Gain & contrast"),atEnd=true) { resetScan(setOf("print_contrast"),lightness=true) }
+        base.addView(shell.scanPresetBar,0)
         val toolKeys=listOf("base","light","brightness","levels","color","curves","output","more")
         val tabs=mutableListOf<Button>()
         fun selectTool(index: Int) {
+            shell.showScanTool(tabs[index].text, panels[index] === curves)
             panels.forEachIndexed { i,panel -> panel.visibility=if(i==index) android.view.View.VISIBLE else android.view.View.GONE }
-            tabs.forEachIndexed { i,tab -> tab.isSelected=i==index }
+            if (panels[index] === colors) {
+                val effective=runCatching { section(editingObservation(scanBase ?: current(),fallbackScanner),"scanner") }
+                effective.onSuccess { colorMixer?.bind(it["color_mixer"]) }
+            }
+            shell.selectEditorTab(tabs,index)
             scanAdvancedOpen=toolKeys[index]=="more";prefs.edit().putString("scan_touch_tool",toolKeys[index]).apply();shell.scrollToTop(MobileShell.Page.SCAN)
             (scan.getChildAt(0) as TextView).text=tabs[index].text
             scan.getChildAt(0).visibility=android.view.View.GONE
-            tabs[index].post { tabs[index].requestRectangleOnScreen(android.graphics.Rect(0,0,tabs[index].width,tabs[index].height),true) }
         }
         listOf("底片" to "Film","光源" to "Light","明暗" to "Tone","归一化" to "Normalize","色彩" to "Color","曲线" to "Curves","输出" to "Output","更多" to "More").forEachIndexed { index,label ->
-            tabs+=shell.action(shell.scanTools,label.first,label.second) { selectTool(index) }.apply {
-                layoutParams=LinearLayout.LayoutParams(-2,-2).apply { marginEnd=shell.dp(4) };minWidth=shell.dp(76);minHeight=shell.dp(48)
-            }
+            tabs+=shell.editorTab(shell.scanTools,label.first,label.second) { selectTool(index) }
+        }
+        shell.scanScroller?.turnPage = { direction ->
+            val currentIndex=tabs.indexOfFirst { it.isSelected }
+            val target=currentIndex+direction
+            if(target in tabs.indices) selectTool(target)
         }
         updateHistogram()
         selectTool(toolKeys.indexOf(prefs.getString("scan_touch_tool","base")).coerceAtLeast(0))
@@ -781,13 +800,15 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
     private fun refreshSimple() {
         scannerStyle.text=if(finish.selectedItemPosition==3 && scanner.adapter!=null)
             copy("扫描风格：","Style: ")+scanner.selectedItem.toString() else copy("选择扫描风格…","Choose scanner style…")
-        val amount=runCatching { section(editingObservation(scanBase ?: current(),fallbackScanner),"scanner")["scan_saturation"] as? Number }.getOrNull()?.toDouble() ?: 1.0
+        val scannerValues=runCatching { section(editingObservation(scanBase ?: current(),fallbackScanner),"scanner") }.getOrNull()
+        colorMixer?.bind(scannerValues?.get("color_mixer"))
+        val amount=(scannerValues?.get("scan_saturation") as? Number)?.toDouble() ?: 1.0
         colorStrength.progress=(amount*100).toInt().coerceIn(0,300);colorCaption.text=copy("饱和度：${colorStrength.progress}%","Saturation: ${colorStrength.progress}%")
         if(!brightnessOverride) {
             val ev=runCatching { section(scanBase ?: current(),"look")["print_exposure_ev"] as? Number }.getOrNull()?.toDouble() ?: 0.0
             brightness.progress=(ev*20+40).toInt().coerceIn(0,80)
         }
-        refreshTouchNumbers()
+        updateGainReadout();refreshTouchNumbers()
         updateScanInformation()
     }
     fun reflectInterpretation(metadata: Map<String,Any?>) {
@@ -919,7 +940,7 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
         clearProcessOverrides();maskBleach.isChecked=false
         inversionMode.setSelection(0);baseMode.setSelection(0)
         scannerOverlay=emptyMap();manual.isChecked=false
-        finish.setSelection(3);incidents.reset();brightness.progress=40;brightnessOverride=false
+        finish.setSelection(3);incidents.reset();brightnessOverride=false;brightness.progress=40;updateGainReadout()
         selectedProcessKey="current";scanner.setSelection(0);grid.setText(section(base,"scanner")["scan_grid_long_edge"]?.toString().orEmpty());updateProcessSummary();save();onObservationChanged()
     }
     fun save() {

@@ -8,7 +8,7 @@ Film Foundry 是围绕成像材料与处理过程组织的影像创作工具。�
 
 **桌面 0.4.0 Alpha** · [English](README.en.md) · [更新记录](docs/CHANGELOG.md)
 
-**2026-11-18 非正式源码快照**。桌面新增二维试条、密度探针、局部正式尺度预览与工序检查点，Android 源码加入七种实验材料的单张试拍。本次提供源码，已有安装包仍为桌面 0.4.0 Alpha 和 Android 0.1.0 测试版。[快照说明](docs/DEVELOPMENT_SNAPSHOT.md)
+**2026-11-19 非正式源码快照**。Android 扫描页新增可收放的调整抽屉、精调刻度尺、长按照片对照和四套配色，移植者可以随构建加入第三方译本。桌面导览会自动更新示例，材料探针可在图上标出测点。[快照说明](docs/DEVELOPMENT_SNAPSHOT.md)
 
 ## 手机版
 

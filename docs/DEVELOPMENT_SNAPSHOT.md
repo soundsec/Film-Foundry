@@ -1,5 +1,13 @@
 # 开发中源码快照 / Development source snapshot
 
+## 2026-11-19 · 手机扫描与第三方翻译 / Mobile scanning and translation
+
+- **手机。** 扫描默认显示大图。点按或滑动底部调整栏可收放工具，长按照片可看初始预览。刻度尺支持横滑、上移精调和双击复位，曲线面板按可用高度安排操作行。外观页提供四套配色。[手机指南](MOBILE_GUIDE.md)
+- **翻译。** 默认构建提供中文和英语。移植者可以生成手机词条模板，复用桌面 v1 语言包中的相同词条，在调试 APK 中先试译一页。[Android 翻译与移植](../android/TRANSLATING.md)
+- **桌面。** 首次导览在确认参数后自动刷新小样；特性曲线可在工作台调参后手动刷新；材料探针在图像上标出固定读数的位置。[桌面指南](DESKTOP_GUIDE.md)
+
+This source snapshot keeps the Desktop 0.4.0 and Android 0.1.0 display versions. In the Android scanner, open the drawer for fine adjustments and hold the photo to compare with the initial preview. Community translations can be tested in a debug build. Desktop material probes now label pinned points on the image. [Mobile guide](MOBILE_GUIDE.en.md) · [Translation and porting](../android/TRANSLATING.md)
+
 ## 2026-11-18 · 非正式源码快照
 
 首次使用可在安装根目录依赖后运行 `python run_film_foundry_launcher.py`，从图库打开「第一次暗房工作」，用随附示例照片完成一次曝光、冲洗和扫描。本次沿用桌面 0.4.0、Android 0.1.0 的显示版本，已有 EXE 和 APK 对应此前发行的代码。[桌面安装与启动](DESKTOP_GUIDE.md#start) · [Android 源码与编译](../android/README.md)

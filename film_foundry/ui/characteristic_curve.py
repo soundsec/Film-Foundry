@@ -1,7 +1,6 @@
 """An on-demand plot measured independently of the displayed photograph."""
-from concurrent.futures import ThreadPoolExecutor
-from film_foundry.app.control import CancelFlag, WorkflowControl
-from film_foundry.app.preview_budget import Priority, preview_budget
+from film_foundry.app.preview_budget import Priority
+from film_foundry.ui.work_dialog import WorkDialog
 from film_foundry.app.characteristic_curve import measure_curve
 from film_foundry.ui.curve_editor import text
 from film_foundry.ui.qt import QtCore, QtGui, QtWidgets
@@ -46,21 +45,26 @@ class CurvePlot(QtWidgets.QWidget):
 
 
 def show_curve(owner, parent):
-    config=owner._config()
-    dialog=QtWidgets.QDialog(parent)
+    dialog = getattr(parent, '_curve_dialog', None)
+    if dialog is not None:
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+    dialog = WorkDialog(parent)
+    parent._curve_dialog = dialog
+    dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+    dialog.finished.connect(lambda: setattr(parent, '_curve_dialog', None))
     dialog.setWindowTitle(text('特性曲线 · D–logH','Characteristic curve · D–logH'))
-    layout=QtWidgets.QVBoxLayout(dialog);plot=CurvePlot();layout.addWidget(plot)
-    note=QtWidgets.QLabel(text('正在按当前配方冲洗灰阶…','Developing a step wedge using the current recipe…'))
-    note.setWordWrap(True);layout.addWidget(note)
-    pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='sensitometry')
-    flag=CancelFlag();check=WorkflowControl(cancel_requested=flag.requested).check_cancel
-    future=pool.submit(preview_budget.run,Priority.STRIP,measure_curve,config,check=check)
-    timer=QtCore.QTimer(dialog)
-    def poll():
-        if not future.done():return
-        timer.stop()
-        try:data=future.result()
-        except Exception as exc:note.setText(str(exc));return
+    layout = QtWidgets.QVBoxLayout(dialog)
+    plot = CurvePlot()
+    layout.addWidget(plot)
+    note = dialog.status
+    layout.addWidget(note)
+    button = QtWidgets.QPushButton(text('刷新曲线','Refresh curve'))
+    layout.addWidget(button)
+    dialog.running_changed.connect(button.setDisabled)
+
+    def publish(data):
         plot.data=data;plot.update()
         base=text('零曝光 D','Zero-exposure D') if data.positive else text('片基加灰雾 D','Base + fog D')
         label=base+' (RGB)  '+', '.join(f'{v:.3f}' for v in data.unexposed)
@@ -69,6 +73,18 @@ def show_curve(owner, parent):
             label+=text('　趾 / 肩（密度变化 10% / 90%）','   Toe / shoulder (10% / 90% response)')+f' {toe:.2f} / {shoulder:.2f}'
             label+=text('　平均反差','   Average gradient')+f' {slope:.2f}'
         note.setText(label+text('。横轴为相对输入曝光，纵轴为 RGB 光学密度。',' · Relative input exposure and RGB optical density.'))
-    timer.timeout.connect(poll);timer.start(50)
-    try:dialog.exec()
-    finally:flag.cancel();future.cancel();timer.stop();pool.shutdown(wait=False,cancel_futures=True);dialog.deleteLater()
+
+    def refresh():
+        try:
+            config = owner._config()
+        except ValueError as exc:
+            note.setText(str(exc))
+            return
+        dialog.submit(lambda control: measure_curve(config), publish,
+                      text('正在按当前配方冲洗灰阶…','Developing a step wedge using the current recipe…'), Priority.STRIP)
+
+    button.clicked.connect(refresh)
+    parent.finished.connect(dialog.close)
+    dialog.show()
+    refresh()
+    return dialog

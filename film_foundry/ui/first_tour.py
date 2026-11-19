@@ -46,8 +46,18 @@ class FirstTour(WorkDialog):
         self.practice=QtWidgets.QPushButton(text('用示例照片新建工作','Start work with the sample photo'))
         self.practice.clicked.connect(self.start_work);row.addWidget(self.practice)
         row.addStretch();skip=QtWidgets.QPushButton(text('结束导览','End tour'));row.addWidget(skip);skip.clicked.connect(self.reject)
+        self.refresh_timer = QtCore.QTimer(self)
+        self.refresh_timer.setSingleShot(True)
+        self.refresh_timer.setInterval(250)
+        self.refresh_timer.timeout.connect(self.refresh_image)
+        self.value.valueChanged.connect(self.schedule_refresh)
+        self.finished.connect(self.refresh_timer.stop)
         self.running_changed.connect(self.sync)
         self.go(0)
+
+    def schedule_refresh(self):
+        self.next.setEnabled(False)
+        self.refresh_timer.start()
 
     def advance(self):
         if self.page==len(self.pages)-1:self.accept()
@@ -65,6 +75,7 @@ class FirstTour(WorkDialog):
     def go(self,page):
         if self.busy:return
         if self.page in (1,2,3):self.commit_value()
+        self.refresh_timer.stop()
         self.page=page
         title,body=self.pages[page]
         self.heading.setText(f'{page+1} / {len(self.pages)}   {title}')
@@ -78,8 +89,11 @@ class FirstTour(WorkDialog):
                 2:(text('冲洗时间','Development time'),1,30,.5,' min',self.config.chemistry.time_min),
                 3:(text('成片曝光','Output exposure'),-3,3,.5,' EV',self.config.look.print_exposure_ev)
             }[page]
-            self.caption.setText(caption);self.value.setRange(low,high);self.value.setSingleStep(step)
-            self.value.setSuffix(suffix);self.value.setValue(value);self.refresh_image()
+            self.caption.setText(caption)
+            with QtCore.QSignalBlocker(self.value):
+                self.value.setRange(low,high);self.value.setSingleStep(step)
+                self.value.setSuffix(suffix);self.value.setValue(value)
+            self.refresh_image()
         elif page==0:
             self.viewer.show_image(self.sample);self.status.setText(SAMPLE.name)
         else:
@@ -91,6 +105,8 @@ class FirstTour(WorkDialog):
         elif self.page==3:self.config.look.print_exposure_ev=self.value.value()
 
     def refresh_image(self):
+        self.refresh_timer.stop()
+        self.next.setEnabled(True)
         self.commit_value()
         mode={1:'expose',2:'develop',3:'full',4:'full'}[self.page]
         config=deepcopy(self.config)

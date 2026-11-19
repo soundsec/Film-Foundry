@@ -38,7 +38,8 @@ class MovieMasterActions(private val activity: ComponentActivity,column: LinearL
     private val browse=Button(activity)
     private val importZip=Button(activity)
     private val cancel=Button(activity)
-    private fun copy(zh: String,en: String)=if(activity.resources.configuration.locales[0].language == "zh") zh else en
+    private val words = MobileLanguages.forContext(activity)
+    private fun copy(zh: String,en: String)=words.text(zh,en)
     private val importMaster=activity.registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if(uri != null) job { control ->
             val target=File(library,UUID.randomUUID().toString())

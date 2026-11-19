@@ -131,30 +131,15 @@ class FilmProbe(QtCore.QObject):
         geometry=self.data.scan_geometry
         width,height=view.result.width(),view.result.height()
         h,w=geometry[0] if geometry else (height,width)
-        painter.save()
-        transform=painter.worldTransform()
-        painter.resetTransform()
+        points=[]
         for i,(u,v) in enumerate(self.pins,1):
             x,y=int(u*w),int(v*h)
             if geometry:
                 _,angle,rect=geometry
                 if angle:x,y=rotation_matrix((h,w),angle) @ (x,y,1.)
                 l,t,_,_=pixel_bounds((h,w),rect);x-=l;y-=t
-            if not (0<=x<width and 0<=y<height):continue
-            q=view.rotation_quarters
-            if q==1:x,y=height-1-y,x
-            elif q==2:x,y=width-1-x,height-1-y
-            elif q==3:x,y=y,width-1-x
-            displayed=view.displayed_result().width()
-            if view.mode=='side_by_side':x+=displayed
-            if view.mode=='wipe' and x<displayed*view.divider:continue
-            marker=transform.map(QtCore.QPointF(x+.5,y+.5))
-            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-            for color,stroke in (('#181818',3),('#ffffff',1)):
-                painter.setPen(QtGui.QPen(QtGui.QColor(color),stroke))
-                painter.drawEllipse(marker,5,5)
-            painter.drawText(marker+QtCore.QPointF(7,-4),str(i))
-        painter.restore()
+            points.append((i,x,y))
+        view.draw_probe_points(painter,points)
 
     def measure(self,x,y,w,h):
         aperture=self.aperture.currentData()

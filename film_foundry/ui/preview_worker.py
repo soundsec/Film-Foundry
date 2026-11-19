@@ -18,10 +18,10 @@ class PreviewWorker:
         self.flag = None
         parent.destroyed.connect(self.close)
 
-    def submit(self, work):
+    def submit(self, work, priority=Priority.INTERACTIVE):
         self.flag = CancelFlag()
         control = WorkflowControl(cancel_requested=self.flag.requested)
-        future = self.pool.submit(preview_budget.run, Priority.INTERACTIVE, work, control, check=control.check_cancel)
+        future = self.pool.submit(preview_budget.run, priority, work, control, check=control.check_cancel)
         signal = self.events.finished
 
         def notify(completed):

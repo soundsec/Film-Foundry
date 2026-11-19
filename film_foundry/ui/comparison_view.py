@@ -111,6 +111,30 @@ class ComparisonView(ImageView):
         pixels=np.frombuffer(image.constBits(),np.uint8).reshape(image.height(),image.bytesPerLine())[:,:image.width()*3].reshape(image.height(),image.width(),3)
         self.pixels_changed.emit(pixels)
 
+    def draw_probe_points(self,painter,points):
+        if self.result is None or self.held_preview is not None or self._keyboard_source or self._holding:
+            return
+        width,height=self.result.width(),self.result.height()
+        painter.save()
+        transform=painter.worldTransform()
+        painter.resetTransform()
+        for i,x,y in points:
+            if not (0<=x<width and 0<=y<height):continue
+            q=self.rotation_quarters
+            if q==1:x,y=height-1-y,x
+            elif q==2:x,y=width-1-x,height-1-y
+            elif q==3:x,y=y,width-1-x
+            displayed=self.displayed_result().width()
+            if self.mode=='side_by_side':x+=displayed
+            if self.mode=='wipe' and x<displayed*self.divider:continue
+            marker=transform.map(QtCore.QPointF(x+.5,y+.5))
+            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+            for color,stroke in (('#181818',3),('#ffffff',1)):
+                painter.setPen(QtGui.QPen(QtGui.QColor(color),stroke))
+                painter.drawEllipse(marker,5,5)
+            painter.drawText(marker+QtCore.QPointF(7,-4),str(i))
+        painter.restore()
+
     def drawForeground(self,painter,rect):
         super().drawForeground(painter,rect)
         overlay=getattr(self,'probe_overlay',None)

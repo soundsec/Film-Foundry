@@ -77,15 +77,13 @@ class ScanHistogramPanel(private val shell: MobileShell,parent: FrameLayout,show
             }
         }
     }
-    private val toggle=Button(context)
+    private val toggle=shell.scanToolbarIcon(NavigationIcon.HISTOGRAM)
     init {
         orientation=VERTICAL;setPadding(shell.dp(8),shell.dp(5),shell.dp(8),shell.dp(6))
         background=android.graphics.drawable.GradientDrawable().apply { setColor(0xBB111111.toInt());cornerRadius=shell.dp(10).toFloat() }
         title.minHeight=shell.dp(16)
         addView(title,LayoutParams(-1,-2));addView(chart,LayoutParams(-1,shell.dp(72)))
-        parent.addView(this,FrameLayout.LayoutParams(shell.dp(176),-2,Gravity.TOP or Gravity.END).apply { topMargin=shell.dp(64);marginEnd=shell.dp(8) })
-        shell.navigationIcon(toggle,NavigationIcon.HISTOGRAM,true)
-        parent.addView(toggle,FrameLayout.LayoutParams(shell.dp(48),shell.dp(48),Gravity.TOP or Gravity.END).apply { topMargin=shell.dp(8);marginEnd=shell.dp(64) })
+        parent.addView(this,FrameLayout.LayoutParams(shell.dp(176),-2,Gravity.TOP or Gravity.END).apply { topMargin=shell.dp(8);marginEnd=shell.dp(8) })
         fun display(show: Boolean) {
             visibility=if(show) View.VISIBLE else View.GONE;toggle.isSelected=show
             toggle.contentDescription=shell.copy(if(show) "隐藏直方图" else "显示直方图",if(show) "Hide histogram" else "Show histogram")

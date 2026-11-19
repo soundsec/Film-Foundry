@@ -31,7 +31,7 @@ class LibraryInfoDialog(private val activity: ComponentActivity,private val shel
                         val section=content.sections[index]
                         text.typeface=if(section.description!=null) android.graphics.Typeface.DEFAULT else android.graphics.Typeface.MONOSPACE
                         text.text=section.description ?: if(section.values.isEmpty()) shell.copy("未记录此项配置","This configuration was not recorded") else formatted[index]
-                        buttons.forEachIndexed { i,b -> b.isSelected=i==index };scroll.scrollTo(0,0)
+                        shell.selectEditorTab(buttons,index);scroll.scrollTo(0,0)
                     }
                     content.sections.forEachIndexed { index,section ->
                         buttons+=shell.editorTab(tabs,section.title,section.title) { select(index) }

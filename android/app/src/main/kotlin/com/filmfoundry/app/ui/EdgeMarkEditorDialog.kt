@@ -28,7 +28,7 @@ fun showEdgeMarkEditor(activity: ComponentActivity,shell: MobileShell,initial: M
         setSelection(if(settings["factory_mark_type"]=="laser") 1 else 0)
     };panel.addView(method)
     val spreadText=TextView(activity);panel.addView(spreadText)
-    val spread=SeekBar(activity).apply { max=30;progress=((settings["factory_mark_spread"] as Number).toDouble()*10).toInt() };panel.addView(spread)
+    val spread=shell.parameterRuler().apply { max=30;progress=((settings["factory_mark_spread"] as Number).toDouble()*10).toInt() };panel.addView(spread)
     fun refreshMethod() { spread.isEnabled=method.selectedItemPosition==1;spreadText.text=c("材料扩散倍率","Material spread")+" · "+String.format(java.util.Locale.ROOT,"%.1f",(settings["factory_mark_spread"] as Number).toDouble()) }
     method.onItemSelectedListener=object: AdapterView.OnItemSelectedListener {
         override fun onItemSelected(parent: AdapterView<*>?,view: View?,position: Int,id: Long) { settings["factory_mark_type"]=if(position==1) "laser" else "hard";refreshMethod() }
