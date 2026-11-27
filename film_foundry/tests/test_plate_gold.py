@@ -102,11 +102,11 @@ def test_archive_resume_recipe_and_capabilities(tmp_path):
     for op in p.EXPOSURE_STEPS:session.process(op,seed=17)
     session.process('develop',{'seconds':45});session.process('fix');session.process('load_gilding',{'gold_load':.08})
     session.process('gild',{'seconds':29})
-    path=tmp_path/'state.npz';session.save(path);restored=api.load(path)
+    path=tmp_path/'state.npz';session.save(path,precision='full');restored=api.load(path)
     session.process('gild',{'seconds':84});same(session.state,p.gild(restored,seconds=84),0)
     session.process('finish');session.process('weather',{'scratches':.4,'pitting':.2})
     replay=MaterialLabSession('plate');replay.image=IMAGE;replay.replay_recipe(session.recipe());same(session.state,replay.state,0)
-    session.save_products(path);group=api.load(path)
+    session.save_products(path,precision='full');group=api.load(path)
     np.testing.assert_array_equal(api.observe(group.bodies[0]),api.observe(session.group.bodies[0]))
     cap=session.capabilities();assert cap['current_version']==4 and cap['effect_intents'][0]['id']=='gold_supply'
     assert 'gold_adhesion_not_sulfide_barrier' in cap['limitations']
@@ -152,16 +152,14 @@ def test_actual_ui_intent_draft_and_legacy_guards():
 
 def test_batch_uses_explicit_gold_and_same_parameters(monkeypatch,tmp_path):
     from film_foundry.ui.material_batch_dialog import MaterialBatchDialog
-    from film_foundry.ui.qt import QtWidgets
     from film_foundry.app import workspace_jobs
     window=MaterialBatchDialog('plate',['unused.png'],load_source=False);captured={}
     try:
         window.gold_intent['enabled'].setChecked(True);window.gold_intent['strength'].setValue(.1)
         window.operation_controls['gild']['seconds'].setValue(7)
-        monkeypatch.setattr(QtWidgets.QFileDialog,'getExistingDirectory',lambda *a: str(tmp_path))
         def run(kind,paths,output,material,steps,*a,**kw):captured.update(material=material,steps=steps)
         monkeypatch.setattr(workspace_jobs,'process_material_photos',run)
-        window._submit=lambda action,*a,**k:action();window.start_batch()
+        window._submit=lambda action,*a,**k:action();window.start_batch(tmp_path)
         assert dict(captured['steps'])['load_gilding']['gold_load']==.1
         session=MaterialLabSession('plate');session.image=IMAGE
         for op,parameters in captured['steps']:session.process(op,parameters,captured['material'])

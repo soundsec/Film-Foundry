@@ -9,7 +9,7 @@ import math
 import cv2
 import numpy as np
 from film_foundry.contracts.process_events import (validate_process_events,validate_process_response,
-    SURFACE_FIELDS,SURFACE_MODEL,SURFACE_FIELDS_V2,SURFACE_MODEL_V2,EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,
+    SURFACE_FIELDS,SURFACE_MODEL,SURFACE_FIELDS_V2,SURFACE_MODEL_V2,EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,EVENT_MODEL_V16,
     SURFACE_MODEL_V3,SURFACE_MODEL_V4,SURFACE_FIELDS_V4,SURFACE_MODEL_V5,SURFACE_FIELDS_V5,SURFACE_SCHEMAS)
 from film_foundry.contracts.carbon_backing import validate_carbon_backing
 from film_foundry.core import carbon_backing
@@ -23,7 +23,21 @@ from film_foundry.core.compute_precision import contact_precision
 
 def events_for(config):
     value=validate_process_events(config.chemistry.process_events)
-    return [] if value is None else value['events']
+    if value is None:return []
+    if value['model']==EVENT_MODEL_V16:
+        roll_seed=config.chemistry.incident_identity_seed
+        seed=int(roll_seed if roll_seed is not None else config.random_seed or 0)
+        from .incident_identity import local_incident_seed
+        per_frame=local_incident_seed(config.chemistry,seed)
+        for event in value['events']:
+            if 'contact_seed' in event:
+                scope=per_frame if event['placement']=='automatic' else seed
+                event['contact_seed']=(event['contact_seed'] ^ scope) & 0x7fffffff
+                if (per_frame != seed and event['placement']=='automatic'
+                        and event['kind'] in ('contaminate','silver_bath','emulsion_wear')
+                        and event.get('distribution_variation')):
+                    event['distribution_seed']=(event['distribution_seed'] ^ per_frame) & 0x7fffffff
+    return value['events']
 
 def frame_extent(config,shape):
     # Same nominal formats used by the grain/spatial configuration. Explicit
@@ -58,6 +72,10 @@ def contact_duration(shape,extent,start,stop,duration,event,*,precision='float64
     fraction=event['immersion_fraction'];wet=np.clip(duration-event['fill_s']*along/max(fraction,1e-8),0,duration)
     wet=np.where(along<=fraction,wet,0.)
     if event['bubble_radius_mm']>0 and event['bubble_release_s']>0:
+        if event.get('placement') in ('automatic','manual'):
+            from .contact_geometry import local_contact
+            coverage=local_contact(shape,extent,event,event['bubble_radius_mm'],start,stop)
+            return np.maximum(wet-min(duration,event['bubble_release_s'])*coverage,0.)
         distance=((x[None,:]-event['center_x'])*physical_w)**2+((y[:,None]-event['center_y'])*physical_h)**2
         wet=np.where(distance<event['bubble_radius_mm']**2,np.maximum(wet-min(duration,event['bubble_release_s']),0.),wet)
     return wet
@@ -185,7 +203,7 @@ class BathContactRate:
         elif prepare_inhibitor:
             self.inhibitor_fields,self.inhibitor_audit=compile_inhibitor_fields(config,self.full_shape,self.program)
         self.fixing_fields,self.fixing_audit=compile_fixing_fields(config,self.full_shape)
-        self.ordered=(config.chemistry.process_events or {}).get('model') in (EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15)
+        self.ordered=(config.chemistry.process_events or {}).get('model') in (EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,EVENT_MODEL_V16)
         self.events=events_for(config)
         self.has_shear=any(e['kind']=='emulsion_shear' for e in self.events)
         self.coverage_transitions={};self.shear_transitions={};self.prepared_surface=None
@@ -262,7 +280,7 @@ class BathContactRate:
             if max(event.get('after_bath',0),event.get('before_bath',0))>len(rows):
                 raise ValueError('Operation refers to a nonexistent bath')
             after=event.get('after_bath',0)
-            if self.config.chemistry.process_events['model'] not in (EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15) and event['kind']=='silver_bath' and after and any(
+            if self.config.chemistry.process_events['model'] not in (EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,EVENT_MODEL_V16) and event['kind']=='silver_bath' and after and any(
                 row['action'] in ('bleach_silver','remove_silver') for row in rows[after:]
             ):
                 raise ValueError('Surface silver deposition must follow the last silver-removal bath')
@@ -286,7 +304,12 @@ class BathContactRate:
             return sample_control_rows(field,self.full_shape,self.start,self.stop)
         if step.chemical_placement is not None:
             x,y,radius=step.chemical_placement
-            footprint=_footprint(control_grid(self.full_shape),frame_extent(self.config,self.full_shape),{'center_x':x,'center_y':y,'radius_mm':radius})
+            event={'center_x':x,'center_y':y,'radius_mm':radius}
+            if self.ordered and step.process_event_index is not None:
+                source_event=self.events[step.process_event_index]
+                if source_event.get('placement') in ('automatic','manual'):
+                    event=source_event
+            footprint=_footprint(control_grid(self.full_shape),frame_extent(self.config,self.full_shape),event)
             return sample_control_rows(footprint,self.full_shape,self.start,self.stop)
         if step.action.value in ('destroy_dye','activate_remaining_halide','remove_emulsion','shear_emulsion','age_latent','light_residual_halide'):return None
         index=index if step.bath_index is None else step.bath_index
@@ -383,6 +406,9 @@ class BathContactRate:
 def _footprint(shape,extent,event):
     h,w=shape
     if event.get('radius_mm',0.)<=0:footprint=np.ones(shape,np.float32)
+    elif event.get('placement') in ('automatic','manual'):
+        from .contact_geometry import local_contact
+        footprint=local_contact(shape,extent,event,event['radius_mm'],0,h)
     elif event.get('edge_width_mm',0.) or event.get('boundary_variation',0.):
         from .contact_geometry import contact_footprint
         footprint=contact_footprint(shape,extent,event)

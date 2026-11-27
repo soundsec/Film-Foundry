@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import threading
+import tempfile
 import warnings
 from pathlib import Path
 
@@ -18,13 +19,20 @@ _lock = threading.RLock()
 _runtime = None
 _failure = None
 _device = None
+_probe_failures = []
 _calls = {'dye': 0, 'spectral': 0, 'paper_response':0, 'rotary_contact':0, 'edge_contact':0, 'coordinate_noise':0}
 
 
 def status():
     with _lock:
         return dict(initialized=_runtime is not None, failure=_failure,
-                    device=_device, **_calls)
+                    device=_device, skipped_platforms=list(_probe_failures), **_calls)
+
+
+def device_state():
+    """Read the last published device without waiting for a tile or probing."""
+    device = _device
+    return (device['name'] if device else None), _failure
 
 
 def reject(reason):
@@ -34,30 +42,38 @@ def reject(reason):
         warnings.warn('OpenCL disabled; using CPU: ' + _failure, RuntimeWarning, stacklevel=2)
 
 
-def _create_runtime(identity=None):
+def _create_runtime(platform_index, identity=None, *, report=lambda stage: None):
+    report('import PyOpenCL')
     import pyopencl as cl
     candidates = []
-    for platform in cl.get_platforms():
+    report('enumerate OpenCL platforms')
+    platform = cl.get_platforms()[platform_index]
+    report(f'read name of platform {platform_index}')
+    name = platform.name
+    report('enumerate GPU devices on ' + name)
+    devices = platform.get_devices(device_type=cl.device_type.GPU)
+    for index, device in enumerate(devices):
+        report(f'read GPU {index} properties on {name}')
+        if not device.available or not device.compiler_available:
+            continue
+        info = dict(platform_index=platform_index, platform=name, vendor=device.vendor, name=device.name,
+                    driver=device.driver_version, fp64='cl_khr_fp64' in device.extensions.split(),
+                    compute_units=device.max_compute_units)
         try:
-            devices = platform.get_devices(device_type=cl.device_type.GPU)
-        except cl.LogicError as exc:
-            if exc.code == cl.status_code.DEVICE_NOT_FOUND:
-                continue
-            raise
-        for device in devices:
-            if not device.available or not device.compiler_available:
-                continue
-            info = dict(platform=platform.name, vendor=device.vendor, name=device.name,
-                        driver=device.driver_version, fp64='cl_khr_fp64' in device.extensions.split())
-            if identity is None or info == identity:
-                candidates.append((device, info))
+            info['discrete'] = not device.host_unified_memory
+        except cl.LogicError:
+            info['discrete'] = False
+        if identity is None or info == identity:
+            candidates.append((device, info))
     if not candidates:
         raise RuntimeError('No available OpenCL GPU/compiler matching qualification')
-    device, info = max(candidates, key=lambda item: (item[1]['fp64'], item[0].max_compute_units))
+    device, info = max(candidates, key=lambda item: _device_rank(item[1]))
+    report('create GPU context for ' + info['name'])
     context = cl.Context([device])
     queue = cl.CommandQueue(context)
     kernels = {}
     for name in ('dye', 'paper_response', 'spectral') if info['fp64'] else ('dye','paper_response'):
+        report('build ' + name + ' on ' + info['name'])
         program = cl.Program(context, source(name, 'opencl')).build()
         kernels[name] = cl.Kernel(program, name)
     # Bound each tile by driver allocation limits and a fraction of device RAM.
@@ -110,21 +126,52 @@ def _execute(runtime, name, values, tables, parameters, overlay=None):
     return result
 
 
+def _run_probe(target):
+    frozen = getattr(sys, 'frozen', False)
+    command = [sys.executable]
+    if not frozen:
+        command.extend(('-m', 'film_foundry.core.opencl_compute'))
+    # A windowed executable has no Python stdout. Flush each stage to a private
+    # file so a native access violation still leaves a useful diagnostic.
+    with tempfile.TemporaryDirectory(prefix='film-opencl-') as directory:
+        journal = Path(directory) / 'result'
+        journal.touch()
+        try:
+            child = subprocess.run([*command, '--opencl-probe', str(journal), str(target)],
+                                   capture_output=True, timeout=30,
+                                   cwd=None if frozen else Path(__file__).resolve().parents[2],
+                                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            error = f'0x{child.returncode & 0xffffffff:08X}' if child.returncode else None
+        except subprocess.TimeoutExpired:
+            error = 'TimeoutExpired (30 s)'
+        lines = journal.read_text(encoding='utf-8').splitlines()
+    if error or not lines or not lines[-1].startswith('FF_OPENCL:'):
+        detail = lines[-1] if lines else 'start isolated probe'
+        raise RuntimeError(f'OpenCL probe failed ({error or "no result"}): {detail}')
+    return json.loads(lines[-1].partition(':')[2])
+
+
+def _device_rank(info):
+    return info['fp64'], info['discrete'], info['compute_units']
+
+
 def _qualify():
-    """Driver enumeration/compilation may terminate the process on broken ICDs."""
-    if getattr(sys, 'frozen', False):
-        raise RuntimeError('OpenCL isolated probe is not yet packaged in this executable')
-    child = subprocess.run(
-        [sys.executable, '-m', 'film_foundry.core.opencl_compute', '--probe'],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30,
-        cwd=Path(__file__).resolve().parents[2],
-        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    if child.returncode:
-        raise RuntimeError(f'Isolated OpenCL driver probe failed (exit {child.returncode})')
-    lines = [line.removeprefix('FF_OPENCL:') for line in child.stdout.splitlines() if line.startswith('FF_OPENCL:')]
-    if not lines:
-        raise RuntimeError('OpenCL probe returned no qualification')
-    return json.loads(lines[-1])
+    """Probe each ICD separately; one defective platform cannot veto the others."""
+    count = _run_probe('count')
+    devices = []
+    _probe_failures.clear()
+    for index in range(count):
+        try:
+            device = _run_probe(index)
+        except RuntimeError as exc:
+            _probe_failures.append(f'platform {index}: {exc}')
+            continue
+        if device['fp64'] and device['discrete']:
+            return device
+        devices.append(device)
+    if not devices:
+        raise RuntimeError(' / '.join(_probe_failures) or 'No OpenCL platforms')
+    return max(devices, key=_device_rank)
 
 
 def available():
@@ -135,7 +182,7 @@ def available():
         if _runtime is None:
             try:
                 identity = _qualify()
-                _runtime, _device = _create_runtime(identity)
+                _runtime, _device = _create_runtime(identity['platform_index'], identity)
             except Exception as exc:
                 reject(f'{type(exc).__name__}: {exc}')
         return _runtime is not None and _failure is None
@@ -215,8 +262,21 @@ def run_coordinate_noise(start,stop,width,height):
                 except Exception:pass
 
 
-def _probe():
-    runtime, info = _create_runtime()
+def _probe(target, report):
+    # Only the short-lived qualification process handles native loader faults.
+    # Leave the desktop process and machine-wide Windows reporting settings alone.
+    if sys.platform == 'win32':
+        import ctypes
+        kernel = ctypes.windll.kernel32
+        kernel.SetErrorMode(kernel.GetErrorMode() | 0x0001 | 0x0002)
+        kernel.WerSetFlags(0x0020)  # WER_FAULT_REPORTING_NO_UI
+    if target == 'count':
+        report('import PyOpenCL')
+        import pyopencl as cl
+        report('enumerate OpenCL platforms')
+        return len(cl.get_platforms())
+    runtime, info = _create_runtime(int(target), report=report)
+    report('execute qualification kernels on ' + info['name'])
     values = np.array([[[.2, .5, 1.], [2., 0., .3]]], np.float32)
     identity = np.eye(3, dtype=np.float32)
     actual = _execute(runtime, 'dye', values,
@@ -235,8 +295,23 @@ def _probe():
         actual = _execute(runtime, 'spectral', values, [absorbance, weights, basis],
                           [np.int32(2), np.int32(1)], overlay)
         np.testing.assert_allclose(actual, 10.**(-(.125*.25*9+float(overlay[0, 0, 0]))), rtol=1e-7, atol=0)
-    print('FF_OPENCL:' + json.dumps(info), flush=True)
+    return info
+
+
+def probe_main(path, target):
+    with Path(path).open('w', encoding='utf-8') as output:
+        def report(message):
+            print(message, file=output, flush=True)
+        try:
+            result = _probe(target, report)
+        except Exception as exc:
+            report(f'{type(exc).__name__}: {exc}')
+            return 1
+        report('FF_OPENCL:' + json.dumps(result))
+        return 0
 
 
 if __name__ == '__main__':
-    _probe()
+    if len(sys.argv) == 4 and sys.argv[1] == '--opencl-probe':
+        raise SystemExit(probe_main(sys.argv[2], sys.argv[3]))
+    raise SystemExit('Use run_compute_desktop --compute opencl --diagnose')

@@ -108,6 +108,29 @@ def test_language_import_fallback_placeholders_and_template(tmp_path,monkeypatch
     finally:i18n.set_language(original)
 
 
+def test_language_directory_mount_override_and_removal(tmp_path, monkeypatch):
+    from film_foundry.ui import i18n, language_packs as packs
+    shared = tmp_path / 'languages'
+    shared.mkdir()
+    monkeypatch.setattr(packs, 'shared_directory', lambda: shared)
+    monkeypatch.setenv('FILM_FOUNDRY_UI_SETTINGS', str(tmp_path / 'prefs.json'))
+    monkeypatch.setattr(i18n, '_active_language', None)
+    shared_pack = shared / 'fr_FR.json'
+    pack(tmp_path, **{'key:theme.dark': 'Charbon'}).replace(shared_pack)
+    (shared / 'broken.json').write_text('{', encoding='utf-8')
+    assert set(packs.refresh_packs()) == {'fr_FR'}
+    i18n.set_language('fr_FR')
+    assert i18n.tr('theme.dark') == 'Charbon'
+    packs.import_pack(pack(tmp_path, **{'key:theme.dark': 'Sombre'}))
+    assert i18n.tr('theme.dark') == 'Sombre'
+    (packs.pack_directory() / 'fr_FR.json').unlink()
+    packs.refresh_packs()
+    assert i18n.tr('theme.dark') == 'Charbon'
+    shared_pack.unlink()
+    packs.refresh_packs()
+    assert i18n.current_language() == i18n.DEFAULT_LANGUAGE
+
+
 def test_external_language_settings_preserve_work(desktop,tmp_path,monkeypatch):
     from film_foundry.ui.qt import QtWidgets
     from film_foundry.ui import i18n

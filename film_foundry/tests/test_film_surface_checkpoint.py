@@ -30,6 +30,7 @@ def wet_config():
         {**WEAR,'after_bath':2},
         {'kind':'wash','temperature_c':60.,'after_bath':2},
         {'kind':'silver_bath'}, {**SHEAR,'travel_mm':-2.}, {'kind':'wash'})
+    c.output.material_storage_precision='full'
     c.random_seed=19;c.enable_grain=True
     c.film.carbon_backing=validate_carbon_backing({})
     c.film.time_response=validate_response({'model':'film_time_response_v2'})

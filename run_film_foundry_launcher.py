@@ -208,6 +208,9 @@ class FoundryLauncher:
 
 
 def run_tool(tool_id: str) -> None:
+    if tool_id in ("film", "develop", "scanner", "positive_scanner"):
+        from film_foundry.app.desktop_settings import initialize_compute
+        initialize_compute()
     if tool_id == "main":
         from film_foundry.tools.run_desktop_gui import DesktopPanel
 
@@ -302,6 +305,9 @@ def release_self_check() -> None:
 
 
 def main() -> None:
+    if len(sys.argv) == 4 and sys.argv[1] == "--opencl-probe":
+        from film_foundry.core.opencl_compute import probe_main
+        raise SystemExit(probe_main(sys.argv[2], sys.argv[3]))
     if len(sys.argv) >= 2 and sys.argv[1] == "--self-check":
         # A frozen windowed executable has no console for a traceback. Always
         # terminate this diagnostic mode explicitly and leave a readable error

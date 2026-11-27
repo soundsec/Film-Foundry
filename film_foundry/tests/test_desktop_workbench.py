@@ -125,8 +125,8 @@ def test_new_layout_preserves_legacy_config_and_hidden_banks_in_all_modes():
     from film_foundry.tools.run_darkroom_gui import DarkroomPanel
     old=DarkroomPanel();new=DesktopPanel()
     try:
-        assert asdict(new._config()) == asdict(old._config())
-        config=old._config();config.scanner.tone_curve=((0,0),(.5,.65),(1,1))
+        # Compare identical loaded recipes; each frontend has its own new-work defaults.
+        config=new._config();config.scanner.tone_curve=((0,0),(.5,.65),(1,1))
         config.scanner.device_response_rgb=(((0,.05),(1,1)),)*3
         config.chemistry.developer_name="Custom chemistry"
         config.film.dir_material_response_matrix=((.1,.2,0),(0,.1,0),(0,0,.1))
@@ -189,7 +189,12 @@ def test_new_buttons_preserve_material_stages_and_frozen_latent_source(tmp_path)
         panel.input_path.set(str(source));panel.run_as_preview.set(False);panel.scan_output_near_source.set(False)
         def run(mode):
             panel.pipeline_mode.set(mode);panel._update_mode_visibility();panel.output_path.set(str(tmp_path/mode))
-            panel.process_button.qt.click();deadline=monotonic()+10
+            from film_foundry.ui.output_destination import OutputDestinationDialog
+            panel.process_button.qt.click()
+            dialog=panel.film_workspace.findChild(OutputDestinationDialog)
+            assert dialog is not None
+            dialog.path.setText(str(tmp_path/mode));dialog.apply()
+            deadline=monotonic()+10
             while panel._processing and monotonic()<deadline:QtWidgets.QApplication.processEvents()
             assert not panel._processing,panel.status.get()
             assert not panel._preview_pending
@@ -202,10 +207,10 @@ def test_new_buttons_preserve_material_stages_and_frozen_latent_source(tmp_path)
         assert not load_exposed_latent(latent)[1]["consumed"]
         panel.negative_path.set(str(latent));run("develop_latent")
         assert not panel.fields["halation"][0].qt.isEnabled()
-        # A completed latent task leaves the delivered source consumed.
+        # Development consumes the working copy, leaving the archived exposure reusable.
         with np.load(latent,allow_pickle=False) as archive:
             metadata=json.loads(str(archive["latent_medium_metadata"].item()))
-        assert metadata["consumed"] is True
+        assert metadata["consumed"] is False
         medium=load_developed_medium_for_scan(developed);before=medium.optical_density_rgb.copy()
         panel.negative_path.set(str(developed));scans=run("scan")
         assert list(scans.rglob("*.jpg"))
@@ -283,7 +288,7 @@ def test_material_filters_narrow_the_list_without_replacing_the_loaded_film():
         assert panel.process_button.qt.objectName()=="primaryAction"
         panel.root.qt.resize(1280,800);panel.root.qt.show();QtWidgets.QApplication.processEvents()
         caption=next(label for label in panel.root.qt.findChildren(QtWidgets.QLabel) if label.text()=="材料原生类型")
-        assert caption.width()>=120
+        assert caption.width() >= caption.fontMetrics().horizontalAdvance(caption.text())
         assert caption.heightForWidth(caption.width())<=caption.fontMetrics().height()+6
         assert panel.navigation.minimumWidth()>=172
         from film_foundry.ui.qt import QtWidgets
@@ -315,9 +320,69 @@ def test_navigation_follows_formation_and_smits_turns_on_without_a_file():
         panel._enable_smits_exposure()
         profile=panel._profiles["spectral_exposure_profile"]
         assert "smits" in profile.model and "ff_smits" not in panel._profile_labels["spectral_exposure_profile"].get()
+        assert profile.profile_id == "ff_stock_rgb_calibrated_v1"
         panel._use_material_sensitivity()
         assert panel._profiles["spectral_exposure_profile"] is None
     finally:panel.root.destroy();set_language(previous)
+
+
+def test_enabling_lift_and_restoring_sensitivity_keep_the_loaded_silver_stock():
+    from film_foundry.app.material_designs import compose_material
+    from film_foundry.tools.run_desktop_gui import DesktopPanel
+    from film_foundry.tools.run_film_material_editor import FilmMaterialEditor
+
+    config = compose_material(DarkroomConfig(), "blue_sensitive")
+    profile = config.film.spectral_exposure_profile
+    panel = DesktopPanel()
+    try:
+        panel._apply_loaded_config(config)
+        panel._enable_smits_exposure()
+        assert panel._config().film.spectral_exposure_profile == profile
+        panel._disable_spectral_exposure()
+        panel._enable_smits_exposure()
+        assert panel._config().film.spectral_exposure_profile == profile
+        panel._set_profile("spectral_exposure_profile", None)
+        panel._use_material_sensitivity()
+        assert panel._config().film.spectral_exposure_profile == profile
+        panel.film_preset.set("monochrome_fine_negative")
+        panel._sync_film_preset_controls()
+        panel._use_material_sensitivity()
+        assert panel._config().film.spectral_exposure_profile.profile_id == "ff_analytic_panchromatic_v1"
+    finally:
+        panel.root.destroy()
+
+    editor = FilmMaterialEditor(config=config)
+    try:
+        editor._disable_spectral_exposure()
+        editor._enable_smits_exposure()
+        assert editor._config_from_controls().film.spectral_exposure_profile == profile
+        editor._enable_smits_exposure(recalibrate=True)
+        rebuilt = editor._config_from_controls().film
+        assert rebuilt.spectral_exposure_profile.profile_id == "ff_stock_rgb_calibrated_v1"
+        assert rebuilt.coating_stack == config.film.coating_stack
+    finally:
+        editor.root.destroy()
+
+
+def test_only_scanner_preset_changes_print_rendering_switch(tmp_path, monkeypatch):
+    from film_foundry.tools import run_darkroom_gui as legacy
+    from film_foundry.tools.run_desktop_gui import DesktopPanel
+
+    panel = DesktopPanel()
+    try:
+        panel.link_scanner.set(False)
+        panel._recipe_base.enable_subtractive = False
+        panel.film_preset.set("monochrome_fine_negative")
+        panel._sync_film_preset_controls()
+        assert panel._config().enable_subtractive is False
+        path = tmp_path / "scanner.json"
+        monkeypatch.setattr(legacy, "scanner_preset_path", lambda key: path)
+        for setting in (True, False):
+            path.write_text(json.dumps({"scanner": {}, "enable_subtractive": setting}), encoding="utf-8")
+            panel._sync_scanner_preset_controls()
+            assert panel._config().enable_subtractive is setting
+    finally:
+        panel.root.destroy()
 
 
 def test_task_sources_and_destination_follow_mode_without_replacing_hidden_paths(tmp_path):

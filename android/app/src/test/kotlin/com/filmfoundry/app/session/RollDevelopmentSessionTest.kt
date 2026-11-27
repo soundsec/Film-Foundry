@@ -11,6 +11,20 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 
 class RollDevelopmentSessionTest {
+    @Test fun archivedV3RollKeepsItsOriginalGrainWhenReprocessed() = runBlocking {
+        val library=FilmLibrary()
+        library.loadRoll("roll",12,mapOf("grain_strength" to .03),
+            captureSettings=mapOf(PhoneFormationProfile.ROLL_SETTING to PhoneFormationProfile.MONO_LIGHTWEIGHT,
+                "spatial_effects_revision" to PhoneMaterialDefaults.REVISION))
+        val shoot=capture(library);shoot.capture("roll",camera);shoot.seal("roll")
+        val engine=session(library)
+        val task=engine.create("roll","archived-grain",mapOf(PhoneFormationProfile.OPTION to PhoneFormationProfile.LIGHTWEIGHT))
+        assertEquals("phone_roll_lightweight_v14",task.revision)
+        val archive=MediumStore(storage()).readOptical(engine.run("roll",task.id).single().opticalPath)
+        assertEquals(PhoneFormationProfile.MONO_LIGHTWEIGHT,archive.metadata[PhoneFormationProfile.OPTION])
+        val process=archive.metadata["film_process_model"] as Map<*,*>
+        assertEquals("phone_shared_density_cloud_v1",(process["phone_material_effects"] as Map<*,*>)["grain"])
+    }
     @Test fun timeProfileKeepsV13TaskAndDoesNotGainNewMonoResponse() = runBlocking {
         val library=FilmLibrary()
         library.loadRoll("roll",12,mapOf("color_process" to "monochrome"),captureSettings=mapOf(PhoneFormationProfile.ROLL_SETTING to PhoneFormationProfile.TIME_LIGHTWEIGHT))

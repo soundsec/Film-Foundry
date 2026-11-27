@@ -164,9 +164,13 @@ class FilmStripSession:
     def __init__(self,path,mode,config,*,long_edge=640,path_seed_offset=None):
         from film_foundry.app.workflow import rng_and_resolved_seed_for_develop
         self.path=Path(path).resolve();self.mode=mode;self.config=deepcopy(config)
+        from film_foundry.core.incident_identity import bind_incident_frame
+        if mode in ("full","expose","develop"):
+            self.config=bind_incident_frame(self.config,path=self.path,source_offset=path_seed_offset)
         self.revision=self._source_revision();self.long_edge=int(long_edge)
         if not 16<=self.long_edge<=900:raise ValueError('Trial preview edge must be 16–900')
         _,self.seed=rng_and_resolved_seed_for_develop(self.path,config,path_seed_offset=path_seed_offset)
+        self.path_seed_offset=path_seed_offset
         self.draft = False
         self.frame_settings = (1,0.)
         self.preview=PreviewSession();self.source=None;self.latent=None
@@ -197,7 +201,7 @@ class FilmStripSession:
             config.processing.quality_mode = 'draft'
             config.output.render_long_edge = config.output.preview_long_edge = self.long_edge
         # Comparison identity is private; adoption never copies these values.
-        for name in ('incident_identity_seed','light_leak_identity_seed','exposure_occlusion_identity_seed'):
+        for name in ('incident_identity_seed','incident_frame_seed','light_leak_identity_seed','exposure_occlusion_identity_seed'):
             setattr(config.chemistry,name,getattr(self.config.chemistry,name))
         config.debug_output=False;config.comparison_grid=False;config.save_sidecar=False
         if self.mode=='full':
@@ -210,6 +214,8 @@ class FilmStripSession:
                 from film_foundry.core.latent_io import load_exposed_latent
                 from film_foundry.app.preview_inputs import preview_latent
                 latent,_=load_exposed_latent(self.path);self.latent=preview_latent(latent,self.long_edge)
+            from film_foundry.core.incident_identity import bind_incident_frame
+            config=bind_incident_frame(config,stored_seed=self.latent.incident_frame_seed,path=self.path,source_offset=self.path_seed_offset)
             medium=develop_negative_from_latent(deepcopy(self.latent),config,rng=np.random.default_rng(self.seed))
             result=optical_density_visual_preview(medium.optical_density_rgb)
         else:
@@ -243,7 +249,7 @@ class FilmStripSession:
         settings=deepcopy(config)
         if self.mode in ('full','expose','develop'):
             apply_frame_settings(settings,*self.frame_settings)
-        for name in ('incident_identity_seed','light_leak_identity_seed','exposure_occlusion_identity_seed'):
+        for name in ('incident_identity_seed','incident_frame_seed','light_leak_identity_seed','exposure_occlusion_identity_seed'):
             setattr(settings.chemistry,name,getattr(self.config.chemistry,name))
         if self.mode=='full':
             pixels=render_file_pixels(self.path,settings,scaled_override=scaled_override,resolved_seed=self.seed)
@@ -255,6 +261,8 @@ class FilmStripSession:
             if self.mode=='develop_latent':
                 from film_foundry.core.latent_io import load_exposed_latent
                 latent,_=load_exposed_latent(self.path)
+                from film_foundry.core.incident_identity import bind_incident_frame
+                runtime=bind_incident_frame(runtime,stored_seed=latent.incident_frame_seed,path=self.path,source_offset=self.path_seed_offset)
                 medium=develop_negative_from_latent(latent,runtime,rng=rng)
             elif self.mode in ('develop','expose'):
                 edge=processing_long_edge(settings,scaled_override=scaled_override)

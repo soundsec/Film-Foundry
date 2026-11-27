@@ -35,6 +35,23 @@ def test_opencl_crashing_probe_never_enters_host_driver(monkeypatch, timeout):
     assert not opencl_compute.available()  # latched, no retry storm
 
 
+def test_opencl_skips_a_broken_platform_and_stops_at_qualified_discrete_gpu(monkeypatch):
+    calls = []
+    gpu = dict(fp64=True, discrete=True, compute_units=40)
+    def probe(target):
+        calls.append(target)
+        if target == 'count':
+            return 3
+        if target == 0:
+            raise RuntimeError('failed reading platform name')
+        return gpu
+    monkeypatch.setattr(opencl_compute, '_run_probe', probe)
+    monkeypatch.setattr(opencl_compute, '_probe_failures', [])
+    assert opencl_compute._qualify() == gpu
+    assert calls == ['count', 0, 1]
+    assert 'platform 0' in opencl_compute.status()['skipped_platforms'][0]
+
+
 @pytest.mark.parametrize('opencl_available', [False, True])
 def test_auto_unavailable_cuda_tries_opencl_then_cpu(monkeypatch, opencl_available):
     monkeypatch.setenv('FILM_FOUNDRY_COMPUTE', 'auto')

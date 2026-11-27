@@ -130,11 +130,12 @@ def _execute_request(command: str, request: WorkflowRequest) -> WorkflowResult:
     from film_foundry.app.source_seed import validate_offset
     validate_offset(request.path_seed_offset)
     config = request.config
-    if command in {'full','develop','expose','reexpose'} and config.film_border.frame_number is not None and request.frame_identity:
-        from copy import deepcopy
+    if command in {'full','develop','expose','reexpose'} and request.frame_identity:
+        from dataclasses import replace
+        from film_foundry.app.frame_batch import numbered_border
         identity=normalize_frame_identity(request.frame_identity)
         if identity and 'frame_index' in identity:
-            config=deepcopy(config);config.film_border.frame_number=identity['frame_index']
+            config=replace(config, film_border=numbered_border(config.film_border,identity['frame_index'],actual_slot=True))
     seed_options = {'path_seed_offset': request.path_seed_offset} if request.path_seed_offset is not None else {}
     if command != "scan" and request.frame_identity and request.frame_identity.get("roll_id"):
         config=prepare_incident_config(config,roll_id=request.frame_identity["roll_id"])
@@ -147,6 +148,8 @@ def _execute_request(command: str, request: WorkflowRequest) -> WorkflowResult:
         return WorkflowResult(command=command, output_path=written, source_path=input_path,
                               source_kind='finished_medium', extra={'stage': 'exposed_latent'})
     if command == "full":
+        from film_foundry.core.incident_identity import bind_incident_frame
+        config=bind_incident_frame(config, identity=normalize_frame_identity(request.frame_identity))
         paths={}
         written = _workflow.process_image_file(
             input_path,

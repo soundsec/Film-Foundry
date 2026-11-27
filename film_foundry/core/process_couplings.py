@@ -53,7 +53,7 @@ def describe_process_couplings(config):
     if desired('chemical_stain')>0 or 'contaminate' in kinds:add('residue_density_and_colour')
     if desired('silver_plating')>0 or 'silver_bath' in kinds:
         add('surface_silver_reflection' if response['model']=='creative_process_response_v4' else 'surface_silver_density')
-    if 'silver_bath' in kinds and (recipe.process_events or {}).get('model') in ('film_process_events_v7','film_process_events_v8','film_process_events_v9','film_process_events_v10','film_process_events_v11','film_process_events_v12','film_process_events_v13','film_process_events_v14','film_process_events_v15'):add('surface_silver_clearing')
+    if 'silver_bath' in kinds and (recipe.process_events or {}).get('model') in ('film_process_events_v7','film_process_events_v8','film_process_events_v9','film_process_events_v10','film_process_events_v11','film_process_events_v12','film_process_events_v13','film_process_events_v14','film_process_events_v15','film_process_events_v16'):add('surface_silver_clearing')
     if desired('dye_damage_strength')>0 or 'dye_bath' in kinds:add('dye_loss_remaining_image' if not mono and 'develop_color' in actions else 'no_dye_pool')
     if any(row.get('solution',{}).get('secondary') for row in rows if row.get('solution')):add('shared_bath_reactions')
     if desired('silver_retention')>0 or recipe.silver_bleach_completion<1 or recipe.program_key=='color_negative_bleach_bypass' or any(s.action.value=='bleach_silver' and s.strength<1 for s in program.steps):add('retained_silver')

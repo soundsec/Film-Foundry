@@ -12,7 +12,7 @@ data class MaterialPicture(val image: StillPixels, val peelSheet: StillPixels? =
 
 /** Hidden single-shot materials. The code is an easter egg, not a recipe. */
 object ExperimentalMaterialAccess {
-    const val CODE = "FFC2:OPEN-MATERIALS"
+    const val CODE = "FILMFOUNDRY"
     fun matches(text: String) = text.trim().replace(Regex("\\s+"), "").equals(CODE, ignoreCase = true)
     fun visible(developmentPath: Boolean, unlocked: Boolean) = developmentPath || unlocked
 }
@@ -22,15 +22,18 @@ object ExperimentalMaterialShot {
     const val BASIC_LONG_EDGE = 1280
     data class Choice(val id: String, val zh: String, val en: String, val family: MaterialFamily, val parameters: Map<String, Any?> = emptyMap())
     val choices = listOf(
-        Choice("peel", "撕拉片", "Peel-apart", MaterialFamily.PEEL),
+        Choice("peel", "撕拉片", "Peel-apart", MaterialFamily.PEEL, mapOf("peel_travel_fraction" to 1.0)),
         Choice("instant", "拍立得", "Instant", MaterialFamily.INSTANT),
         Choice("silver", "银版", "Silver plate", MaterialFamily.SILVER),
         Choice("paper", "黑白相纸", "Black-and-white paper", MaterialFamily.PAPER),
+        Choice("paper-flash", "预闪直接正像纸", "Preflashed direct-positive paper", MaterialFamily.PAPER, mapOf("kind" to "direct_positive", "preflash_dose" to .035)),
         Choice("color-paper", "彩色相纸", "Color paper", MaterialFamily.PAPER, mapOf("kind" to "color")),
         Choice("wet", "湿版负片", "Wet-plate negative", MaterialFamily.WET),
         Choice("tintype", "锡版", "Tintype", MaterialFamily.WET, mapOf("support" to "tintype")),
         Choice("cyanotype", "蓝晒", "Cyanotype", MaterialFamily.CYANOTYPE),
+        Choice("cyanotype-display", "日照褪蓝", "Light-faded cyanotype", MaterialFamily.CYANOTYPE),
         Choice("platinum", "铂钯", "Platinum", MaterialFamily.PLATINUM),
+        Choice("platinum-out", "晒出型铂钯", "Printing-out platinum/palladium", MaterialFamily.PLATINUM, mapOf("humidity" to .8, "printout_strength" to 1.0)),
     )
 
     fun rotateClockwise(width: Int, height: Int, rgb: FloatArray, degrees: Int): StillPixels {
@@ -97,12 +100,15 @@ object ExperimentalMaterialShot {
     }
 
     private fun steps(choice: Choice): List<Pair<String, Map<String, Any?>>> = when (choice.family) {
-        MaterialFamily.PEEL -> listOf("spread" to emptyMap(), "advance" to mapOf("seconds" to 180.0, "light_exposure" to .3), "separate" to emptyMap())
-        MaterialFamily.INSTANT -> listOf("eject" to emptyMap(), "advance" to mapOf("seconds" to 180.0, "light_exposure" to .3), "finish" to emptyMap())
+        MaterialFamily.PEEL -> listOf("spread" to emptyMap(), "advance" to mapOf("seconds" to 180.0, "light_exposure" to .3), "separate" to mapOf("light_exposure" to .3))
+        MaterialFamily.INSTANT -> listOf("eject" to emptyMap(), "advance" to mapOf("seconds" to 10.0, "light_exposure" to 0.0),
+            "advance" to mapOf("seconds" to 170.0, "light_exposure" to .3), "finish" to emptyMap())
         MaterialFamily.SILVER -> listOf("develop" to emptyMap(), "fix" to emptyMap(), "gild" to emptyMap(), "tarnish" to emptyMap())
         MaterialFamily.PAPER -> listOf("develop" to emptyMap(), (if (choice.parameters["kind"] == "color") "bleach_fix" else "fix") to emptyMap(), "wash" to emptyMap())
         MaterialFamily.WET -> listOf("develop" to emptyMap(), "fix" to emptyMap(), "wash" to emptyMap(), "dry" to mapOf("seconds" to 7200.0, "humidity" to 0.0), "varnish" to emptyMap())
-        MaterialFamily.CYANOTYPE -> listOf("wash" to emptyMap(), "oxidize" to emptyMap())
-        MaterialFamily.PLATINUM -> listOf("develop" to emptyMap(), "clear" to emptyMap(), "wash" to emptyMap())
+        MaterialFamily.CYANOTYPE -> if(choice.id=="cyanotype-display") listOf("wash" to emptyMap(), "oxidize" to emptyMap(),
+            "display_fade" to mapOf("seconds" to 14400.0)) else listOf("wash" to emptyMap(), "oxidize" to emptyMap())
+        MaterialFamily.PLATINUM -> if(choice.id=="platinum-out") listOf("clear" to emptyMap(), "wash" to emptyMap())
+            else listOf("develop" to emptyMap(), "clear" to emptyMap(), "wash" to emptyMap())
     }
 }

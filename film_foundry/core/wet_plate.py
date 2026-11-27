@@ -5,6 +5,7 @@ support. Drying is a process condition, not an aged-photo overlay.
 """
 from film_foundry.core.material_structure import StructureMaterial
 from dataclasses import dataclass,field
+from functools import lru_cache
 import math
 import numpy as np
 from film_foundry.core import sheet_common as s, material_defects as defects
@@ -13,9 +14,15 @@ from film_foundry.core import sheet_structure as structure
 from film_foundry.core import wet_plate_process as process
 FAMILY='wet_collodion_v1'
 EXTERNAL_FIELDS={'external_silver':0,'external_deposit':0,'external_removed':0,'external_supplied':0}
+RGB_RESPONSE = 'blue_green_rgb_v1'
+SPECTRAL_RESPONSE = 'ff_analytic_blue_sensitive_v1'
 
 @dataclass(frozen=True)
 class WetPlateMaterial(StructureMaterial):
+    ARCHIVED_DEFAULTS = {'film_retraction': 0., 'pour_rest_seconds': 0.}
+    film_retraction: float = field(default=.55, kw_only=True)
+    pour_rest_seconds: float = field(default=8., kw_only=True)
+    exposure_response: str = field(default=RGB_RESPONSE, kw_only=True)
     support: str='glass_negative'
     half_exposure: float=.15
     response_contrast: float=1.5
@@ -42,6 +49,10 @@ class WetPlateMaterial(StructureMaterial):
 
     def __post_init__(self):
         super().__post_init__()
+        if self.exposure_response not in (RGB_RESPONSE, SPECTRAL_RESPONSE):
+            raise ValueError('Unknown wet-plate exposure response')
+        s.number(self.film_retraction, 'film_retraction')
+        s.number(self.pour_rest_seconds, 'pour_rest_seconds', 0, 86400)
         s.number(self.wetting_seconds,'wetting_seconds',.1,86400)
         s.number(self.drying_lock_strength,'drying_lock_strength',0,4)
         s.number(self.enhancement_seconds,'enhancement_seconds',.1,86400)
@@ -62,29 +73,42 @@ class WetPlateState(s.SheetState):
     FIELDS={'dose':0,'latent':0,'halide':0,'silver':0,'removed_silver':0,'coating':0,'moisture':0,'surface':0,'varnish':0,'residue':3}
     FIELD_VERSIONS={1:FIELDS,2:{**FIELDS,'flow':0,'roughness':0},3:{**FIELDS,'flow':0,'roughness':0,**EXTERNAL_FIELDS},
                     4:{**FIELDS,'flow':0,'roughness':0,**EXTERNAL_FIELDS,**process.FIELDS}}
-    FIELD_LIMITS=process.LIMITS
+    FIELD_VERSIONS[5] = {**FIELD_VERSIONS[4], 'surface_allocation': 0}
+
+    @property
+    def FIELD_LIMITS(self):
+        return {**process.LIMITS, 'surface_allocation': None, 'external_removed': None} if self.schema_version >= 5 else process.LIMITS
 
     def __post_init__(self):
         super().__post_init__()
         if self.schema_version<4 and self.stage=='enhancing':raise ValueError('Legacy wet plates cannot intensify')
+        if self.schema_version < 5 and self.material.exposure_response != RGB_RESPONSE:
+            raise ValueError('Spectral wet-plate exposure requires process version 5')
         if self.schema_version>=4:process.validate(self.fields)
         if self.schema_version>=3:
             f=self.fields
-            if not np.allclose(f['external_silver']+f['external_deposit']+f['external_removed'],f['external_supplied'],atol=2e-6,rtol=0):
+            allocation = f.get('surface_allocation', f['external_supplied'])
+            if self.schema_version >= 5 and not np.isclose(allocation.sum(dtype=np.float64), f['external_supplied'].sum(dtype=np.float64), rtol=2e-6, atol=2e-6):
+                raise ValueError('Transport changed the total sensitizer supply')
+            if not np.allclose(f['external_silver']+f['external_deposit']+f['external_removed'],allocation,atol=2e-6,rtol=2e-6):
                 raise ValueError('External silver inventory is not conserved')
             if (f['external_supplied']>f['coating']*self.material.external_silver_load+2e-6).any():
                 raise ValueError('Silver supply exceeds the sensitizing carryover')
 
-def prepare(shape,material=WetPlateMaterial(),*,group_id,seed=0,schema_version=4):
+def prepare(shape,material=WetPlateMaterial(),*,group_id,seed=0,schema_version=5):
     if len(shape)!=2 or any(type(n) is not int or n<=0 for n in shape):raise ValueError('Invalid plate dimensions')
     geometry=structure.wet_structure(shape,seed,material) if schema_version>=2 else {}
     cover,surface=(geometry['coating'],geometry['surface']) if geometry else s.coating(shape,seed,material.coating_variation,material.edge_loss,material.texture)
     zero=np.zeros(shape,np.float32)
-    return WetPlateState(group_id,seed,material,'coated',0.,dict(dose=zero,latent=zero,halide=zero,silver=zero,
+    state = WetPlateState(group_id,seed,material,'coated',0.,dict(dose=zero,latent=zero,halide=zero,silver=zero,
         removed_silver=zero,coating=cover,moisture=np.ones(shape,np.float32),surface=surface,varnish=zero,residue=np.zeros(shape+(3,),np.float32),
         **{k:v for k,v in geometry.items() if k in ('flow','roughness')},
+        **({'surface_allocation': zero} if schema_version >= 5 else {}),
         **({k:zero for k in EXTERNAL_FIELDS} if schema_version>=3 else {}),
         **({'collodion_access':np.ones(shape,np.float32),**{k:zero for k in process.SILVER_FIELDS}} if schema_version>=4 else {})),schema_version=schema_version)
+    if schema_version >= 5 and material.pour_rest_seconds:
+        return wait(state, seconds=material.pour_rest_seconds)
+    return state
 
 def sensitize(state,*,seconds=180.,activity=1.,temperature_c=20.,coverage=1.):
     s.require(state,'coated','sensitized');f=dict(state.fields)
@@ -93,6 +117,9 @@ def sensitize(state,*,seconds=180.,activity=1.,temperature_c=20.,coverage=1.):
         rate=process.conversion(effective,30.,activity,temperature_c)
         f['halide']=f['halide']+(f['coating']-f['halide'])*rate
         supplied=(f['coating']*state.material.external_silver_load-f['external_supplied'])*rate
+        if state.schema_version >= 5:
+            supplied = np.minimum(supplied, np.maximum(0., 1. - f['external_silver']))
+            f['surface_allocation'] = f['surface_allocation'] + supplied
         f['external_supplied']=f['external_supplied']+supplied;f['external_silver']=f['external_silver']+supplied
         return s.change(state,'sensitize',f,'sensitized',seconds,activity=activity,temperature_c=temperature_c,coverage=process.contact_record(coverage))
     if temperature_c!=20. or np.any(np.asarray(coverage)!=1.):raise ValueError('Bath contact and temperature require a v4 plate')
@@ -119,7 +146,25 @@ def wait(state,*,seconds=60.,humidity=None,temperature_c=20.):
     if state.schema_version>=4:s.require(state,'coated','sensitized','exposed','developed','fixed','washed','dry')
     humidity=state.material.humidity if humidity is None else humidity
     f=_dry_fields(state,seconds,humidity,temperature_c)
-    return s.change(state,'wait',f,seconds=seconds,humidity=humidity,temperature_c=temperature_c)
+    record = {}
+    if state.stage == 'coated' and state.schema_version >= 5 and state.material.film_retraction and seconds:
+        f['coating'], runoff = process.recede_film(state, seconds)
+        record['drained_coat_mean'] = runoff
+    return s.change(state,'wait',f,seconds=seconds,humidity=humidity,temperature_c=temperature_c,**record)
+
+@lru_cache(maxsize=1)
+def _blue_profile():
+    from film_foundry.contracts.spectral_exposure import make_historical_exposure_profile
+    return make_historical_exposure_profile('blue_sensitive')
+
+
+def _plate_dose(image, material):
+    if material.exposure_response == RGB_RESPONSE:
+        return image[...,2] + image[...,1]*.06
+    from film_foundry.core.spectral_exposure import map_profile_exposure
+    # Equal-energy neutral RGB retains the reference plate's exposure index.
+    return 1.06 * map_profile_exposure(image, _blue_profile(), layer=0)[...,0]
+
 
 def expose_surface(state,*,image):
     s.require(state,'sensitized');image=s.image_rgb(image)
@@ -127,14 +172,16 @@ def expose_surface(state,*,image):
     if state.material.exposure_delay_s:state=wait(state,seconds=state.material.exposure_delay_s)
     f=dict(state.fields)
     if state.schema_version>=2:image=image*10**(-f['residue'])
-    f['dose']=image[...,2]+image[...,1]*.06
+    f['dose']=_plate_dose(image,state.material)
     if state.schema_version>=4:
         f['dose']=f['dose']*f['moisture']*f['collodion_access']
         f['latent']=np.where(f['dose']>0,s.response(f['dose'],state.material.half_exposure,state.material.response_contrast),0.)
+        if state.schema_version >= 5:
+            f['latent'] = np.where(f['halide'] > 0, f['latent'], 0.)
     else:f['latent']=s.response(f['dose']*f['moisture'],state.material.half_exposure,state.material.response_contrast)
     return s.change(state,'expose',f,'exposed')
 
-def expose(image,material=WetPlateMaterial(),*,group_id,seed=0,schema_version=4):
+def expose(image,material=WetPlateMaterial(),*,group_id,seed=0,schema_version=5):
     image=s.image_rgb(image);state=sensitize(prepare(image.shape[:2],material,group_id=group_id,seed=seed,schema_version=schema_version))
     return expose_surface(state,image=image)
 
@@ -143,9 +190,14 @@ def light_leak(state,*,strength=.2,edge='left'):
     if state.schema_version>=4:
         # Dose is already effective at each exposure instant; later drying and
         # residue must not recompute or erase earlier exposures.
-        transmitted=10**(-f['residue'][...,2])+.06*10**(-f['residue'][...,1])
+        if state.material.exposure_response == RGB_RESPONSE:
+            transmitted=10**(-f['residue'][...,2])+.06*10**(-f['residue'][...,1])
+        else:
+            transmitted=_plate_dose(10**(-f['residue']),state.material)
         f['dose']=f['dose']+strength*defects.edge_field(f['coating'].shape,state.seed,edge)*transmitted*f['moisture']*f['collodion_access']
         f['latent']=np.where(f['dose']>0,s.response(f['dose'],state.material.half_exposure,state.material.response_contrast),0.)
+        if state.schema_version >= 5:
+            f['latent'] = np.where(f['halide'] > 0, f['latent'], 0.)
         return s.change(state,'light_leak',f,strength=strength,edge=edge)
     f['dose']=f['dose']+strength*defects.edge_field(f['coating'].shape,state.seed,edge)
     new=s.response(f['dose']*f['moisture'],state.material.half_exposure,state.material.response_contrast)
@@ -172,6 +224,8 @@ def develop(state,*,seconds=30.,activity=1.,temperature_c=20.,pour_uniformity=1.
     f['silver']=f['silver']+converted;f['halide']=f['halide']-converted
     if state.schema_version>=3 and m.external_silver_load:
         centres=f['latent']+(1-f['latent'])*m.fog_level
+        if state.schema_version >= 5:
+            centres = centres * (initial > 0)
         transfer_rate=(process.conversion(effective*centres,m.physical_development_seconds,activity,temperature_c) if state.schema_version>=4 else s.spatial_rate(seconds,m.physical_development_seconds,activity,access*centres,temperature_c))
         deposited=f['external_silver']*transfer_rate
         f['external_silver']=f['external_silver']-deposited
@@ -233,8 +287,9 @@ def _body(state):
     negative=state.material.support=='glass_negative'
     keys=tuple(BODY_FIELDS)+(('external_deposit','external_silver') if state.schema_version>=3 else ())+(('roughness',) if state.schema_version>=2 else ())
     if state.schema_version>=4:keys+=tuple(process.FIELDS)+('moisture',)
-    return s.finish(state,FAMILY,'wet_negative' if negative else 'wet_positive',f'wet_plate_optics_v{state.schema_version}',
-                    {k:state.fields[k] for k in keys},negative=negative)
+    optics_version = min(state.schema_version, 4)
+    return s.finish(state,FAMILY,'wet_negative' if negative else 'wet_positive',f'wet_plate_optics_v{optics_version}',
+                    {k:state.fields[k] for k in keys},negative=negative,body_version=optics_version)
 
 def products(state):
     s.require(state,'washed','dry','varnished');return _body(state)
@@ -290,11 +345,15 @@ class WetPlateFamily:
         if operation not in handlers:raise ValueError('Unsupported wet-plate operation')
         return handlers[operation](state,**parameters)
 
-OPERATION_FUNCTIONS={'sensitize':sensitize,'wait':wait,'develop':develop,'fix':fix,'wash':wash,'dry':dry,'varnish':varnish,'light_leak':light_leak,'handling':handling,
+OPERATION_FUNCTIONS={'sensitize':sensitize,'wait':wait,'tilt':process.tilt,'develop':develop,'fix':fix,'wash':wash,'dry':dry,'varnish':varnish,'light_leak':light_leak,'handling':handling,
                     'load_enhancer':load_enhancer,'intensify':intensify}
 FINAL_STAGES=('washed','dry','varnished')
 EXPOSURE_STEPS=('prepare','sensitize','expose')
 def available_operations(state):
+    if state is not None and state.schema_version >= 5:
+        if state.stage == 'coated':return ('sensitize','wait','tilt','handling')
+        if state.stage == 'sensitized':return ('expose','tilt','wait','sensitize','handling')
+        if state.stage == 'exposed':return ('develop','tilt','wait','light_leak','fix','handling')
     if state is not None and state.schema_version>=4:
         if state.stage=='enhancing':return ('intensify','load_enhancer','wash','fix','handling')
         if state.stage in ('fixed','washed'):
@@ -304,4 +363,5 @@ def available_operations(state):
         'exposed':('develop','fix','wait','light_leak','handling'),'developed':('develop','fix','wait','handling'),
         'fixed':('fix','wash','handling'),'washed':('wash','dry','handling'),'dry':('dry','varnish','handling'),
         'varnished':('varnish','handling')}[state.stage if state else None]
-def default_operations(material):return [('prepare',{}),('sensitize',{}),('expose',{}),('develop',{}),('fix',{}),('wash',{})]
+def default_operations(material):
+    return [('prepare',{}),('sensitize',{}),('tilt',{}),('expose',{}),('develop',{}),('fix',{}),('wash',{})]

@@ -11,9 +11,18 @@ class RollDevelopmentSession(private val library: FilmLibrary,private val medium
     private val facade: WorkflowFacade=DefaultWorkflowFacade(),
     private val rowBudget: ()->Long?={ null },private val rowWorkers: ()->Int={1}) {
     companion object {
-        const val LIGHTWEIGHT_REVISION="phone_roll_lightweight_v14"
-        private const val TIME_LIGHTWEIGHT_REVISION="phone_roll_lightweight_v13"
-        private const val PREVIOUS_LIGHTWEIGHT_REVISION="phone_roll_lightweight_v12"
+        const val LIGHTWEIGHT_REVISION="phone_roll_lightweight_v17"
+        private const val SILVER_DEPOSIT_MODEL="phone_surface_silver_model"
+        private val formationProfiles=mapOf(
+            LIGHTWEIGHT_REVISION to PhoneFormationProfile.LIGHTWEIGHT,
+            "phone_roll_lightweight_v16" to PhoneFormationProfile.STOCK_LIGHTWEIGHT,
+            "phone_roll_lightweight_v15" to PhoneFormationProfile.GRAIN_LIGHTWEIGHT,
+            "phone_roll_detailed_v2" to PhoneFormationProfile.PREVIOUS_STOCK_DETAILED,
+            "phone_roll_detailed_v3" to PhoneFormationProfile.STOCK_DETAILED,
+            "phone_roll_lightweight_v14" to PhoneFormationProfile.MONO_LIGHTWEIGHT,
+            "phone_roll_lightweight_v13" to PhoneFormationProfile.TIME_LIGHTWEIGHT,
+            "phone_roll_lightweight_v12" to PhoneFormationProfile.PREVIOUS_LIGHTWEIGHT,
+        )
         const val FORMATION_REVISION="phone_roll_layer_grain_v11"
         private const val DENSITY_REVISION="phone_roll_stock_density_v10"
         private const val REBATE_REVISION="phone_roll_formed_rebate_v9"
@@ -40,6 +49,9 @@ class RollDevelopmentSession(private val library: FilmLibrary,private val medium
             frozen["film"]=MovieMasterCodec.snapshot(roll.filmRecipe)
             if("develop" !in frozen) frozen["develop"]=MovieMasterCodec.snapshot(roll.developRecipe)
             val develop=(frozen["develop"] as? Map<*,*>)?.entries?.associate { it.key.toString() to it.value }.orEmpty()
+            frozen[PhoneMaterialPhenomena.INCIDENT_SCOPE]=PhoneMaterialPhenomena.FRAME_INCIDENTS
+            frozen.remove(SILVER_DEPOSIT_MODEL)
+            if("silver_plating" in develop) frozen[SILVER_DEPOSIT_MODEL]="surface_deposit_v1"
             frozen["develop"]=RecipeDrafts.process(if("program_key" in develop || develop["process_steps"]!=null) develop else develop+("program_key" to "auto"))
             val frames=roll.frames.filter { it.state in listOf(FrameState.CAPTURED,FrameState.LATENT) }.map {
                 DevelopmentTaskFrame(it.frameIndex,it.frameId,it.latentPath ?: cameraLatentPath(rollId,it.frameIndex),it.capturePath)
@@ -47,7 +59,7 @@ class RollDevelopmentSession(private val library: FilmLibrary,private val medium
             val profile=PhoneFormationProfile.validate(roll.captureSettings[PhoneFormationProfile.ROLL_SETTING])
             frozen.remove(PhoneFormationProfile.OPTION)
             val task=freeze(DevelopmentTask(taskId,rollId,frozen,frames,
-                revision=when(profile) { PhoneFormationProfile.LIGHTWEIGHT -> LIGHTWEIGHT_REVISION;PhoneFormationProfile.TIME_LIGHTWEIGHT -> TIME_LIGHTWEIGHT_REVISION;PhoneFormationProfile.PREVIOUS_LIGHTWEIGHT -> PREVIOUS_LIGHTWEIGHT_REVISION;else -> FORMATION_REVISION }))
+                revision=formationProfiles.entries.firstOrNull { it.value==profile }?.key ?: FORMATION_REVISION))
             tasks.create(task);task
         }
 
@@ -68,7 +80,8 @@ class RollDevelopmentSession(private val library: FilmLibrary,private val medium
         library.withSealedRollJob(rollId) {
             var task=freeze(tasks.read(rollId,taskId))
             require(task.status != "abandoned") { "task was explicitly ended" }
-            require(task.profile == DataKernel.PHONE_REDUCED_PROFILE_ID && task.revision in listOf(DevelopmentTaskCodec.KIND,PREVIOUS_REVISION,MATERIAL_REVISION,ORDERED_REVISION,GRAIN_REVISION,BATH_REVISION,LEDGER_REVISION,SPATIAL_REVISION,LAYER_REVISION,REBATE_REVISION,DENSITY_REVISION,FORMATION_REVISION,LIGHTWEIGHT_REVISION,TIME_LIGHTWEIGHT_REVISION,PREVIOUS_LIGHTWEIGHT_REVISION)) { "task requires a different implementation" }
+            val versionedFormation=task.revision in formationProfiles
+            require(task.profile == DataKernel.PHONE_REDUCED_PROFILE_ID && (versionedFormation || task.revision in listOf(DevelopmentTaskCodec.KIND,PREVIOUS_REVISION,MATERIAL_REVISION,ORDERED_REVISION,GRAIN_REVISION,BATH_REVISION,LEDGER_REVISION,SPATIAL_REVISION,LAYER_REVISION,REBATE_REVISION,DENSITY_REVISION,FORMATION_REVISION))) { "task requires a different implementation" }
             val roll=library.roll(rollId)
             require(RecipeJson.equivalent(task.recipe["film"],MovieMasterCodec.snapshot(roll.filmRecipe))) { "roll material differs from frozen task" }
             val frameIds=roll.frames.filter { it.state in listOf(FrameState.CAPTURED,FrameState.LATENT) }.map { it.frameIndex to it.frameId }
@@ -100,8 +113,8 @@ class RollDevelopmentSession(private val library: FilmLibrary,private val medium
                         mark(frame.copy(phase="forming"))
                         val beforeFormation=System.nanoTime()
                         val source=captures.prepareFrame(rollId,frame.index,control,
-                            if(task.revision in listOf(FORMATION_REVISION,LIGHTWEIGHT_REVISION,TIME_LIGHTWEIGHT_REVISION,PREVIOUS_LIGHTWEIGHT_REVISION) && roll.captureSettings[PhoneGrainModels.ROLL_SETTING]==PhoneGrainModels.LAYERED) PhoneGrainModels.LAYERED
-                            else if(task.revision in listOf(LIGHTWEIGHT_REVISION,TIME_LIGHTWEIGHT_REVISION,PREVIOUS_LIGHTWEIGHT_REVISION,FORMATION_REVISION,DENSITY_REVISION,REBATE_REVISION,LAYER_REVISION,SPATIAL_REVISION,LEDGER_REVISION,BATH_REVISION,GRAIN_REVISION)) PhoneGrainModels.CURRENT else PhoneGrainModels.PREVIOUS,
+                            if((versionedFormation || task.revision==FORMATION_REVISION) && roll.captureSettings[PhoneGrainModels.ROLL_SETTING]==PhoneGrainModels.LAYERED) PhoneGrainModels.LAYERED
+                            else if(versionedFormation || task.revision in listOf(FORMATION_REVISION,DENSITY_REVISION,REBATE_REVISION,LAYER_REVISION,SPATIAL_REVISION,LEDGER_REVISION,BATH_REVISION,GRAIN_REVISION)) PhoneGrainModels.CURRENT else PhoneGrainModels.PREVIOUS,
                             rowIo,handoff)
                         require(source.latentPath == frame.sourcePath && source.frameId == frame.frameId)
                         frame=frame.copy(phase="developing",formationMs=frame.formationMs+elapsed(beforeFormation))
@@ -144,10 +157,16 @@ class RollDevelopmentSession(private val library: FilmLibrary,private val medium
     /** Resume legacy tasks with their previous omitted effects, even if old JSON contained these fields. */
     private fun formationRecipe(task: DevelopmentTask): Map<String,Any?> {
         // Execution selectors belong to the task revision, never to imported recipe extras.
-        val original=(task.recipe-PhoneMaterialPhenomena.DEVELOPMENT_OPTION-PhoneOpticalDensityModels.OPTION-PhoneFormationProfile.OPTION).let { if(task.revision in listOf(LIGHTWEIGHT_REVISION,TIME_LIGHTWEIGHT_REVISION,PREVIOUS_LIGHTWEIGHT_REVISION,FORMATION_REVISION,DENSITY_REVISION,REBATE_REVISION)) it else it-"film_border" }
-        if(task.revision in listOf(LIGHTWEIGHT_REVISION,TIME_LIGHTWEIGHT_REVISION,PREVIOUS_LIGHTWEIGHT_REVISION)) return original+mapOf(PhoneProcessModels.OPTION to PhoneProcessModels.CURRENT,
+        val profile=formationProfiles[task.revision]
+        val saved=(task.recipe-SILVER_DEPOSIT_MODEL) + (PhoneMaterialPhenomena.INCIDENT_SCOPE to
+            (task.recipe[PhoneMaterialPhenomena.INCIDENT_SCOPE] ?: PhoneMaterialPhenomena.ROLL_INCIDENTS))
+        val develop=saved["develop"] as? Map<*,*>
+        val compatible=if(task.recipe[SILVER_DEPOSIT_MODEL]==null && develop!=null && "silver_plating" in develop)
+            saved+("develop" to develop.filterKeys { it!="silver_plating" }) else saved
+        val original=(compatible-PhoneMaterialPhenomena.DEVELOPMENT_OPTION-PhoneOpticalDensityModels.OPTION-PhoneFormationProfile.OPTION).let { if(profile!=null || task.revision in listOf(FORMATION_REVISION,DENSITY_REVISION,REBATE_REVISION)) it else it-"film_border" }
+        if(profile!=null) return original+mapOf(PhoneProcessModels.OPTION to PhoneProcessModels.CURRENT,
             PhoneMaterialPhenomena.DEVELOPMENT_OPTION to PhoneMaterialPhenomena.CURRENT,PhoneOpticalDensityModels.OPTION to PhoneOpticalDensityModels.CURRENT,
-            PhoneFormationProfile.OPTION to when(task.revision) { LIGHTWEIGHT_REVISION -> PhoneFormationProfile.LIGHTWEIGHT;TIME_LIGHTWEIGHT_REVISION -> PhoneFormationProfile.TIME_LIGHTWEIGHT;else -> PhoneFormationProfile.PREVIOUS_LIGHTWEIGHT })
+            PhoneFormationProfile.OPTION to profile)
         if(task.revision in listOf(FORMATION_REVISION,DENSITY_REVISION)) return original+mapOf(PhoneProcessModels.OPTION to PhoneProcessModels.CURRENT,
             PhoneMaterialPhenomena.DEVELOPMENT_OPTION to PhoneMaterialPhenomena.CURRENT,PhoneOpticalDensityModels.OPTION to PhoneOpticalDensityModels.CURRENT)
         if(task.revision in listOf(REBATE_REVISION,LAYER_REVISION)) return original+mapOf(PhoneProcessModels.OPTION to PhoneProcessModels.CURRENT,

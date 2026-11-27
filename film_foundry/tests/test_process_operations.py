@@ -16,6 +16,54 @@ def config(*events):
 
 def form(cfg):return form_process_surface(cfg,(48,72,3),np.random.default_rng(5))
 
+def test_natural_contact_can_cross_frame_edge_and_replays_between_tiles():
+    from film_foundry.contracts.process_events import EVENT_MODEL_V16
+    from film_foundry.core.process_operations import events_for, contact_duration, frame_extent
+    cfg = config()
+    row = dict(kind='bath_contact', bubble_radius_mm=4., bubble_release_s=300.,
+               center_x=-.01, center_y=.45, contact_seed=17)
+    cfg.chemistry.process_events = {'model': EVENT_MODEL_V16, 'events': [row]}
+    shape = (121, 183)
+    def contact(start, stop):
+        event, = events_for(cfg)
+        return contact_duration(shape, frame_extent(cfg, shape), start, stop, 300., event)
+    whole = contact(0, 121)
+    assert whole[:, :25].min() < 300 and np.all(whole[:, 90:] == 300)
+    np.testing.assert_array_equal(whole, np.vstack([contact(0, 53), contact(53, 121)]))
+    del row['center_x'], row['center_y']
+    first = contact(0, 121)
+    cfg.chemistry.incident_identity_seed = 43
+    assert not np.array_equal(first, contact(0, 121))
+
+def test_editor_preserves_legacy_and_new_local_positions_together():
+    from film_foundry.contracts.process_events import EVENT_MODEL_V15, EVENT_MODEL_V16
+    from film_foundry.ui.qt import _application
+    from film_foundry.ui.process_operations_editor import ProcessOperationsEditor
+    _application()
+    old = validate_process_events({'model': EVENT_MODEL_V15, 'events': [
+        dict(kind='contaminate', center_x=.64, radius_mm=3.)]})
+    editor = ProcessOperationsEditor(old)
+    try:
+        assert editor.read() == old
+        editor.kind.setCurrentIndex(editor.kind.findData('emulsion_wear'))
+        editor.add()
+        assert not editor.controls['center_x'].isEnabled()
+        mode = editor.controls['placement']
+        mode.setCurrentIndex(mode.findData('manual'))
+        editor.controls['center_x'].setValue(-.08)
+        result = editor.read()
+        previous, current = result['events']
+        assert result['model'] == EVENT_MODEL_V16
+        assert (previous['placement'], previous['center_x']) == ('legacy', .64)
+        assert (current['placement'], current['center_x']) == ('manual', -.08)
+        reopened = ProcessOperationsEditor(result)
+        try:
+            assert reopened.read() == result
+        finally:
+            reopened.close()
+    finally:
+        editor.close()
+
 def test_quantity_balance_and_order_of_contamination_and_washing():
     dirt={'kind':'contaminate','concentration_mg_l':1500.,'retained_ml_m2':20.,'contact_s':40.}
     wash={'kind':'wash','duration_s':300,'water_changes':6}

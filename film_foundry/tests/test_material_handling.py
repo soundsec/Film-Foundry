@@ -30,8 +30,9 @@ def test_handling_changes_only_surface_and_is_persistent(kind,tmp_path):
         module=instant;state=instant.stabilize(instant.spread(instant.eject(instant.expose(np.full((96,128,3),.3,np.float32),group_id='instant'))))
     changed=module.handling(state,fingerprints=.8,reagent_residue=.6,position_x=.4,position_y=.6,angle_degrees=20)
     for key in ('received','remaining','immobile'):np.testing.assert_array_equal(changed.fields[key],state.fields[key])
-    assert np.any(changed.fields['stain_density']>state.fields['stain_density'])
-    path=tmp_path/'handled.ffmaterial.npz';api.save(path,changed);restored=api.load(path)
+    surface = 'receiver_residue' if kind == 'peel' else 'stain_density'
+    assert np.any(changed.fields[surface] > state.fields[surface])
+    path=tmp_path/'handled.ffmaterial.npz';api.save(path,changed,precision='full');restored=api.load(path)
     before=module.observe(module.products(changed).bodies[0])
     np.testing.assert_array_equal(before,module.observe(module.products(restored).bodies[0]))
     np.testing.assert_array_equal(before,module.observe(module.products(changed).bodies[0]))

@@ -11,7 +11,7 @@ object PhoneRecipeCapabilities {
     fun inspect(recipe: Map<String,Any?>,stage: Stage,
         formationProfile: Any?=recipe[com.filmfoundry.interchange.PhoneFormationProfile.OPTION]): Report {
         val profile=com.filmfoundry.interchange.PhoneFormationProfile.validate(formationProfile)
-        val lightweight=stage!=Stage.SCAN && com.filmfoundry.interchange.PhoneFormationProfile.isLightweight(profile)
+        val omitsSpatial=com.filmfoundry.interchange.PhoneFormationProfile.omitsSpatial(profile)
         val timeModel=com.filmfoundry.interchange.PhoneFormationProfile.hasTimeResponse(profile)
         fun section(key: String)=(recipe[key] as? Map<*,*>)?.entries?.associate { it.key.toString() to it.value }.orEmpty()
         val film=section("film");val develop=section("chemistry")+section("develop");val scanner=recipe+section("scanner")
@@ -37,20 +37,26 @@ object PhoneRecipeCapabilities {
         if(stage!=Stage.SCAN) {
             add("film.material_response",Status.REDUCED)
             // Desktop parameter transport is not a promise to run its newer models.
-            for(key in listOf("carbon_backing"))
-                if(film[key]!=null) add("film.$key",Status.PRESERVED)
+            val rearExposure = stage==Stage.CAPTURE && section("exposure")["film_side"]=="base"
+            if (rearExposure) add("exposure.film_side", Status.REDUCED)
+            if (film["carbon_backing"]!=null) add("film.carbon_backing",if (rearExposure) Status.REDUCED else Status.PRESERVED)
             for(key in listOf("time_response","storage_history","reciprocity_response"))
                 if(film[key]!=null) add("film.$key",if(timeModel) Status.REDUCED else Status.PRESERVED)
             if(stage==Stage.CAPTURE && nonzero(section("exposure")["duration_seconds"]))
                 add("exposure.duration_seconds",if(timeModel) Status.REDUCED else Status.PRESERVED)
+            if(stage==Stage.CAPTURE && section("exposure")["lens_filter"]!=null)
+                add("exposure.lens_filter",Status.PRESERVED)
             if((recipe["film_border"] as? Map<*,*>)?.get("enabled")==true) add("film_border",Status.REDUCED)
             if(film["spectral_exposure_profile"]!=null) add("film.spectral_exposure_profile",Status.REDUCED)
-            if(nonzero(film["dir_material_response_matrix"])) add("film.dir_material_response_matrix",if(lightweight) Status.OMITTED else Status.REDUCED)
+            if(nonzero(film["dir_material_response_matrix"])) add("film.dir_material_response_matrix",if(omitsSpatial) Status.OMITTED else Status.REDUCED)
             for(key in listOf("light_piping_strength","silver_grain_strength","emulsion_highlight_spread_strength"))
                 if(nonzero(film[key])) add("film.$key",Status.REDUCED)
             if(recipe["enable_halation"]!=false && nonzero(film["halation_strength"])) add("film.halation_strength",
                 if(film["halation_return_model"] in listOf(null,"compatibility_rgb","layer_selective")) Status.REDUCED else Status.UNSUPPORTED)
             if(stage==Stage.DEVELOP) {
+                if(nonzero(develop["silver_plating"])) add("develop.silver_plating",Status.REDUCED)
+                if(film["chemical_fog_susceptibility"]!=null) add("film.chemical_fog_susceptibility",
+                    if(com.filmfoundry.interchange.PhoneFormationProfile.hasBathDose(profile)) Status.REDUCED else Status.PRESERVED)
                 val supported=runCatching { com.filmfoundry.interchange.ProcessSteps.validate(develop) }.isSuccess
                 add("develop.process_steps",if(supported) Status.REDUCED else Status.UNSUPPORTED)
                 for(key in listOf("process_events","bath_overrides","effect_intent","formation_history_model"))
@@ -58,16 +64,20 @@ object PhoneRecipeCapabilities {
                 for(key in listOf("latent_wait","post_process_light"))
                     if(develop[key]!=null) add("develop.$key",if(timeModel) Status.REDUCED else Status.PRESERVED)
                 if(nonzero(develop["mask_bleach_completion"])) add("develop.mask_bleach_completion",Status.REDUCED)
-                if(nonzero(develop["development_adjacency_strength"])) add("develop.development_adjacency_strength",if(lightweight) Status.OMITTED else Status.REDUCED)
+                if(nonzero(develop["development_adjacency_strength"])) add("develop.development_adjacency_strength",if(omitsSpatial) Status.OMITTED else Status.REDUCED)
             }
         } else {
             add("scanner.transmission",Status.REDUCED)
             for(key in listOf("scanner_response_matrix","device_response_rgb","color_curve_rgb","tone_curve","color_mixer"))
                 if(scanner[key]!=null || recipe[key]!=null) add("scanner.$key",Status.IMPLEMENTED)
             for(key in listOf("negative_channel_matrix")) if(matrixActive(scanner[key])) add("scanner.$key",Status.PRESERVED)
-            for(key in listOf("negative_channel_gamma","print_gamma","print_color_bias","highlight_color_bias"))
+            val printStatus = if (com.filmfoundry.interchange.PhoneScanModels.desktopPrint(recipe))
+                Status.IMPLEMENTED else Status.PRESERVED
+            if(differs(scanner["print_gamma"],1.0)) add("scanner.print_gamma",printStatus)
+            if(nonzero(scanner["positive_scan_color_control_strength"])) add("scanner.positive_scan_color_control_strength",printStatus)
+            for(key in listOf("negative_channel_gamma","print_color_bias","highlight_color_bias"))
                 if(differs(scanner[key],1.0)) add("scanner.$key",Status.PRESERVED)
-            for(key in listOf("print_color_shift","positive_scan_color_control_strength","projection_white_softness","projection_black_adaptation"))
+            for(key in listOf("print_color_shift","projection_white_softness","projection_black_adaptation"))
                 if(nonzero(scanner[key])) add("scanner.$key",Status.PRESERVED)
         }
         return Report(entries.toList())

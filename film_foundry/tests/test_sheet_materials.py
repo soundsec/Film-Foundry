@@ -16,14 +16,26 @@ def ramp():
 
 def finish(module,state):
     operations=module.default_operations(state.material)
-    for operation,parameters in operations:
-        if operation not in ('expose','prepare','sensitize'):
-            state=api.family(module.FAMILY).process(state,operation,**parameters)
+    after_exposure=next(i for i,(op,_) in enumerate(operations) if op=='expose')+1
+    for operation,parameters in operations[after_exposure:]:
+        state=api.family(module.FAMILY).process(state,operation,**parameters)
     return state
 
 
 def silver_total(state):
     return sum(state.fields[key] for key in ('halide','silver','removed_silver'))
+
+
+def test_wet_spectral_response_changes_colour_dose_at_fixed_neutral_speed():
+    rgb = np.tile(np.array([[1,0,0],[0,1,0],[0,0,1],[.18,.18,.18],[2,2,2]], np.float32), (8,2,1))
+    def exposed(response):
+        return wet.expose(rgb, wet.WetPlateMaterial(exposure_response=response), group_id='plate', seed=7)
+    legacy = exposed(wet.RGB_RESPONSE)
+    spectral = exposed(wet.SPECTRAL_RESPONSE)
+    for col in (3,4):
+        np.testing.assert_allclose(spectral.fields['dose'][:,col],legacy.fields['dose'][:,col],rtol=2e-6)
+    assert spectral.fields['dose'][4,1] > legacy.fields['dose'][4,1]
+    assert spectral.fields['dose'][4,2] < legacy.fields['dose'][4,2]
 
 
 @pytest.mark.parametrize('kind',['graded','variable_contrast','direct_positive','color'])
@@ -116,11 +128,11 @@ def test_platinum_palladium_separate_iron_metal_and_clearing():
 @pytest.mark.parametrize('module,material,kind',[(paper,paper.PaperMaterial(),'paper'),(wet,wet.WetPlateMaterial(),'wet'),(cyan,cyan.CyanotypeMaterial(),'cyanotype'),(noble,noble.PlatinumMaterial(),'platinum')])
 def test_family_state_resume_storage_observation_and_session(tmp_path,module,material,kind):
     state=module.expose(ramp(),material,group_id=kind,seed=7)
-    path=tmp_path/(kind+'.ffmaterial.npz');api.save(path,state);restored=api.load(path)
+    path=tmp_path/(kind+'.ffmaterial.npz');api.save(path,state,precision='full');restored=api.load(path)
     assert api.state_family(restored)==module.FAMILY
     expected=finish(module,state);actual=finish(module,restored)
     for key in expected.fields:np.testing.assert_array_equal(expected.fields[key],actual.fields[key])
-    group=module.products(actual);api.save(path,group);loaded=api.load(path)
+    group=module.products(actual);api.save(path,group,precision='full');loaded=api.load(path)
     before={k:v.copy() for k,v in loaded.bodies[0].fields.items()}
     assert api.observe(loaded.bodies[0],ViewingConditions(exposure_ev=1)).shape==ramp().shape
     for k,v in before.items():np.testing.assert_array_equal(loaded.bodies[0].fields[k],v)

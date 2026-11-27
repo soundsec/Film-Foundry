@@ -350,6 +350,8 @@ def open_test_strip(owner):
         owner.edit_tools.record();before=owner.edit_tools.capture()
         base=DarkroomConfig.from_dict(before['config'])
         frozen=owner._freeze_incident_config(deepcopy(base))
+        if mode in ("full","expose","develop"):
+            frozen=owner._focused_incident_config(frozen,path)
     except Exception as exc:owner.status.set(str(exc));return
     identity=(mode,owner.input_path.get(),owner.negative_path.get(),tuple(owner._selected_photos))
     def apply(config,axis):

@@ -58,12 +58,15 @@ def test_empty_donor_pool_cannot_gain_negative_silver_from_roundoff():
     np.testing.assert_allclose(fields['received']+fields['developed_donor'],fields['developer_used'],rtol=0,atol=1e-16)
 
 
-def test_dark_partition_and_future_environment_preserve_three_budgets():
-    base=contact(peel.PeelMaterial(neutralizer_capacity=1.4,neutralization_delay_seconds=35,neutralization_seconds=60),
+@pytest.mark.parametrize("transfer", ["dye", "silver_compound"])
+def test_dark_partition_and_future_environment_preserve_three_budgets(transfer):
+    base=contact(peel.PeelMaterial(transfer=transfer,neutralizer_capacity=1.4,neutralization_delay_seconds=35,neutralization_seconds=60),
                  reagent_load=.8,spread_seconds=8,coverage=.9,contact=.75,roller_streaks=.2,reagent_leak=.2)
     one=peel.advance(base,seconds=160)
     split=peel.advance(peel.advance(peel.advance(base,seconds=17),seconds=43),seconds=100)
     same(one,split,4e-6)
+    assert not one.fields["received"].flags.writeable
+    assert one.fields["received"].shape[-1] == (3 if transfer == "dye" else 1)
     part=peel.advance(base,seconds=20)
     warm=peel.environment(part,temperature_c=30)
     for key in part.fields:np.testing.assert_array_equal(part.fields[key],warm.fields[key])
@@ -75,14 +78,17 @@ def test_dark_partition_and_future_environment_preserve_three_budgets():
     assert not np.any(untouched.fields['developer_used'])
 
 
-def test_light_competes_without_creating_developer_and_long_steps_arrest():
-    material=instant.InstantMaterial(neutralization_delay_seconds=40,neutralization_seconds=50)
+@pytest.mark.parametrize("transfer", ["dye", "silver_compound"])
+def test_light_competes_without_creating_developer_and_long_steps_arrest(transfer):
+    material=instant.InstantMaterial(transfer=transfer,neutralization_delay_seconds=40,neutralization_seconds=50)
     base=sealed(material,light_protection=.1,ambient_light=3,spread_seconds=5)
     one=instant.advance(base,seconds=1000)
     split=base
     for seconds in (10,20,25,100):split=instant.advance(split,seconds=seconds)
     same(one,split,2e-4)
     assert one.stage==split.stage=='stable'
+    products = instant.products(one)
+    assert len(products.bodies) == 1 and products.bodies[0].role == 'integral_print'
     f=one.fields
     np.testing.assert_allclose(f['remaining']+f['immobile']+f['received']+f['transfer_loss'],1,atol=2e-6)
     np.testing.assert_allclose(f['developer_used'],f['received']+f['transfer_loss']+f['developed_donor'],atol=2e-6)
@@ -114,7 +120,7 @@ def test_inadequate_acid_requires_explicit_finish_and_observation_is_readonly(tm
 def test_intermediate_save_negative_and_separate_cleanup(tmp_path):
     m=peel.PeelMaterial(transfer='silver_compound',donor_mode='silver_negative',developer_capacity=.3)
     base=peel.advance(contact(m,reagent_load=.7),seconds=45)
-    path=tmp_path/'transfer.npz';api.save(path,base)
+    path=tmp_path/'transfer.npz';api.save(path,base,precision='full')
     advanced=peel.advance(base,seconds=150)
     same(advanced,peel.advance(api.load(path),seconds=150),0)
     separated=peel.peel(advanced);negative=peel.clear_negative(separated,strength=.7,marks=.3)

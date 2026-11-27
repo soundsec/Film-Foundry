@@ -1,0 +1,4 @@
+<resources>
+    <item name="finder_zoom" type="id"/>
+    <item name="finder_format" type="id"/>
+</resources>

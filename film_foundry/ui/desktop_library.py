@@ -154,7 +154,9 @@ def _decode_image_preview(path, width, height):
         from film_foundry.core.preview import resize_to_long_edge
         pixels=load_image(path)
         if width>0 and height>0:pixels=resize_to_long_edge(pixels,max(width,height))
-        pixels=np.ascontiguousarray(np.clip(pixels*255+.5,0,255).astype(np.uint8))
+        pixels *= 255
+        pixels += .5
+        pixels = np.ascontiguousarray(np.clip(pixels, 0, 255, out=pixels).astype(np.uint8))
         h,w=pixels.shape[:2]
         return QtGui.QImage(pixels.data,w,h,pixels.strides[0],QtGui.QImage.Format.Format_RGB888).copy()
     reader=QtGui.QImageReader(str(path));reader.setAutoTransform(True)
@@ -213,6 +215,9 @@ class DesktopLibrary(QtWidgets.QWidget):
         banner.addWidget(self.ignore_recovery)
         layout.addWidget(self.recovery_banner)
         self.recovery_banner.hide()
+        from film_foundry.ui.raw_import_notice import RawImportNotice
+        self.raw_notice = RawImportNotice()
+        layout.addWidget(self.raw_notice)
         header=QtWidgets.QHBoxLayout()
         if not open_settings:
             layout.addLayout(header)
@@ -371,6 +376,7 @@ class DesktopLibrary(QtWidgets.QWidget):
 
     def import_paths(self,paths):
         if paths:
+            self.raw_notice.offer(paths)
             try:
                 failures=self.catalog.import_paths(paths)
                 from film_foundry.app.catalog_assets import path_key
@@ -533,14 +539,35 @@ class DesktopLibrary(QtWidgets.QWidget):
                 try:self.open_artifact(path,family);dialog.accept()
                 except Exception as exc:preview.setText(str(exc))
             else:QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path))
+        signals = _ResultPreviewSignals(dialog)
+        generation = 0
+        pending = None
+
+        def display(token, image, message):
+            if token != generation:return
+            if image.isNull():
+                preview.setText(message)
+            else:
+                pixmap = QtGui.QPixmap.fromImage(image)
+                preview.setPixmap(pixmap.scaled(preview.size(),QtCore.Qt.AspectRatioMode.KeepAspectRatio,QtCore.Qt.TransformationMode.SmoothTransformation))
+        signals.ready.connect(display, QtCore.Qt.ConnectionType.QueuedConnection)
         def show_image(item,*_):
+            nonlocal generation, pending
+            generation += 1
+            token = generation
+            if pending is not None:pending.cancel()
             data=item.data(0,QtCore.Qt.ItemDataRole.UserRole) if item else None
             preview.clear()
             if data and Path(data[0]).suffix.lower() in ('.png','.jpg','.jpeg','.tiff','.tif','.webp','.bmp','.dng'):
-                try:
-                    pixmap=QtGui.QPixmap.fromImage(image_preview(data[0],800,600))
-                    preview.setPixmap(pixmap.scaled(preview.size(),QtCore.Qt.AspectRatioMode.KeepAspectRatio,QtCore.Qt.TransformationMode.SmoothTransformation))
-                except Exception as exc:preview.setText(str(exc))
+                preview.setText(text('读取图像…', 'Reading image…'))
+                pending = self.pool.submit(image_preview, data[0], 800, 600)
+                def ready(future):
+                    if future.cancelled():return
+                    try:image, message = future.result(), ''
+                    except Exception as exc:image, message = QtGui.QImage(), str(exc)
+                    try:signals.ready.emit(token, image, message)
+                    except RuntimeError:pass
+                pending.add_done_callback(ready)
         tree.currentItemChanged.connect(show_image)
         button.clicked.connect(open_item);tree.itemDoubleClicked.connect(lambda *_:open_item())
         from film_foundry.ui.inline_editor import present_inline_editor

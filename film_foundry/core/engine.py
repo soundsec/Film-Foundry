@@ -197,7 +197,7 @@ from film_foundry.core.states import (
     developed_medium_metadata,
 )
 from film_foundry.core.subtractive import density_to_positive_rgb
-from film_foundry.model.config import DarkroomConfig
+from film_foundry.model.config import DarkroomConfig, MONO_LEGACY_EXPOSURE, portable_film_parameters
 
 
 _RETAIN_FORMATION_LAYER_MASTERS: ContextVar[bool] = ContextVar(
@@ -298,10 +298,14 @@ def _force_bw_negative(config: DarkroomConfig, *, include_scanner: bool = False)
     """黑白负片模式：把三层参数同步成单一银盐密度响应，避免彩色染料色偏。"""
     program_key = str(config.chemistry.program_key).strip().lower()
     legacy_bw_mode = program_key in {"", "auto"} and is_monochrome_process(config)
-    if not is_monochrome_material(config) and not legacy_bw_mode:
+    material_is_mono = is_monochrome_material(config)
+    if not material_is_mono and not legacy_bw_mode:
         return
-    lum = (0.2126, 0.7152, 0.0722)
-    config.film.layer_sensitivity_matrix = (lum, lum, lum)
+    # Neutral silver density and incident-light sensitivity are independent.
+    if not material_is_mono or (config.film.monochrome_exposure_model == MONO_LEGACY_EXPOSURE
+                                and config.film.spectral_exposure_profile is None):
+        lum = (0.2126, 0.7152, 0.0722)
+        config.film.layer_sensitivity_matrix = (lum, lum, lum)
     config.film.dye_absorption_matrix = (
         (1.0, 0.0, 0.0),
         (0.0, 1.0, 0.0),
@@ -460,6 +464,7 @@ def _runtime_config(config: DarkroomConfig | None, prepared: bool = False) -> Da
     else:
         runtime = copy.deepcopy(config or DarkroomConfig())
     if not prepared:
+        runtime.film = runtime.formation_film()
         from film_foundry.contracts.process_events import validate_process_response
         runtime.film.process_response=validate_process_response(runtime.film.process_response)
         from film_foundry.contracts.carbon_backing import validate_carbon_backing
@@ -757,18 +762,20 @@ def _material_pool_tile_rows(
     if configured_rows <= 0:
         return None
     height, width = image.shape[:2]
+    layer_factor = 1.
+    if config.film.ordered_coatings:
+        from .film_process.coatings import emulsions
+        layer_factor = max(1., len(emulsions(config.film)) / (1 if is_monochrome_material(config) else 3))
     if not exact_material_tiling_required(
         width,
         height,
-        threshold_megapixels=float(
-            config.processing.material_tile_threshold_megapixels
-        ),
-        memory_budget_mb=config.processing.memory_budget_mb,
+        threshold_megapixels=float(config.processing.material_tile_threshold_megapixels) / layer_factor,
+        memory_budget_mb=(None if config.processing.memory_budget_mb is None else config.processing.memory_budget_mb / layer_factor),
     ):
         return None
     # Keep a tile near two megapixels even for unusually wide panoramas.
     rows_for_two_megapixels = max(1, int(2_000_000 / max(width, 1)))
-    return max(1, min(configured_rows, rows_for_two_megapixels, height))
+    return max(1, min(int(min(configured_rows, rows_for_two_megapixels) / layer_factor), height))
 
 
 def _merge_reduced_audit_payload(
@@ -837,11 +844,8 @@ def _silver_grain_plan(
         seed = int(rng.integers(0, np.iinfo(np.uint32).max, dtype=np.uint32))
     local_parameters=None
     if local_response is not None:
-        local_parameters=(
-            np.clip(strength*(1.+.35*degradation)*local_response.grain_factor,0.,.50),
-            np.clip(float(config.film.silver_grain_radius)*local_response.grain_radius_factor,1e-5,.08),
-            np.clip(float(config.film.silver_grain_clump_mix)*np.sqrt(local_response.grain_clump_factor),0.,1.))
-        for value in local_parameters:value.setflags(write=False)
+        from .silver_grain import local_silver_parameters
+        local_parameters = local_silver_parameters(config.film, local_response)
     return SilverGrainPlan(
         full_shape=(int(frame_shape[0]), int(frame_shape[1])),
         seed=seed,
@@ -925,10 +929,12 @@ def _develop_reduced_material_tiled(
     latent_layer_exposure_addition: np.ndarray | LayerExposureAdditionField | None = None,
     silver_grain_plan: SilverGrainPlan | None = None,
     consume_input_as_density: bool = False,
+    strip_holes=None, strip_vertical=False,
     spectral_component_output: np.ndarray | None = None,
     spectral_base_output: list | None = None,
     deferred_silver_density: np.ndarray | None = None,
     grain_response_output=None,
+    coating_grain=None,
 ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None, dict[str, object]]:
     """Run the selected pointwise pool transitions in bounded row tiles."""
     implementation_plan = resolve_implementation_plan(config)
@@ -1029,6 +1035,13 @@ def _develop_reduced_material_tiled(
                 latent_layer_exposure_addition[start:stop],
                 dtype=np.float32,
             )
+        tile_latent = None
+        if strip_holes is not None and (strip_vertical or start < len(strip_holes)//2 or stop > height-len(strip_holes)//2):
+            from .native_film_strip import punch_latent
+            tile_latent = freeze_material_latent_state(tile_image, config.film, _exposure_material(config.film),
+                latent_layer_exposure_addition=tile_layer_addition, film_side=config.exposure.film_side, exposure_duration_seconds=config.exposure.duration_seconds)
+            punch_latent(tile_latent, strip_holes, start, height, vertical=strip_vertical)
+            tile_image, tile_layer_addition = None, None
         if program_kind == "bw_negative":
             reduced = develop_bw_negative_reduced(
                 tile_image,
@@ -1036,7 +1049,8 @@ def _develop_reduced_material_tiled(
                 config.chemistry,
                 local_development_rate=tile_rate,
                 latent_layer_exposure_addition=tile_layer_addition,
-                exposure_duration_seconds=config.exposure.duration_seconds,
+                film_side=config.exposure.film_side, exposure_duration_seconds=config.exposure.duration_seconds,
+                exposed_latent=tile_latent,
                 retain_latent_fraction=False,
                 retain_process_state=False,
                 grain_response_output=collector,
@@ -1057,7 +1071,8 @@ def _develop_reduced_material_tiled(
                 config.chemistry,
                 local_development_rate=tile_rate,
                 latent_layer_exposure_addition=tile_layer_addition,
-                exposure_duration_seconds=config.exposure.duration_seconds,
+                film_side=config.exposure.film_side, exposure_duration_seconds=config.exposure.duration_seconds,
+                exposed_latent=tile_latent,
                 retain_latent_fraction=False,
                 retain_process_state=False,
                 grain_response_output=collector,
@@ -1078,7 +1093,8 @@ def _develop_reduced_material_tiled(
                 config.chemistry,
                 local_development_rate=tile_rate,
                 latent_layer_exposure_addition=tile_layer_addition,
-                exposure_duration_seconds=config.exposure.duration_seconds,
+                film_side=config.exposure.film_side, exposure_duration_seconds=config.exposure.duration_seconds,
+                exposed_latent=tile_latent,
                 retain_latent_fraction=False,
                 retain_process_state=False,
                 grain_response_output=collector,
@@ -1098,7 +1114,8 @@ def _develop_reduced_material_tiled(
                 config.chemistry,
                 local_development_rate=tile_rate,
                 latent_layer_exposure_addition=tile_layer_addition,
-                exposure_duration_seconds=config.exposure.duration_seconds,
+                film_side=config.exposure.film_side, exposure_duration_seconds=config.exposure.duration_seconds,
+                exposed_latent=tile_latent,
                 retain_latent_fraction=False,
                 retain_process_state=False,
                 grain_response_output=collector,
@@ -1119,6 +1136,8 @@ def _develop_reduced_material_tiled(
     spans=((start,min(start+tile_rows,height)) for start in range(0,height,tile_rows))
     with ordered_results(spans,observe_tile_rows(calculate_tile),workers=workers) as (active_workers,results):
         for start,stop,reduced,tile_density,representation,tile_collector in results:
+            if coating_grain is not None:
+                coating_grain.capture(reduced.process_result.state, start)
             if tile_collector is not None:grain_response_output.append_rows(tile_collector,row_offset=start)
             if spectral_component_output is not None:
                 base, _ = final_pool_amounts(reduced.process_result.final_medium, spectral_component_output[start:stop])
@@ -1279,6 +1298,8 @@ def develop_negative_from_latent(
     if config is not None and not _prepared_config and latent_state.material_snapshot is None:
         _validate_develop_runtime(config)
     runtime = _runtime_config(config, prepared=_prepared_config)
+    if runtime.chemistry.incident_pattern_scope == "frame" and runtime.chemistry.incident_frame_seed is None and latent_state.incident_frame_seed is not None:
+        runtime = replace(runtime, chemistry=replace(runtime.chemistry, incident_frame_seed=latent_state.incident_frame_seed))
     if latent_state.material_snapshot is not None:
         # The source owns material coefficients; the caller owns baths and
         # output controls. Snapshot values are already exposure-time runtime
@@ -1287,9 +1308,15 @@ def develop_negative_from_latent(
         parameters = latent_state.material_snapshot.parameters()
         try:
             runtime.film = DarkroomConfig.from_dict({"film": parameters}).film
+            frozen_mode = (parameters.get("coating_stack") or {}).get("mode", "ordered")
+            runtime.film = runtime.formation_film(frozen_mode=frozen_mode)
         except (TypeError, ValueError) as exc:
             raise ValueError("material snapshot cannot be evaluated by this desktop runtime") from exc
-    runtime = replace(runtime, exposure=replace(runtime.exposure, duration_seconds=latent_state.exposure_duration_seconds))
+    elif runtime.film.coating_stack is not None:
+        runtime.film = runtime.formation_film(frozen_mode="reduced")
+    runtime = replace(runtime, exposure=replace(runtime.exposure, duration_seconds=latent_state.exposure_duration_seconds,
+                                                lens_filter=latent_state.lens_filter, film_side=latent_state.film_side,
+                                                rear_optics=latent_state.rear_optics))
     _validate_develop_runtime(
         runtime,
         allow_discarded_history=_allow_discarded_history,
@@ -1366,6 +1393,7 @@ def _freeze_pre_process_latent(
     config: DarkroomConfig,
     tiled_program_kind: str | None,
     latent_layer_exposure_addition,
+    workers,
 ) -> FilmProcessState:
     """Freeze the material-pool latent after optics and before process operators."""
     if tiled_program_kind not in {"color_negative", "color_reversal", "bw_negative", "bw_reversal"}:
@@ -1380,7 +1408,8 @@ def _freeze_pre_process_latent(
         config.film,
         material,
         latent_layer_exposure_addition=latent_layer_exposure_addition,
-        exposure_duration_seconds=config.exposure.duration_seconds,
+        film_side=config.exposure.film_side, exposure_duration_seconds=config.exposure.duration_seconds,
+        workers=workers,
     )
 
 
@@ -1402,6 +1431,8 @@ def _develop_silver_halide_pipeline(
     if process_run is not None and (exposed_latent is None or return_exposed_latent):
         raise ValueError("Reaction continuation requires a frozen latent input")
     config = _runtime_config(config, prepared=_prepared_config)
+    if exposed_latent is None and config.film.ordered_coatings:
+        config.film.require_separated_coatings()
     implementation_plan = resolve_implementation_plan(config)
     requested_formation_config = config
     reduction_audit = None
@@ -1417,12 +1448,27 @@ def _develop_silver_halide_pipeline(
         if exposed_latent is not None
         else image_srgb.shape if image_srgb is not None else (0, 0)
     )
+    if exposed_latent is None and config.film_border.enabled:
+        from .film_border import vertical_transport
+        vertical = vertical_transport(config.film_border, frame_shape[1], frame_shape[0])
+        config = replace(config, film_border=replace(config.film_border, transport_axis="vertical" if vertical else "horizontal"))
+        if reduction_audit is not None:
+            requested_formation_config = replace(requested_formation_config,film_border=config.film_border)
+    strip_layout = None
+    if exposed_latent is None and config.film_border.enabled and config.film_border.formation_mode != "attached":
+        from .film_border import resolve_film_border_layout
+        strip_layout = resolve_film_border_layout(config.film_border, frame_shape, strip_coordinates=True)
+        width, height = strip_layout.canvas_size
+        frame_shape = (width, height, 3) if vertical else (height, width, 3)
     intent_audit=None
     material_geometry = (
         exposed_latent.material_geometry
         if exposed_latent is not None
         else resolve_material_geometry(config.film, config.chemistry, frame_shape)
     )
+    if material_geometry is not None and strip_layout is not None and config.film_border.formation_mode == "native":
+        material_geometry = replace(material_geometry, frame_long_edge_mm=material_geometry.frame_long_edge_mm
+                                    * max(frame_shape[:2])/max(image_srgb.shape[:2]))
     spectral_profile = (
         exposed_latent.spectral_exposure_profile
         if exposed_latent is not None
@@ -1462,6 +1508,13 @@ def _develop_silver_halide_pipeline(
         from film_foundry.core.effect_intent import compile_effect_intent
         config,intent_audit=compile_effect_intent(config,frame_shape[:2])
     material_runtime_config = requested_formation_config if reduction_audit is not None else config
+    if reduction_audit is not None and (material_geometry is not None or exposed_latent is not None):
+        # Keep the requested recipe, with the actual exposed frame's physical extent.
+        material_runtime_config = replace(
+            material_runtime_config,
+            film=replace(material_runtime_config.film, spatial_reference_short_edge_mm=config.film.spatial_reference_short_edge_mm),
+            chemistry=replace(material_runtime_config.chemistry, frame_long_edge_mm=config.chemistry.frame_long_edge_mm),
+        )
     if material_geometry is not None:
         config = project_formation_config(config, material_geometry)
     if spectral_profile is not None and spectral_profile.model != SMITS_EXPOSURE_MODEL_ID:
@@ -1524,9 +1577,29 @@ def _develop_silver_halide_pipeline(
         if image_srgb is None:
             raise ValueError("develop requires an input image")
         linear = np.array(image_srgb, dtype=np.float32, copy=True) if input_is_linear else srgb_to_linear(image_srgb)
-        linear = linear * (2.0 ** float(config.look.exposure_ev))
-        if is_monochrome_material(config):
-            linear = np.repeat(luminance(linear)[..., None], 3, axis=-1)
+        linear *= 2.0 ** float(config.look.exposure_ev)
+        if config.exposure.lens_filter is not None:
+            from .lens_filters import filter_gain
+            linear *= filter_gain(material_runtime_config.film, config.exposure.lens_filter, config.exposure.film_side)
+        if config.exposure.film_side == 'base':
+            from .rear_exposure import expose_from_base
+            linear = expose_from_base(linear, material_runtime_config, monochrome=is_monochrome_material(config),
+                                      frame_config=requested_formation_config.chemistry)
+        # A single silver layer still receives coloured light. Keep its RGB
+        # source through the pre-latent optics and let the stock map the dose.
+        # Only unprofiled historical mono recipes used display luminance here.
+        if (spectral_profile is None and config.film.monochrome_exposure_model == MONO_LEGACY_EXPOSURE
+                and is_monochrome_material(config)):
+            needs_rgb = config.film.ordered_coatings and (
+                config.film.physical_coating_optics or any(
+                    "sensitivity_rgb" in row or len(set(row["density_rgb"])) > 1
+                    for row in config.film.coating_stack["layers"]))
+            if not needs_rgb:
+                linear = np.repeat(luminance(linear)[..., None], 3, axis=-1)
+        if strip_layout is not None and config.film_border.formation_mode == "native":
+            rw = strip_layout.image_rect[1]
+            pad = ((0,0),(rw,rw),(0,0)) if vertical else ((rw,rw),(0,0),(0,0))
+            linear = np.pad(linear, pad)
         linear, exposure_occlusion_map = apply_exposure_occlusion_to_linear(
             linear,
             config.chemistry,
@@ -1556,10 +1629,11 @@ def _develop_silver_halide_pipeline(
         # Date-back / lab-edge LEDs sit on the film plane. Apply them after MTF
         # so the flash stays sharp, and after scene occlusion so a back/side lamp
         # is not blocked by dust on the emulsion face.
-        after_mtf, edge_imprint_map = apply_edge_imprint_to_linear(
-            after_mtf,
-            config.film_border,
-        )
+        if strip_layout is None:
+            after_mtf, edge_imprint_map = apply_edge_imprint_to_linear(after_mtf, config.film_border)
+        else:
+            from .native_film_strip import expose_strip
+            after_mtf, edge_imprint_map, strip_holes = expose_strip(after_mtf, config, strip_layout)
         has_edge_imprint_map = edge_imprint_map is not None
         del edge_imprint_map
 
@@ -1591,6 +1665,8 @@ def _develop_silver_halide_pipeline(
                     template_key=secondary_key,
                 )
         checkpoint()
+        edge_rgb = (np.zeros((2, after_mtf.shape[0 if vertical else 1], 3), np.float32)
+                    if strip_layout is None and config.film_border.enabled and light_leak_pattern is not None else None)
         after_light_leak, light_leak_map = apply_light_leak_to_exposure(
             after_mtf,
             config.chemistry,
@@ -1598,7 +1674,13 @@ def _develop_silver_halide_pipeline(
             pattern=light_leak_pattern,
             secondary_pattern=light_leak_secondary_pattern,
             exposure_ceiling=None if input_is_linear else 4.0,
+            edge_rgb=edge_rgb, vertical_edge=bool(edge_rgb is not None and vertical),
         )
+        if strip_layout is not None:
+            from .native_film_strip import bands
+            strip_view = np.rot90(after_light_leak) if vertical else after_light_leak
+            for target, belt in bands(len(strip_view), strip_layout.image_rect[1]):
+                strip_view[target][strip_holes[belt] >= 1.] = 0.
         material_layer_count = 1 if is_monochrome_material(config) else 3
         # 潜影前的层曝光：乳剂扩散、片基回返、片基光导，相加后一次进入材料。
         layer_emulsion_spread_addition = emulsion_highlight_spread_field(
@@ -1699,20 +1781,32 @@ def _develop_silver_halide_pipeline(
         elif _uses_reduced_color_reversal(config):
             tiled_program_kind = "color_reversal"
 
+        if config.film.ordered_coatings and tiled_program_kind is None:
+            raise ValueError("Ordered coatings require a material-pool process")
         if return_exposed_latent:
             latent = _freeze_pre_process_latent(
                 after_halation,
                 config,
                 tiled_program_kind,
                 latent_layer_exposure_addition,
+                source_workers,
             )
+            if strip_layout is not None:
+                from .native_film_strip import punch_latent
+                punch_latent(latent, strip_holes, vertical=vertical)
             latent.material_geometry = material_geometry
             latent.spectral_exposure_profile = spectral_profile
             latent.spectral_material_profile = material_spectrum
             # Store reference units, not the private geometry-projected film.
-            latent.material_snapshot = MaterialSnapshot(asdict(material_runtime_config.film))
+            latent.material_snapshot = MaterialSnapshot(portable_film_parameters(asdict(material_runtime_config.film)))
             from .formed_film_border import border_snapshot
-            latent.film_border_snapshot = border_snapshot(material_runtime_config.film_border)
+            latent.film_border_snapshot = border_snapshot(material_runtime_config.film_border, edge_rgb)
+            latent.lens_filter = copy.deepcopy(config.exposure.lens_filter)
+            latent.film_side = config.exposure.film_side
+            if latent.film_side == 'base':
+                from film_foundry.contracts.film_exposure import rear_optics
+                latent.rear_optics = rear_optics(config.exposure.rear_optics)
+            latent.incident_frame_seed = config.chemistry.incident_frame_seed
             return latent
 
         after_accidents = after_halation
@@ -1744,7 +1838,7 @@ def _develop_silver_halide_pipeline(
     needs_local_pools = needs_adjacency_pools or needs_dir_pools
     local_material_source = (MaterialLatentSource(config.film, image_linear=local_image,
         exposed_latent=exposed_latent, latent_layer_exposure_addition=latent_layer_exposure_addition,
-        exposure_duration_seconds=config.exposure.duration_seconds)
+        film_side=config.exposure.film_side, exposure_duration_seconds=config.exposure.duration_seconds)
         if needs_local_pools else None)
     if needs_adjacency_pools and needs_dir_pools and config.processing.memory_budget_mb is None:
         local_material_source.prepare_working_states(
@@ -1766,7 +1860,7 @@ def _develop_silver_halide_pipeline(
     incremental_inhibitor=process_run is not None and process_run.include_inhibitor
     track_wet_history=process_run is not None and process_run.track_wet_history
     ordered_contact=BathContactRate(config,frame_shape,incremental_surface=incremental_surface,
-        incremental_inhibitor=incremental_inhibitor,track_wet_history=track_wet_history) if (config.chemistry.process_events or {}).get('model') in ('film_process_events_v10','film_process_events_v11','film_process_events_v12','film_process_events_v13','film_process_events_v14','film_process_events_v15') else None
+        incremental_inhibitor=incremental_inhibitor,track_wet_history=track_wet_history) if (config.chemistry.process_events or {}).get('model') in ('film_process_events_v10','film_process_events_v11','film_process_events_v12','film_process_events_v13','film_process_events_v14','film_process_events_v15','film_process_events_v16') else None
     adjacency_rate_field = None
     adjacency_audit: dict[str, object] = {
         "enabled": False,
@@ -1881,7 +1975,14 @@ def _develop_silver_halide_pipeline(
 
     from film_foundry.contracts.formation_history import enabled as bath_history_enabled
     use_bath_history = tiled_program_kind is not None and bath_history_enabled(config.chemistry)
-    deferred_silver_density = np.empty(grain_shape, np.float32) if use_bath_history and silver_grain_plan is not None else None
+    coating_grain = None
+    if (config.enable_grain and config.film.ordered_coatings and tiled_program_kind
+            and config.film.coating_stack.get("independent_grain")):
+        from .coating_grain import CoatingGrain
+        product = "silver" if is_monochrome_material(config) or tiled_program_kind.startswith("bw_") else "dye"
+        coating_grain = CoatingGrain(grain_shape, config.film, product, silver_grain_plan is not None)
+    deferred_silver_density = (np.empty(grain_shape, np.float32) if silver_grain_plan is not None
+                               and (use_bath_history or coating_grain is not None) else None)
     grain_development = None
     from film_foundry.contracts.formation_history import local_enabled
     grain_response_output=None
@@ -1901,14 +2002,19 @@ def _develop_silver_halide_pipeline(
             4.0,
         ).astype(np.float32, copy=False)
 
-    material_image = None if exposed_latent is not None else after_accidents
+    processing_latent = exposed_latent
+    if strip_layout is not None and tiled_program_kind is not None and tile_rows is None:
+        from .native_film_strip import punch_latent
+        processing_latent = punch_latent(_freeze_pre_process_latent(after_accidents, config, tiled_program_kind,
+                                      latent_layer_exposure_addition, source_workers), strip_holes, vertical=vertical)
+    material_image = None if processing_latent is not None else after_accidents
     if material_image is not None and tiled_program_kind is not None:
         begin_exposure(material_image.shape)
     material_addition = (
-        None if exposed_latent is not None else latent_layer_exposure_addition
+        None if processing_latent is not None else latent_layer_exposure_addition
     )
     # 材料池形成。分块只改变内存，不改变程序或随机流。
-    if tile_rows is not None and tiled_program_kind is not None and exposed_latent is None:
+    if tile_rows is not None and tiled_program_kind is not None and processing_latent is None:
         (
             density_cmy,
             formed_optical_density_rgb,
@@ -1926,6 +2032,9 @@ def _develop_silver_halide_pipeline(
             spectral_base_output=spectral_base,
             deferred_silver_density=deferred_silver_density,
             grain_response_output=grain_response_output,
+            coating_grain=coating_grain,
+            strip_holes=strip_holes if strip_layout is not None else None,
+            strip_vertical=strip_layout is not None and vertical,
             consume_input_as_density=bool(
                 discard_history and not reference_execution_enabled()
             ),
@@ -1942,10 +2051,10 @@ def _develop_silver_halide_pipeline(
             config.chemistry,
             local_development_rate=development_rate_field,
             latent_layer_exposure_addition=material_addition,
-            exposure_duration_seconds=config.exposure.duration_seconds,
+            film_side=config.exposure.film_side, exposure_duration_seconds=config.exposure.duration_seconds,
             retain_latent_fraction=False,
             retain_process_state=False,
-            exposed_latent=exposed_latent,
+            exposed_latent=processing_latent,
             process_run=process_run,
             grain_response_output=grain_response_output,
             coupled_intervals=implementation_plan.coupled_intervals,
@@ -1965,12 +2074,13 @@ def _develop_silver_halide_pipeline(
             material_image,
             config.film,
             config.chemistry,
+            projection_workers=source_workers,
             local_development_rate=development_rate_field,
             latent_layer_exposure_addition=material_addition,
-            exposure_duration_seconds=config.exposure.duration_seconds,
+            film_side=config.exposure.film_side, exposure_duration_seconds=config.exposure.duration_seconds,
             retain_latent_fraction=False,
             retain_process_state=False,
-            exposed_latent=exposed_latent,
+            exposed_latent=processing_latent,
             process_run=process_run,
             grain_response_output=grain_response_output,
             coupled_intervals=implementation_plan.coupled_intervals,
@@ -1992,10 +2102,10 @@ def _develop_silver_halide_pipeline(
             config.chemistry,
             local_development_rate=development_rate_field,
             latent_layer_exposure_addition=material_addition,
-            exposure_duration_seconds=config.exposure.duration_seconds,
+            film_side=config.exposure.film_side, exposure_duration_seconds=config.exposure.duration_seconds,
             retain_latent_fraction=False,
             retain_process_state=False,
-            exposed_latent=exposed_latent,
+            exposed_latent=processing_latent,
             process_run=process_run,
             grain_response_output=grain_response_output,
             coupled_intervals=implementation_plan.coupled_intervals,
@@ -2015,12 +2125,13 @@ def _develop_silver_halide_pipeline(
             material_image,
             config.film,
             config.chemistry,
+            projection_workers=source_workers,
             local_development_rate=development_rate_field,
             latent_layer_exposure_addition=material_addition,
-            exposure_duration_seconds=config.exposure.duration_seconds,
+            film_side=config.exposure.film_side, exposure_duration_seconds=config.exposure.duration_seconds,
             retain_latent_fraction=False,
             retain_process_state=False,
-            exposed_latent=exposed_latent,
+            exposed_latent=processing_latent,
             process_run=process_run,
             grain_response_output=grain_response_output,
             coupled_intervals=implementation_plan.coupled_intervals,
@@ -2040,6 +2151,11 @@ def _develop_silver_halide_pipeline(
         if str(developed_medium_contract(config)["image_polarity"]) == "positive":
             density_cmy = _positive_transparency_density_from_negative_proxy(density_cmy, config)
     formed_density_cmy = density_cmy
+    if coating_grain is not None:
+        source = reduced_bw if reduced_bw is not None else reduced_color
+        if source is not None:
+            coating_grain.capture(source.process_result.state, 0)
+        del source
     discard_formation_layer_masters = bool(
         not _RETAIN_FORMATION_LAYER_MASTERS.get()
         and formed_optical_density_rgb is not None
@@ -2166,8 +2282,12 @@ def _develop_silver_halide_pipeline(
             silver_grain_plan = _silver_grain_plan(config, rng, grain_shape, tiled_program_kind,
                 effective_development=(retained_development(config.chemistry, totals, 'silver') if implementation_plan.local_grain_response_enabled else grain_development), seed=silver_grain_plan.seed,
                 local_response=grain_response_output.response('silver') if grain_response_output is not None else None)
-            independent_silver_grain_applied = apply_metallic_silver_grain(
-                formed_optical_density_rgb, deferred_silver_density, silver_grain_plan, workers=source_workers)
+            if coating_grain is None:
+                independent_silver_grain_applied = apply_metallic_silver_grain(
+                    formed_optical_density_rgb, deferred_silver_density, silver_grain_plan, workers=source_workers)
+    if coating_grain is not None and silver_grain_plan is not None:
+        independent_silver_grain_applied = coating_grain.silver_grain(
+            formed_optical_density_rgb, deferred_silver_density, silver_grain_plan)
     del deferred_silver_density
 
     has_uneven_development_map = uneven_development_map is not None
@@ -2218,13 +2338,17 @@ def _develop_silver_halide_pipeline(
     independent_silver_only_grain = bool(
         silver_grain_plan is not None
         and tiled_program_kind is not None
-        and tiled_program_kind.startswith("bw_")
+        and (tiled_program_kind.startswith("bw_") or (coating_grain is not None and coating_grain.product == "silver"))
     )
     spectral_grain_totals = None
     spectral_silver_grain_applied = False
     if spectral_components is not None and config.enable_grain:
         spectral_grain_totals = np.sum(spectral_components[..., :4], axis=(0, 1), dtype=np.float64)
-        spectral_silver_grain_applied = apply_spectral_silver_grain(spectral_components, silver_grain_plan)
+        if coating_grain is None:
+            spectral_silver_grain_applied = apply_spectral_silver_grain(spectral_components, silver_grain_plan)
+        else:
+            silver = spectral_components[...,3]
+            spectral_silver_grain_applied = coating_grain.silver_grain(silver, silver, silver_grain_plan)
         spectral_grain_range = np.maximum(
             np.asarray(config.film.density_max, dtype=np.float32)
             - np.asarray(config.film.density_min, dtype=np.float32),
@@ -2236,7 +2360,8 @@ def _develop_silver_halide_pipeline(
         # Emulsion/dye-cloud grain is generated from the formed layer master.
         # Surface silver and chemical deposits are later optical components;
         # they must not retroactively change the emulsion-grain response.
-        optical_layer_density = apply_density_grain(
+        grain_function = apply_density_grain if coating_grain is None else coating_grain.emulsion_grain
+        optical_layer_density = grain_function(
             formed_density_cmy,
             config.film,
             config.chemistry,
@@ -2246,11 +2371,13 @@ def _develop_silver_halide_pipeline(
             image_polarity=str(developed_medium_contract(config)["image_polarity"]),
             component_scope="emulsion",
             development_override=grain_development,
+            workers=source_workers,
             local_response=grain_response_output.response(product) if grain_response_output is not None else None,
             consume_input_as_effective_delta=discard_formation_layer_masters,
             model=implementation_plan.emulsion_grain_model,
             spatial_scale_factor=(1.0 if material_geometry is None else material_geometry.radius_factor),
         )
+        del grain_function
         optical_layer_density_is_effective_delta = (
             discard_formation_layer_masters
         )
@@ -2323,6 +2450,8 @@ def _develop_silver_halide_pipeline(
     # The local response is a formation-to-grain handoff, not a permanent
     # optical archive or scanner input. Its only image consumers have finished.
     grain_response_output=None
+    per_coating_grain_applied = coating_grain is not None
+    del coating_grain
     if silver_grain_plan is not None and silver_grain_plan.local_parameters is not None:
         silver_grain_plan=replace(silver_grain_plan,local_parameters=None)
     if is_monochrome_material(config) and not discard_formation_layer_masters:
@@ -2522,6 +2651,16 @@ def _develop_silver_halide_pipeline(
     capture_record = exposure_record(config.film, duration, 1 if is_monochrome_material(config) else 3)
     if capture_record is not None:
         final_medium_contract['exposure_conditions'] = capture_record
+    captured_filter = exposed_latent.lens_filter if exposed_latent is not None else config.exposure.lens_filter
+    if config.exposure.film_side == 'base':
+        final_medium_contract['film_side'] = 'base'
+        if exposed_latent is None or exposed_latent.rear_optics is not None:
+            from film_foundry.contracts.film_exposure import rear_optics
+            final_medium_contract['rear_optics'] = rear_optics(config.exposure.rear_optics)
+    if config.film.ordered_coatings:
+        final_medium_contract["coating_stack"] = config.film.coating_stack
+    if captured_filter is not None:
+        final_medium_contract['lens_filter'] = dict(captured_filter)
     final_medium_contract["development_adjacency"] = adjacency_audit
     final_medium_contract["dir_material_response"] = dir_audit
     if has_silver_plating_map:
@@ -2671,6 +2810,9 @@ def _develop_silver_halide_pipeline(
         "source_component": "formed_material_layer_density",
         "scanner_owned": False,
     }
+    if per_coating_grain_applied:
+        for key in ("emulsion_grain_formation", "silver_grain_formation"):
+            final_medium_contract[key]["random_field_scope"] = "per_emulsion_coating_v1"
     if use_bath_history and local_enabled(config.chemistry) and implementation_plan.local_grain_response_enabled:
         final_medium_contract['silver_grain_formation']['parameter_scope']='frame_summary_with_local_retained_response'
         final_medium_contract['emulsion_grain_formation']['response']='retained_mass_weighted_local_v2'
@@ -2841,6 +2983,9 @@ def _develop_silver_halide_pipeline(
             "gate_source":"frozen_latent" if exposed_latent is not None else "current_exposure",
         }
 
+    if config.chemistry.incident_frame_seed is not None:
+        final_medium_contract["incident_frame_seed"] = config.chemistry.incident_frame_seed
+
     # 组装最终介质。扫描只读这份结果。
     negative = DevelopedNegative(
         process_surface=process_surface,
@@ -2980,7 +3125,7 @@ def _develop_silver_halide_pipeline(
         negative.metadata["stage_storage"] = storage
     from .formed_film_border import border_snapshot, form_film_border
     frozen_border = (exposed_latent.film_border_snapshot if exposed_latent is not None
-                     else border_snapshot(material_runtime_config.film_border))
+                     else border_snapshot(material_runtime_config.film_border, edge_rgb))
     return form_film_border(negative, material_runtime_config, frozen_border, tiled_program_kind)
 
 
@@ -3079,6 +3224,7 @@ def _process_array_with_runtime(
     config: DarkroomConfig | None = None,
     rng: np.random.Generator | None = None,
     *, input_encoding: str = "srgb",
+    _stage_observer: Callable[[str], None] | None = None,
 ) -> tuple[np.ndarray, dict[str, np.ndarray], DarkroomConfig, DevelopedNegative]:
     """处理数组并返回关键中间结果，供 debug 输出使用。"""
     config = _runtime_config(config)
@@ -3090,6 +3236,8 @@ def _process_array_with_runtime(
     if not isinstance(runtime_config, DarkroomConfig):
         runtime_config = config
     interpretation_mode = str(config.scanner.interpretation_mode).strip().lower()
+    if _stage_observer is not None:
+        _stage_observer("after_develop")
     if interpretation_mode in {"", "auto"}:
         # Auto full workflow follows the newly formed medium contract.
         scanned = scan_negative(negative)
@@ -3279,9 +3427,10 @@ from film_foundry.core.medium_export import (
 )
 
 
-def _render_file_frame(input_path, config, preview, resolved_seed_override):
+def _render_file_frame(input_path, config, preview, resolved_seed_override, on_stage=None):
     """The common formation and observation path up to output encoding."""
-    config = config or DarkroomConfig()
+    from .incident_identity import bind_incident_frame
+    config = bind_incident_frame(config or DarkroomConfig(), path=input_path)
     execution_axes = resolve_execution_axes(config, scaled_override=preview)
     # Persist a backward-compatible representation of the orthogonal axes in
     # runtime metadata while leaving the caller's reusable configuration
@@ -3302,6 +3451,8 @@ def _render_file_frame(input_path, config, preview, resolved_seed_override):
     _validate_output_runtime(config)
     input_path = Path(input_path)
     long_edge = processing_long_edge(config)
+    if on_stage is not None:
+        on_stage("loading")
     source_width, source_height = probe_image_dimensions(input_path)
     retain_development_stages = bool(
         config.output.export_plate_set or config.output.export_layer_pack
@@ -3309,6 +3460,7 @@ def _render_file_frame(input_path, config, preview, resolved_seed_override):
     memory_estimate = estimate_pipeline_memory(
         source_width,
         source_height,
+        film_border=config.film_border,
         long_edge=long_edge,
         diagnostic=bool(config.debug_output),
         retain_development_stages=retain_development_stages,
@@ -3343,12 +3495,21 @@ def _render_file_frame(input_path, config, preview, resolved_seed_override):
             raise ValueError('Resolved development seed must be an unsigned 32-bit integer')
         resolved_seed = resolved_seed_override
         rng = np.random.default_rng(resolved_seed)
+    def report_observation(boundary):
+        if boundary == "after_develop":
+            on_stage("scanning")
+
+    observer = None
+    if on_stage is not None:
+        on_stage("developing")
+        observer = report_observation
     if config.debug_output:
         result, stages, runtime_config, negative = _process_array_with_runtime(
             image,
             config,
             rng=rng,
             input_encoding=input_color["encoding"],
+            _stage_observer=observer,
         )
     else:
         result, runtime_config, negative = _process_output_with_runtime(
@@ -3358,6 +3519,7 @@ def _render_file_frame(input_path, config, preview, resolved_seed_override):
             input_encoding=input_color["encoding"],
             retain_development_stages=retain_development_stages,
             retain_cold_history=reference_execution_enabled(),
+            _stage_observer=observer,
         )
         stages = None
         if not retain_development_stages and not reference_execution_enabled():
@@ -3392,6 +3554,7 @@ def _process_file_impl(
     preview: bool = False,
     *, artifact_paths: dict[str,str] | None = None,
     resolved_seed_override: int | None = None,
+    on_stage: Callable[[str], None] | None = None,
 ) -> Path:
     """读取、处理并保存一张图像文件。
 
@@ -3402,7 +3565,7 @@ def _process_file_impl(
     if input_path.resolve() == output_path.resolve():
         raise ValueError("Final output path must not overwrite the source input image.")
     result, runtime_config, negative, resolved_seed, execution_axes, stages, image = _render_file_frame(
-        input_path, config, preview, resolved_seed_override)
+        input_path, config, preview, resolved_seed_override, on_stage)
     developed_path = _developed_medium_path(input_path, output_path, negative)
     transaction_targets = [
         output_path,
@@ -3416,6 +3579,8 @@ def _process_file_impl(
     transaction_tuple = tuple(transaction_targets)
     _assert_output_set_safe(input_path, transaction_tuple)
 
+    if on_stage is not None:
+        on_stage("saving")
     with atomic_path_set(transaction_tuple):
         from .runtime_resources import output_worker_limit
         save_image(result, output_path, runtime_config.output,
@@ -3453,14 +3618,14 @@ def _process_file_impl(
 
 def process_file(input_path: str | Path, output_path: str | Path,
                  config: DarkroomConfig | None = None, preview: bool = False, *, artifact_paths: dict[str,str] | None = None,
-                 resolved_seed_override: int | None = None) -> Path:
+                 resolved_seed_override: int | None = None, on_stage: Callable[[str], None] | None = None) -> Path:
     """Read, form, observe and export one file, reusing only this job's optics."""
     from .observation_reuse import observation_reuse_scope
     # Explicit memory budgets take precedence over optional observation reuse.
     budget = 0 if config is not None and config.processing.memory_budget_mb is not None else 512*1024*1024
     with observation_reuse_scope(budget):
         return _process_file_impl(input_path, output_path, config, preview,artifact_paths=artifact_paths,
-                                  resolved_seed_override=resolved_seed_override)
+                                  resolved_seed_override=resolved_seed_override, on_stage=on_stage)
 
 
 install_default_media_pipelines(

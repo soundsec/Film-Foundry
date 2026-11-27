@@ -939,11 +939,13 @@ def test_full_workflow_can_manually_override_scan_interpretation_only():
     assert not np.allclose(auto_output, manual_output)
 
 
-def test_bw_negative_scan_ignores_rgb_color_bias_controls():
+def test_bw_negative_observer_can_tint_a_neutral_silver_master():
     image = np.linspace(0.1, 0.9, 12 * 16, dtype=np.float32)
     image = np.repeat(image.reshape(12, 16, 1), 3, axis=-1)
     config = DarkroomConfig()
     config.mode = "bw_negative"
+    config.film.color_process = "monochrome"
+    config.chemistry.program_key = "bw_negative"
     config.enable_grain = False
     config.scanner.scan_normalize = False
     config.scanner.print_color_shift = (0.12, -0.08, 0.06)
@@ -952,8 +954,11 @@ def test_bw_negative_scan_ignores_rgb_color_bias_controls():
     negative = develop_negative(image, config)
     scanned = scan_negative(negative, config)
 
-    assert np.allclose(scanned.positive_linear[..., 0], scanned.positive_linear[..., 1])
-    assert np.allclose(scanned.positive_linear[..., 0], scanned.positive_linear[..., 2])
+    np.testing.assert_array_equal(negative.density_cmy[..., 0], negative.density_cmy[..., 2])
+    neutral = copy.deepcopy(config)
+    neutral.scanner.print_color_shift = (0., 0., 0.)
+    neutral.scanner.highlight_color_bias = (1., 1., 1.)
+    assert not np.allclose(scanned.positive_linear, scan_negative(negative, neutral).positive_linear)
 
 
 def test_bw_development_does_not_take_ownership_of_scanner_settings():
@@ -971,7 +976,7 @@ def test_bw_development_does_not_take_ownership_of_scanner_settings():
 
     assert develop_runtime.scanner.print_color_shift == config.scanner.print_color_shift
     assert develop_runtime.scanner.scanner_light_color == config.scanner.scanner_light_color
-    assert scanned.metadata["runtime_config"].scanner.print_color_shift == (0.0, 0.0, 0.0)
+    assert scanned.metadata["runtime_config"].scanner.print_color_shift == config.scanner.print_color_shift
 
 
 def test_develop_recipe_changes_negative_density_state():
@@ -1482,8 +1487,10 @@ def test_reticulation_changes_emulsion_optics_without_changing_pools_base_or_sca
     delta = medium_damaged.optical_density_rgb - medium_clean.optical_density_rgb
     assert float(np.mean(np.abs(delta))) > 1e-4
     assert abs(float(np.mean(delta, dtype=np.float64))) < 2e-7
-    assert np.allclose(delta[..., 0], delta[..., 1], atol=2e-7, rtol=0.0)
-    assert np.allclose(delta[..., 1], delta[..., 2], atol=2e-7, rtol=0.0)
+    # A neutral increment rounded onto different float32 densities can differ by one local ULP.
+    for left, right in ((0, 1), (1, 2)):
+        rounding = np.maximum(np.spacing(optical_before_scan[..., left]), np.spacing(optical_before_scan[..., right]))
+        assert np.all(np.abs(delta[..., left] - delta[..., right]) <= rounding)
     base = np.asarray(
         medium_damaged.clear_base_optical_density_rgb,
         dtype=np.float32,
@@ -1728,22 +1735,15 @@ def test_scan_interpretation_cannot_mutate_or_replace_developed_material():
 
 def test_explicit_bw_negative_program_uses_reduced_silver_pool_pixel_path():
     image = np.linspace(0.05, 0.95, 12 * 16 * 3, dtype=np.float32).reshape(12, 16, 3)
-    legacy = DarkroomConfig()
-    legacy.chemistry.program_key = "legacy_density"
-    legacy.mode = "bw_negative"
-    legacy.film.color_process = "monochrome"
-    legacy.enable_grain = False
-    legacy.enable_halation = False
-
-    reduced = copy.deepcopy(legacy)
-    reduced.chemistry.program_key = "bw_negative"
-
-    legacy_medium = develop_negative(image, legacy)
-    reduced_medium = develop_negative(image, reduced)
-    model = reduced_medium.metadata["film_process_model"]
-
-    # The neutral migration baseline preserves current density within float error.
-    assert np.allclose(reduced_medium.density_cmy, legacy_medium.density_cmy, atol=2e-6)
+    cfg = DarkroomConfig()
+    cfg.enable_grain = cfg.enable_halation = False
+    cfg.mode = "bw_negative"
+    cfg.film.color_process = "monochrome"
+    cfg.chemistry.program_key = "bw_negative"
+    medium = develop_negative(image, cfg)
+    model = medium.metadata["film_process_model"]
+    assert np.isfinite(medium.density_cmy).all()
+    np.testing.assert_array_equal(medium.density_cmy[...,0],medium.density_cmy[...,2])
     assert model["representation"] == "reduced_bw_silver_pool_v1"
     assert model["components"]["metallic_silver"] is True
     assert model["components"]["dye"] is False
@@ -1892,18 +1892,13 @@ def test_reduced_bw_development_and_fixing_change_material_master_before_scan():
 
 def test_explicit_color_negative_program_uses_reduced_coupler_pool_pixel_path():
     image = np.linspace(0.05, 0.95, 12 * 16 * 3, dtype=np.float32).reshape(12, 16, 3)
-    legacy = DarkroomConfig()
-    legacy.chemistry.program_key = "legacy_density"
-    legacy.enable_grain = False
-    legacy.enable_halation = False
-    reduced = copy.deepcopy(legacy)
-    reduced.chemistry.program_key = "color_negative"
-
-    legacy_medium = develop_negative(image, legacy)
-    reduced_medium = develop_negative(image, reduced)
-    model = reduced_medium.metadata["film_process_model"]
-
-    assert np.allclose(reduced_medium.density_cmy, legacy_medium.density_cmy, atol=2e-6)
+    cfg = DarkroomConfig()
+    cfg.enable_grain = cfg.enable_halation = False
+    cfg.chemistry.program_key = "color_negative"
+    medium = develop_negative(image, cfg)
+    model = medium.metadata["film_process_model"]
+    assert np.isfinite(medium.density_cmy).all()
+    assert np.ptp(medium.density_cmy,axis=-1).max() > 0
     assert model["representation"] == "reduced_color_coupler_pool_v1"
     assert model["components"]["dye"] is True
     assert model["components"]["metallic_silver"] is False

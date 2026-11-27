@@ -11,6 +11,7 @@ from film_foundry.contracts.optical_cascade import CASCADE_KEY, validate_cascade
 from film_foundry.core.material_family import MediumBody, ProductGroup, ViewingConditions
 from film_foundry.core.states import DevelopedNegative
 from film_foundry.core.film_process import FilmProcessState
+from film_foundry.app.material_reference import reference_view
 
 
 @dataclass(frozen=True)
@@ -21,12 +22,13 @@ class RouteResult:
     medium: object = None
     cascade: dict | None = None
     encoding: str | None = None
+    view: ViewingConditions | None = None
 
 
 def run_material_route(source, *, receiver=None, stop='medium', config=None, material=None,
                        operations=(), relay=None, source_body_id=None, result_body_id=None, result_body_role=None,
                        source_name='', input_encoding='srgb', seed=0, cascade=None,
-                       view=ViewingConditions()):
+                       view=None):
     """Start at an image, latent/family state, or finished medium.
 
     receiver='film' or a registered family selects a *new* material only for
@@ -132,14 +134,16 @@ def run_material_route(source, *, receiver=None, stop='medium', config=None, mat
             if len(matches)!=1:raise ValueError('Output role must identify exactly one finished body')
             body=matches[0]
         else:body = select_body(medium, result_body_id or (source_body_id if receiver is None else None))
+        if view is None:view=reference_view(body.family)
         image = linear_to_srgb(families.observe(body, view))
-    return RouteResult(stop, image, medium, trace, 'display_srgb')
+    return RouteResult(stop, image, medium, trace, 'display_srgb',
+                       None if isinstance(medium, DevelopedNegative) else view)
 
 
 def run_material_route_file(input_path, output_path, *, start, receiver=None, stop='medium',
                             config=None, material_parameters=None, operations=(), relay=None,
                             source_body_id=None, result_body_id=None, result_body_role=None, seed=0, control=None,
-                            view=ViewingConditions()):
+                            view=None):
     """Reference file frontend, with explicit start/stop and separately saved media.
 
     An image endpoint that forms a new medium also writes a sibling formed
@@ -231,7 +235,7 @@ def run_material_route_file(input_path, output_path, *, start, receiver=None, st
         details={'model':'material_route_observation_v1','medium_name':medium_path.name,
                  'encoding':result.encoding,'cascade':result.cascade,
                  'scanner':asdict(config.scanner) if isinstance(result.medium,DevelopedNegative) else None,
-                 'view':asdict(view) if not isinstance(result.medium,DevelopedNegative) else None}
+                 'view':asdict(result.view) if result.view is not None else None}
         targets=[output_path,output_path.with_suffix(output_path.suffix+'.json')]
         if not observe_only:
             targets.extend(developed_medium_output_paths(medium_path) if isinstance(result.medium,DevelopedNegative) else (medium_path,))

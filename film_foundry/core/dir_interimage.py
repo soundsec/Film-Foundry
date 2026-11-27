@@ -150,14 +150,22 @@ def build_dir_material_response_field(
         layer_count=material.layer_count,
     )
     compatibility = _compatibility_for_program(film, program.key, material.layer_count, program=program)
+    contact = process_contact.at_shape(grid.work_shape) if process_contact is not None else None
+    capacity = np.asarray(material.coupler_capacity, dtype=np.float32)
+    if film.ordered_coatings:
+        from .film_process.coatings import bath_parameters, emulsions, record_indices, sum_by_record
+        physical, program, compatibility, contact = bath_parameters(film, material, program, compatibility, contact)
+        indices = record_indices(emulsions(film), material.layer_count)
+        capacity = sum_by_record(np.asarray(physical.coupler_capacity, np.float32), indices, material.layer_count)
     provisional_dye, color_step = provisional_formed_dye_for_program(
         state,
         program,
         compatibility,
-        local_development_rate=process_contact.at_shape(grid.work_shape) if process_contact is not None else None,
+        local_development_rate=contact,
         consume_private_state=True,
     )
-    capacity = np.asarray(material.coupler_capacity, dtype=np.float32).reshape(1, 1, 3)
+    if film.ordered_coatings:
+        provisional_dye = sum_by_record(provisional_dye, indices, material.layer_count)
     np.divide(
         provisional_dye,
         np.maximum(capacity, 1e-6),

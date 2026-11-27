@@ -70,7 +70,8 @@ def test_prepared_plate_retains_optical_exposure_without_source_file(tmp_path):
 
 
 def test_failed_save_preserves_previous_package_and_foreign_files(tmp_path,monkeypatch):
-    document=archive.snapshot_document(formed('paper'),{'pending':1});path=tmp_path/'safe.ffworkspace'
+    session=formed('paper');session.storage_precision='full'
+    document=archive.snapshot_document(session,{'pending':1});path=tmp_path/'safe.ffworkspace'
     archive.save_material_workspace(path,[document])
     with monkeypatch.context() as patch:
         def fail(*args,**kwargs):raise OSError('disk failure')

@@ -27,6 +27,54 @@ KERNEL void dye(GLOBAL const float* src, GLOBAL const float* a, GLOBAL const flo
 }
 '''
 
+SHEET_RESPONSE = r'''
+KERNEL void sheet_response(GLOBAL const float* dose, GLOBAL const float* params,
+ int table_size, int channels, int count, GLOBAL float* dst) {
+    int p = PIXEL;
+    if (p >= count) return;
+    float x = -params[1] * (logf(fmaxf(dose[p], 1.e-30f)) - params[0]);
+    dst[p] = expf(-(fmaxf(x, 0.f) + log1pf(expf(-fabsf(x)))));
+}
+'''
+
+SMITS_EXPOSURE = r'''
+KERNEL void smits_exposure(GLOBAL const float* src, GLOBAL const float* basis,
+ int layers, int channels, int count, GLOBAL float* dst) {
+ int p = PIXEL;
+ if (p >= count) return;
+ float r = fmaxf(src[3*p], 0.f), g = fmaxf(src[3*p+1], 0.f), b = fmaxf(src[3*p+2], 0.f);
+ float rg_lo = fminf(r,g), rg_hi = fmaxf(r,g);
+ float lo = fminf(rg_lo,b), hi = fmaxf(rg_hi,b), mid = fmaxf(rg_lo,fminf(rg_hi,b));
+ int low_index = b < rg_lo ? 2 : (g < r);
+ int high_index = b > rg_hi ? 2 : (g > r);
+ for (int c = 0; c < layers; ++c) {
+   GLOBAL const float* row = basis + 7*c;
+   dst[p*channels+c] = lo*row[0] + (mid-lo)*row[1+low_index] + (hi-mid)*row[4+high_index];
+ }
+ for (int c = layers; c < channels; ++c) dst[p*channels+c] = dst[p*channels];
+}
+'''
+
+
+LATENT_CURVE = r'''
+INLINE float latent_softplus(float x, float width) {
+    return log1pf(expf(fminf(fmaxf(x / width, -60.f), 60.f))) * width;
+}
+KERNEL void latent_curve(GLOBAL const float* dose, GLOBAL const float* table,
+ int layers, int channels, int count, GLOBAL float* dst) {
+    int p = PIXEL;
+    if (p >= count) return;
+    for (int c = 0; c < layers; ++c) {
+        GLOBAL const float* t = table + 6*c;
+        float e = log10f(fmaxf(dose[p*channels+c], 1.e-6f));
+        float toe = latent_softplus(e-t[0], t[4]);
+        float shoulder = latent_softplus(e-t[1], t[5]);
+        dst[p*channels+c] = fminf(fmaxf((toe-shoulder)*t[2]/t[3], 0.f), 1.f);
+    }
+}
+'''
+
+
 SPECTRAL = r'''
 KERNEL void spectral(GLOBAL const float* src, GLOBAL const double* absorbance,
  GLOBAL const double* weights, GLOBAL const float* overlay, GLOBAL const double* basis,
@@ -48,6 +96,33 @@ KERNEL void spectral(GLOBAL const float* src, GLOBAL const double* absorbance,
    for(int c=0;c<3;c++) rgb[c]+=t*weights[c*bands+n];
  }
  for(int c=0;c<3;c++) dst[p*3+c]=(float)rgb[c];
+}
+'''
+
+
+REVERSAL_DYE = r'''
+INLINE float dye_bound(float x) { return fminf(fmaxf(x, 0.f), 1.f); }
+INLINE float dye_smooth(float x) { return (x*x)*(3.f-2.f*x); }
+KERNEL void reversal_dye(GLOBAL const float* src, GLOBAL const float* t,
+ int table_rows, int channels, int count, GLOBAL float* dst) {
+    int p = PIXEL;
+    if (p >= count) return;
+    float dye[3];
+    for (int c=0; c<3; ++c) {
+        float v = fminf(fmaxf(src[3*p+c], 1.e-6f), 1.f-1.e-6f);
+        float logit = (logf(v)-log1pf(-v))*t[0] + t[1];
+        v = 1.f/(1.f+expf(-fminf(fmaxf(logit, -30.f), 30.f)));
+        v = v*t[2] + dye_smooth(v)*t[3];
+        v += dye_smooth(1.f-dye_bound(fabsf(v-.5f)/.5f))*t[4];
+        v -= dye_smooth(dye_bound((v-t[5])/t[6]))*t[7];
+        v += dye_smooth(1.f-dye_bound(v/t[8]))*t[9];
+        dye[c] = dye_bound(v);
+    }
+    float neutral = (dye[0]+dye[1]+dye[2])/3.f;
+    float highlight = dye_smooth(dye_bound(neutral/t[8]))*t[10]+t[11];
+    float shadow = dye_smooth(dye_bound((1.f-neutral)/t[6]))*t[12]+t[13];
+    float gain = (highlight*shadow)*t[14];
+    for (int c=0; c<3; ++c) dst[3*p+c] = dye_bound((dye[c]-neutral)*gain + neutral);
 }
 '''
 
@@ -182,7 +257,7 @@ KERNEL void coordinate_noise(int row_start, int width, int height, int count, GL
 
 DEVELOPMENT_CONVERSION = r'''
 KERNEL void development_conversion(GLOBAL const float* halide, GLOBAL const float* activation,
- GLOBAL const float* local, GLOBAL const float* fog_local, GLOBAL const float* rates,
+ GLOBAL const float* local_rate, GLOBAL const float* fog_local, GLOBAL const float* rates,
  int layers, int local_mode, int fog_mode, float exponent, float compensation,
  float fog_coefficient, int count, GLOBAL float* dst) {
  int i=PIXEL; if(i>=count) return;
@@ -196,7 +271,7 @@ KERNEL void development_conversion(GLOBAL const float* halide, GLOBAL const floa
    factor*=compensation; factor=1.f-factor;
    rate*=factor;
  }
- if(local_mode) rate*=local[local_mode==1?i/layers:i];
+ if(local_mode) rate*=local_rate[local_mode==1?i/layers:i];
  rate=fminf(fmaxf(rate,0.f),1.f);
  float reactive=h*e;
  float signal=fminf(reactive*rate,reactive);
@@ -224,6 +299,14 @@ def source(name, backend):
     if name.startswith('observe_') or name=='encode_srgb':
         from .observation_kernels import body as observation_body
         body=observation_body(name)
+    elif name=='sheet_response':
+        body=SHEET_RESPONSE
+    elif name=='smits_exposure':
+        body=SMITS_EXPOSURE
+    elif name=='latent_curve':
+        body=LATENT_CURVE
+    elif name=='reversal_dye':
+        body=REVERSAL_DYE
     elif name=='transfer_advance':
         from .transfer_kernels import TRANSFER_ADVANCE
         body=TRANSFER_ADVANCE

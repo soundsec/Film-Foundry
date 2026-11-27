@@ -27,7 +27,8 @@ class DefaultWorkflowFacade(
                         ?: throw WorkflowException("invalid_request", "expose requires linear RGB")
                     control.report(request.command.wireName, "loading")
                     control.report(request.command.wireName, "exposing")
-                    val latent = stampCapture(kernel.expose(rgb, recipe), request.captureRecord)
+                    val strip=NativeFilmStrip.from(kernel,recipe,rgb.width,rgb.height,request.captureRecord)
+                    val latent = stampCapture(strip?.expose(kernel,rgb,recipe) ?: kernel.expose(rgb,recipe), request.captureRecord)
                     control.report(request.command.wireName, "saving")
                     control.report(request.command.wireName, "completed")
                     WorkflowResult(
@@ -40,7 +41,7 @@ class DefaultWorkflowFacade(
                 Command.DEVELOP_LATENT -> {
                     val latent = request.latent
                         ?: throw WorkflowException("invalid_request", "develop_latent requires a latent state")
-                    val materialRecipe=com.filmfoundry.interchange.MaterialSnapshot.resolve(recipe,latent.metadata)
+                    val materialRecipe=NativeFilmStrip.developmentRecipe(com.filmfoundry.interchange.MaterialSnapshot.resolve(recipe,latent.metadata),latent.metadata)
                     verifyDevelopmentSource(latent.metadata,request.developmentRecord)
                     control.report(request.command.wireName, "loading")
                     control.report(request.command.wireName, "developing")
@@ -48,7 +49,9 @@ class DefaultWorkflowFacade(
                         // Requests borrow their input. The pointwise kernel can preserve it
                         // without copying the full material pools into another image volume.
                         kernel.develop(latent, materialRecipe, consumeLatent = false).let { formed ->
-                            com.filmfoundry.kernel.FormedFilmBorder.prepare(kernel,materialRecipe,formed.opticalDensityRgb.shape[1],formed.opticalDensityRgb.shape[0])?.surround(formed) ?: formed
+                            val h=formed.opticalDensityRgb.shape[0];val w=formed.opticalDensityRgb.shape[1]
+                            NativeFilmStrip.from(kernel,materialRecipe,w,h,formed=true)?.finish(formed,0) ?:
+                            com.filmfoundry.kernel.FormedFilmBorder.prepare(kernel,materialRecipe,formed.opticalDensityRgb.shape[1],formed.opticalDensityRgb.shape[0],latent.metadata[DataKernel.CAPTURE_OBJECT_KEY] as? Map<*,*>)?.surround(formed) ?: formed
                         },
                         latent.metadata,
                     ),request.developmentRecord)

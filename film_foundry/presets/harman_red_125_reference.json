@@ -1,0 +1,147 @@
+{
+  "film": {
+    "name": "RED 125 · C41 wedge reference",
+    "halation_strength": 0.0,
+    "halation_threshold": 0.78,
+    "halation_softness": 0.16,
+    "halation_core_radius": 0.0032,
+    "halation_outer_radius": 0.014,
+    "halation_core_mix": 0.66,
+    "halation_color": [
+      1.0,
+      0.44,
+      0.2
+    ],
+    "base_fog": 0.008,
+    "contrast": 1.06,
+    "grain_scales": [
+      0.0006,
+      0.0015,
+      0.004
+    ],
+    "grain_scale_weights": [
+      0.78,
+      0.18,
+      0.04
+    ],
+    "emulsion_mtf_strength": 0.18,
+    "digital_artifact_suppression": 0.1,
+    "halation_gradient_suppression": 0.22,
+    "hd_gamma": [
+      0.72,
+      0.72,
+      0.72
+    ],
+    "density_min": [
+      0.08,
+      0.08,
+      0.08
+    ],
+    "density_max": [
+      1.88,
+      1.88,
+      1.88
+    ],
+    "log_exposure_toe": [
+      -2.2,
+      -2.2,
+      -2.2
+    ],
+    "log_exposure_shoulder": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "hd_toe_width": 0.17,
+    "hd_shoulder_width": 0.24,
+    "layer_sensitivity_matrix": [
+      [
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "dye_absorption_matrix": [
+      [
+        1.5,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.5,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.5
+      ]
+    ],
+    "base_dye_interaction_strength": 0.0,
+    "film_base_density_rgb": [
+      0.315097,
+      0.525097,
+      0.343097
+    ],
+    "clear_support_density_rgb": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "granularity_sigma": [
+      0.01,
+      0.0095,
+      0.0105
+    ],
+    "grain_density_correlation_radius": 0.0008,
+    "cross_process_silver_development": 0.96,
+    "cross_process_dye_coupling": 0.97,
+    "cross_process_activation": 0.97,
+    "cross_process_halide_fixing": 0.97,
+    "cross_process_dye_stability": 0.98,
+    "cross_process_layer_balance": [
+      0.98,
+      1.03,
+      1.0
+    ],
+    "halation_gaussian_amplitude": 0.64,
+    "halation_exponential_amplitude": 0.36,
+    "halation_exponential_radius": 0.014
+  },
+  "scanner": {
+    "print_reference_density": [
+      1.54,
+      1.54,
+      1.54
+    ],
+    "print_gamma": 1.0,
+    "highlight_bias_threshold": 0.76,
+    "scan_saturation": 1.0,
+    "scan_normalize": false,
+    "scan_normalize_strength": 0.65,
+    "scan_black_percentile": 0.25
+  },
+  "exposure": {
+    "film_side": "base",
+    "rear_optics": {
+      "profile": "harman_red_125"
+    }
+  },
+  "develop": {
+    "developer_name": "Standard Color Negative Process",
+    "program_key": "color_negative",
+    "dir_process_effectiveness": 1.0,
+    "formation_history_model": "bath_products_local_v2"
+  }
+}

@@ -1,6 +1,16 @@
 {
   "film": {
     "name": "Red Rich Negative",
+    "coating_stack": {
+      "model": "ordered_coatings_v1",
+      "layers": [
+        {"id": "B", "kind": "emulsion", "record": "B", "speed_ev": 0.0, "amount": 1.0, "development_rate": 1.0, "density_rgb": [0.028, 0.031, 0.034]},
+        {"id": "yellow-filter", "kind": "filter", "density_rgb": [0.012, 0.034, 0.74]},
+        {"id": "G", "kind": "emulsion", "record": "G", "speed_ev": 0.0, "amount": 1.0, "development_rate": 1.0, "density_rgb": [0.028, 0.031, 0.034]},
+        {"id": "R-fast", "kind": "emulsion", "record": "R", "speed_ev": 1.2, "amount": 0.44, "development_rate": 1.12, "density_rgb": [0.016, 0.017, 0.022]},
+        {"id": "R-slow", "kind": "emulsion", "record": "R", "speed_ev": -0.58, "amount": 0.56, "development_rate": 0.91, "density_rgb": [0.023, 0.025, 0.029]}
+      ]
+    },
     "medium_family": "film",
     "medium_process": "negative",
     "image_polarity": "negative",

@@ -36,6 +36,16 @@ class SilverGrainPlan:
         return self.strength > 0.0 and self.radius > 0.0
 
 
+def local_silver_parameters(film, response):
+    age = 1. + .35 * float(np.clip(film.material_degradation, 0., 1.))
+    fields = (np.clip(film.silver_grain_strength * age * response.grain_factor, 0., .50),
+              np.clip(film.silver_grain_radius * response.grain_radius_factor, 1e-5, .08),
+              np.clip(film.silver_grain_clump_mix * np.sqrt(response.grain_clump_factor), 0., 1.))
+    for value in fields:
+        value.setflags(write=False)
+    return fields
+
+
 def _mix_u32(values: np.ndarray) -> np.ndarray:
     """Vectorized 32-bit avalanche hash with intentional wraparound."""
     # Chris Wellons, hash-prospector lowbias32 (Unlicense).

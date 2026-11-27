@@ -220,6 +220,8 @@ class DarkroomPanel:
         self._frame_identity = None
         self._path_seed_offsets = {}
         self._profiles = {key: None for key in PROFILE_TYPES}
+        self._stock_exposure_profile = None
+        self._paused_exposure_profile = None
         self._profile_labels = {key: ui.TextValue(value=tr("profile.disabled")) for key in PROFILE_TYPES}
         self.spatial_reference_mm = ui.TextValue(value="")
         self.frame_long_edge_mm = ui.TextValue(value="")
@@ -1007,11 +1009,11 @@ class DarkroomPanel:
         film_values = film_preset_names()
         develop_values = develop_preset_names(include_variants=True)
         scanner_values = scanner_preset_names()
-        if current_film not in film_values and film_values:
+        if film_values and current_film not in film_values and film_preset_record(current_film) is None:
             self.film_preset.set(film_values[0])
-        if current_develop not in develop_values and develop_values:
+        if develop_values and current_develop not in develop_values and develop_preset_record(current_develop) is None:
             self.develop_preset.set(develop_values[0])
-        if current_scanner not in scanner_values and scanner_values:
+        if scanner_values and current_scanner not in scanner_values and scanner_preset_record(current_scanner) is None:
             self.scanner_preset.set(scanner_values[0])
         self._set_material_ui_from_key(self.film_preset.get())
         self._set_develop_ui_from_key(self.develop_preset.get())
@@ -1199,8 +1201,9 @@ class DarkroomPanel:
         if self._recipe_base is not None:
             self._recipe_base.film = copy.deepcopy(config.film)
             self._recipe_base.mode, self._recipe_base.medium = config.mode, config.medium
-            self._recipe_base.enable_subtractive = config.enable_subtractive
         self.spatial_reference_mm.set("" if config.film.spatial_reference_short_edge_mm is None else str(config.film.spatial_reference_short_edge_mm))
+        self._stock_exposure_profile = config.film.spectral_exposure_profile
+        self._paused_exposure_profile = None
         for key in ("spectral_exposure_profile", "spectral_material_profile"):
             self._set_profile(key, getattr(config.film, key))
         self.material_degradation.set(float(config.film.material_degradation))
@@ -1280,6 +1283,7 @@ class DarkroomPanel:
         config = DarkroomConfig.from_json(path)
         if self._recipe_base is not None:
             self._recipe_base.scanner = copy.deepcopy(config.scanner)
+            self._recipe_base.enable_subtractive = config.enable_subtractive
         self._set_profile("spectral_observation_profile", config.scanner.spectral_observation_profile)
         source = preset_source_text(self.scanner_preset.get(), USER_SCANNER_PRESET_DIR, SCANNER_PRESET_DIR)
         self.scanner_preset_source.set(source)
@@ -1517,6 +1521,8 @@ class DarkroomPanel:
 
     def _apply_loaded_config(self, config: DarkroomConfig) -> None:
         self._recipe_base = copy.deepcopy(config)
+        self._stock_exposure_profile = config.film.spectral_exposure_profile
+        self._paused_exposure_profile = None
         self.spatial_reference_mm.set("" if config.film.spatial_reference_short_edge_mm is None else str(config.film.spatial_reference_short_edge_mm))
         self.frame_long_edge_mm.set("" if config.chemistry.frame_long_edge_mm is None else str(config.chemistry.frame_long_edge_mm))
         for key, (section, _) in PROFILE_TYPES.items():
@@ -2000,6 +2006,9 @@ class DarkroomPanel:
             return
         if mode == "develop_latent":
             latent = self._preview_session.latent_copy(request.source_path, request.long_edge if request.reduced_inputs else None)
+            from film_foundry.core.incident_identity import bind_incident_frame
+            config=bind_incident_frame(config,stored_seed=latent.incident_frame_seed,
+                path=request.source_path,source_offset=request.path_seed_offset)
             left = gray_to_rgb(np.mean(latent.developability, axis=-1))
             medium = develop_negative_from_latent(latent, config, rng=rng_for_develop(request.source_path, config, path_seed_offset=request.path_seed_offset))
             if request.probe:request.probe.medium(medium)
@@ -2010,6 +2019,8 @@ class DarkroomPanel:
             from film_foundry.core.source_image import exposure_preview
             from film_foundry.core.engine import expose_linear_to_latent
             input_path = request.source_path
+            from film_foundry.core.incident_identity import bind_incident_frame
+            config=bind_incident_frame(config,path=input_path,source_offset=request.path_seed_offset)
             source, encoding = self._preview_session.photo(input_path, config.input_icc_policy, request.long_edge)
             if request.probe:request.probe.expected_pixels = source.shape[0]*source.shape[1]
             original = exposure_preview(source, encoding)
@@ -2389,13 +2400,14 @@ class DarkroomPanel:
                     try:
                         if control is not None:
                             control.check_cancel()
+                        from film_foundry.app.workspace_jobs import numbered_photo_config
                         result = _run_request(
                             WorkflowRequest(
                                 command="develop",
                                 input_path=input_path,
                                 path_seed_offset=offset_for(input_path, settings_snapshot.get('path_seed_offsets')),
                                 output_path=developed_root,
-                                config=config,
+                                config=numbered_photo_config(config,item_index+1),
                                 scaled_override=bool(preview),
                                 control=control,
                                 frame_identity=frame_identity_for_item(settings_snapshot, item_index, len(inputs)),
@@ -2502,7 +2514,7 @@ class DarkroomPanel:
                             path_seed_offset=offset_for(negative_path, settings_snapshot.get('path_seed_offsets')),
                             output_path=output_path,
                             config=config,
-                            control=control,
+                            control=control.before_export() if control is not None else None,
                         )
                     )
                     scanned = result.extra["scanned"]
@@ -2521,7 +2533,7 @@ class DarkroomPanel:
                         else None
                     )
                     if control is not None:
-                        control.check_cancel()
+                        control.report('scan', 'saving')
                     save_image_bundle(
                         scanned.output_srgb,
                         output_path,
@@ -2532,6 +2544,8 @@ class DarkroomPanel:
                     from film_foundry.app.workspace_jobs import workflow_result_record
                     self._record_generated_result(workflow_result_record(negative_path,result,output_path=output_path))
                     completed += 1
+                    if control is not None:
+                        control.output_saved('scan')
                 except Exception as exc:
                     failures.append((negative_path, exc))
                     item_records.append(

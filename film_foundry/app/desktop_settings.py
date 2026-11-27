@@ -16,17 +16,39 @@ def settings_path():
 def load_settings():
     defaults = dict(workspace=str(app_root()), source_folders=[], recent_work=[], last_interrupted_batch=None, leave_policy='ask',
                     fast_mode=False, quality='standard', expert=False, expert_mode='expected',
-                    resize=False, long_edge=1600, sidebar_items={}, hidden_folders=[])
+                    resize=False, long_edge=1600, sidebar_items={}, hidden_folders=[],
+                    compute_backend='cpu', compute_threads=0)
     path = settings_path()
     if path.is_file():
         value = strict_json_load(path)
         if not isinstance(value, dict):
             raise ValueError('Invalid desktop settings')
         defaults.update({k: v for k, v in value.items() if k in defaults})
+    if defaults['compute_backend'] not in ('cpu', 'auto', 'cuda', 'opencl'):
+        defaults['compute_backend'] = 'cpu'
+    if type(defaults['compute_threads']) is not int or defaults['compute_threads'] < 0:
+        defaults['compute_threads'] = 0
     return defaults
 
 
+def initialize_compute(values=None):
+    """Install local startup policy. Explicit launcher/environment choices win."""
+    from film_foundry.core.runtime_resources import configure_native_thread_limit
+    from film_foundry.core.material_parallel import resolve_thread_count
+    if values is None:
+        values = load_settings()
+    os.environ.setdefault('FILM_FOUNDRY_COMPUTE', values['compute_backend'])
+    os.environ.setdefault('FILM_FOUNDRY_MATERIAL_THREADS', str(values['compute_threads']))
+    cap = resolve_thread_count(values['compute_threads'])
+    os.environ.setdefault('FILM_FOUNDRY_DESKTOP_THREAD_CAP', str(cap))
+    configure_native_thread_limit(0)
+
+
 def save_settings(value):
+    if value.get('compute_backend', 'cpu') not in ('cpu', 'auto', 'cuda', 'opencl'):
+        raise ValueError('Unknown desktop compute backend')
+    if type(value.get('compute_threads', 0)) is not int or value.get('compute_threads', 0) < 0:
+        raise ValueError('Invalid desktop thread limit')
     if value['leave_policy'] not in ('ask', 'save', 'discard'):
         raise ValueError('Unknown work saving policy')
     if value['quality'] not in ('draft', 'standard', 'high') or value['expert_mode'] not in ('expected', 'principle'):

@@ -53,7 +53,7 @@ def test_environment_changes_future_only_and_persists_through_recipe_and_archive
     params=warm_shift_parameters(strength=.8,light_protection=.1,ambient_light=3.)
     s.process('environment',params)
     for key,value in before.fields.items():assert s.state.fields[key] is value
-    saved=tmp_path/'paused.npz';api.save(saved,s.state)
+    saved=tmp_path/'paused.npz';api.save(saved,s.state,precision='full')
     resumed=api.load(saved)
     s.process('advance',{'seconds':45.})
     actual=run_material_route(resumed,stop='state',operations=[{'operation':'advance','seconds':45.}]).value
@@ -65,7 +65,7 @@ def test_environment_changes_future_only_and_persists_through_recipe_and_archive
     assert not np.allclose(s.state.fields['received'],opposite.fields['received'])
     replay=start(kind);replay.replay_recipe(s.recipe());same(replay.state,s.state,exact=True)
     s.process('peel' if kind=='peel' else 'stabilize')
-    group=tmp_path/'group.npz';api.save(group,s.group)
+    group=tmp_path/'group.npz';api.save(group,s.group,precision='full')
     loaded=api.load(group)
     for a,b in zip(s.group.bodies,loaded.bodies):np.testing.assert_array_equal(api.observe(a),api.observe(b))
     assert s.capabilities()['material_version']==3

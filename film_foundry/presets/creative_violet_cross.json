@@ -1,6 +1,17 @@
 {
   "film": {
     "name": "Standard Color Reversal Transparency",
+    "coating_stack": {
+      "model": "ordered_coatings_v1",
+      "layers": [
+        {"id": "B", "kind": "emulsion", "record": "B", "speed_ev": 0.0, "amount": 1.0, "development_rate": 1.0, "density_rgb": [0.028, 0.031, 0.034]},
+        {"id": "yellow-filter", "kind": "filter", "density_rgb": [0.012, 0.034, 0.88]},
+        {"id": "G-fast", "kind": "emulsion", "record": "G", "speed_ev": 0.55, "amount": 0.3, "development_rate": 1.12, "density_rgb": [0.016, 0.017, 0.022]},
+        {"id": "G-slow", "kind": "emulsion", "record": "G", "speed_ev": -0.32, "amount": 0.7, "development_rate": 0.91, "density_rgb": [0.023, 0.025, 0.029]},
+        {"id": "R-fast", "kind": "emulsion", "record": "R", "speed_ev": 0.55, "amount": 0.3, "development_rate": 1.12, "density_rgb": [0.016, 0.017, 0.022]},
+        {"id": "R-slow", "kind": "emulsion", "record": "R", "speed_ev": -0.32, "amount": 0.7, "development_rate": 0.91, "density_rgb": [0.023, 0.025, 0.029]}
+      ]
+    },
     "medium_family": "film",
     "medium_process": "slide",
     "image_polarity": "positive",

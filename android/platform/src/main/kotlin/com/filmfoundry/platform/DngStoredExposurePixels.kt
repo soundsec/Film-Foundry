@@ -11,10 +11,17 @@ class DngStoredExposurePixels(file: File): StoredExposurePixels {
     override val height get()=orientation.height
     override fun configureCapture(record: Map<String,Any?>) {
         check(!started)
+        source.selectLegacyBayer(record["source_encoding"] == "stored_sensor_dng_v1")
         // Existing sensor_native_v1 receipts keep their frozen geometry and pixel ordering.
+        exifApplied = record["stored_pixel_orientation"] == "dng_exif_v1"
         orientation=CapturePixelOrientation(source.width,source.height,
-            if(record["stored_pixel_orientation"]=="dng_exif_v1") source.exifOrientation else 1)
+            if(exifApplied) source.exifOrientation else 1)
     }
+    private var exifApplied = false
+    override fun decodedRawMetadata() = mapOf(
+        "source_encoding" to if (exifApplied && source.model == DngRawDecoder.MODEL) DngRawDecoder.ORIENTED_MODEL else source.model,
+        "bit_depth" to source.bitDepth
+    )
     override fun encodedRows(start: Int,count: Int): FloatArray=throw CaptureRejected("RAW has no encoded sRGB rows")
     override fun linearWindowRows(left: Int,top: Int,windowWidth: Int,count: Int,kind: CaptureKind): FloatArray {
         require(kind==CaptureKind.SENSOR_RAW_DNG) { "DNG source requires sensor_raw_dng" }
@@ -36,4 +43,4 @@ class DngStoredExposurePixels(file: File): StoredExposurePixels {
     override fun close()=source.close()
 }
 
-fun openStoredExposurePixels(file: File): StoredExposurePixels = if(file.name.endsWith(".dng")) DngStoredExposurePixels(file) else AndroidStoredExposurePixels(file)
+fun openStoredExposurePixels(file: File): StoredExposurePixels = if(file.name.endsWith(".dng",ignoreCase=true)) DngStoredExposurePixels(file) else AndroidStoredExposurePixels(file)

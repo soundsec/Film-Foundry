@@ -1,0 +1,9 @@
+# Original date-back stroke centres in a 51 x 75 cell, with narrow diagonal joints.
+# Segment, axis, first tip, last tip, centre line, half thickness.
+a h 6.7 44.3 4.5 4.3
+b v 6.7 35.3 46.5 4.3
+c v 39.7 68.3 46.5 4.3
+d h 6.7 44.3 70.5 4.3
+e v 39.7 68.3 4.5 4.3
+f v 6.7 35.3 4.5 4.3
+g h 6.7 44.3 37.5 4.3

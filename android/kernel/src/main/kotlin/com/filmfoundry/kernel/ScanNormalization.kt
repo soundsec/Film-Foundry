@@ -101,15 +101,24 @@ internal class ScanNormalization private constructor(
             return measurement.finish(eachBlock)
         }
         fun measure(linear: FloatArray, pixels: Int, strength: Float, mode: String,
-                    blackPercentile: Float, whitePercentile: Float,startPixel: Int=0): ScanNormalization {
+                    blackPercentile: Float, whitePercentile: Float,startPixel: Int=0,stride: Int=pixels,rowWidth: Int=pixels): ScanNormalization {
             require(pixels > 0 && startPixel>=0 && (pixels.toLong()+startPixel) * 3 <= linear.size)
             val rgb = mode == "rgb"
             val black = FloatArray(if (rgb) 3 else 1)
             val spans = FloatArray(black.size)
             val samples = FloatArray(pixels)
             for (channel in black.indices) {
-                for (pixel in 0 until pixels) samples[pixel] = if (rgb) linear[(pixel+startPixel) * 3 + channel] else
-                    0.2126f * linear[(pixel+startPixel) * 3] + 0.7152f * linear[(pixel+startPixel) * 3 + 1] + 0.0722f * linear[(pixel+startPixel) * 3 + 2]
+                var pixel=0
+                while(pixel<pixels) {
+                    val rowStart=startPixel+(pixel/rowWidth)*stride
+                    val end=minOf(pixels-pixel,rowWidth)
+                    for(x in 0 until end) {
+                        val i=(rowStart+x)*3
+                        samples[pixel+x]=if(rgb) linear[i+channel] else
+                            .2126f*linear[i]+.7152f*linear[i+1]+.0722f*linear[i+2]
+                    }
+                    pixel+=end
+                }
                 val (lo, hi) = exactPair(samples, blackPercentile, whitePercentile)
                 black[channel] = lo
                 spans[channel] = hi - lo

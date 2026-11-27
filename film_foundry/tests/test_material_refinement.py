@@ -24,13 +24,13 @@ def test_batch_identity_shared_sheet_flow_independent_and_conserved(module,mater
     assert not np.array_equal(a.fields["reagent"],b.fields["reagent"])
     assert a.fields["escaped_reagent"].mean()>0
     assert float((a.fields["reagent"]+a.fields["escaped_reagent"]).mean())==pytest.approx(1,abs=2e-6)
-    first=module.advance(a,seconds=20);path=tmp_path/'state.npz';api.save(path,first)
+    first=module.advance(a,seconds=20);path=tmp_path/'state.npz';api.save(path,first,precision='full')
     restored=api.load(path);assert restored.schema_version==2
     once=module.advance(a,seconds=180);stepped=module.advance(restored,seconds=160)
     np.testing.assert_array_equal(once.fields["received"],stepped.fields["received"])
     np.testing.assert_allclose(once.fields["immobile"]+once.fields["remaining"]+once.fields["received"],1,atol=2e-6)
     final=instant.stabilize(once) if module is instant else peel.peel(once)
-    product=module.products(final);api.save(path,product);loaded=api.load(path)
+    product=module.products(final);api.save(path,product,precision='full');loaded=api.load(path)
     np.testing.assert_array_equal(api.observe(product.bodies[0]),api.observe(loaded.bodies[0]))
     assert loaded.bodies[0].schema_version==2
 
@@ -78,7 +78,7 @@ def test_plate_v2_response_direction_corrosion_and_readonly(tmp_path):
     tilt=ViewingConditions(view_direction=(.45,0,.89))
     rgb=api.observe(body,tilt)
     assert np.max(np.abs(rgb[...,0]-rgb[...,2]))>.005
-    api.save(tmp_path/'plate.npz',damaged);loaded=api.load(tmp_path/'plate.npz')
+    api.save(tmp_path/'plate.npz',damaged,precision='full');loaded=api.load(tmp_path/'plate.npz')
     assert loaded.schema_version==2
     np.testing.assert_array_equal(plate.preview(loaded,tilt),rgb)
 
@@ -108,13 +108,14 @@ def test_integral_early_light_protection_and_darkness_preserve_pools(tmp_path):
     dark=instant.stabilize(instant.spread(exposed,light_protection=0,ambient_light=0))
     np.testing.assert_array_equal(protected.fields["received"],dark.fields["received"])
     open_sheet=instant.spread(exposed,light_protection=0,ambient_light=1)
-    path=tmp_path/'open.npz';api.save(path,open_sheet)
+    path=tmp_path/'open.npz';api.save(path,open_sheet,precision='full')
     open_final=instant.stabilize(api.load(path))
     picture=instant.preview(open_final);normal=instant.preview(protected)
     assert np.mean(picture[:5,:,2]-normal[:5,:,2])>.01
-    assert np.mean(picture[:5,:,2]-normal[:5,:,2])>np.mean(picture[-5:,:,2]-normal[-5:,:,2])
-    np.testing.assert_allclose(open_final.fields["immobile"]+open_final.fields["remaining"]+open_final.fields["received"],1,atol=2e-6)
-    assert json.loads(open_final.process_json)["events"][-1]["operation"]=="early_light_exposure"
+    assert np.ptp(picture[...,2]-normal[...,2]) > .01  # Local light exposure varies across the sheet.
+    np.testing.assert_allclose(open_final.fields["immobile"]+open_final.fields["remaining"]+open_final.fields["received"]+open_final.fields["transfer_loss"],1,atol=2e-6)
+    interval = json.loads(open_final.process_json)["events"][-1]
+    assert (interval["operation"], interval["ambient_light"], interval["light_protection"]) == ("advance", 1, 0)
 
 
 def test_declared_positive_negative_clear_preserves_receiver_and_separate_density(tmp_path):
@@ -134,7 +135,8 @@ def test_declared_positive_negative_clear_preserves_receiver_and_separate_densit
     restored=api.load(tmp_path/'negative.npz');assert len(restored.bodies)==1
     np.testing.assert_array_equal(api.observe(restored.bodies[0]),api.observe(negative))
     with pytest.raises(ValueError):peel.PeelMaterial(transfer="dye",donor_mode="silver_negative")
-    with pytest.raises(ValueError):peel.clear_negative(cleared)
+    cleaned_again=peel.products(peel.clear_negative(cleared))
+    np.testing.assert_array_equal(api.observe(positive),api.observe(cleaned_again.bodies[0]))
 
 
 @pytest.mark.parametrize("style",["equal","pod"])
@@ -146,7 +148,7 @@ def test_white_border_preserves_image_pixels_and_saved_presentation(style,tmp_pa
     assert framed.shape==(raw.shape[0]+edge+bottom,raw.shape[1]+2*edge,3)
     np.testing.assert_array_equal(framed[edge:edge+raw.shape[0],edge:edge+raw.shape[1]],raw)
     np.testing.assert_allclose(framed[:edge],.94)
-    api.save(tmp_path/'framed.npz',group)
+    api.save(tmp_path/'framed.npz',group,precision='full')
     np.testing.assert_array_equal(api.observe(api.load(tmp_path/'framed.npz').bodies[0],ViewingConditions(include_border=True)),framed)
 
 
@@ -182,7 +184,7 @@ def test_solar_warming_and_strong_light_are_separate_preserved_conditions(tmp_pa
     assert warm_mean[0]/warm_mean[2]>normal_mean[0]/normal_mean[2]
     assert instant.preview(light_only)[-5:].mean()>instant.preview(normal)[-5:].mean()
     assert not np.array_equal(sun.fields["received"],light_only.fields["received"])
-    np.testing.assert_allclose(sun.fields["immobile"]+sun.fields["remaining"]+sun.fields["received"],1,atol=2e-6)
-    api.save(tmp_path/'sun.npz',sun);loaded=api.load(tmp_path/'sun.npz')
+    np.testing.assert_allclose(sun.fields["immobile"]+sun.fields["remaining"]+sun.fields["received"]+sun.fields["transfer_loss"],1,atol=2e-6)
+    api.save(tmp_path/'sun.npz',sun,precision='full');loaded=api.load(tmp_path/'sun.npz')
     np.testing.assert_array_equal(instant.preview(loaded),instant.preview(sun))
     with pytest.raises(ValueError):instant.spread(start,solar_warming=float("nan"))

@@ -7,7 +7,8 @@ import com.filmfoundry.kernel.*
 object RecipeDrafts {
     data class ProcessInspection(val program: String,val colorMaterial: Boolean,val positive: Boolean,val components: List<String>,val variableImage: Boolean,
         val steps: List<Map<String,Any?>> = emptyList())
-    fun inspectProcess(film: Map<String,Any?>,develop: Map<String,Any?>)=com.filmfoundry.kernel.inspectPhoneProcess(film,process(develop)).let {
+    fun inspectProcess(film: Map<String,Any?>,develop: Map<String,Any?>,formationProfile: Any?=PhoneFormationProfile.LIGHTWEIGHT)=
+        com.filmfoundry.kernel.inspectPhoneProcess(film,process(develop),PhoneFormationProfile.hasBathDose(formationProfile)).let {
         ProcessInspection(it.program,it.colorMaterial,it.positive,it.components,it.variableImage,it.steps.map(::frozenRecipe))
     }
     /** Parameter preparation only; no decoding or image-sized allocations. */

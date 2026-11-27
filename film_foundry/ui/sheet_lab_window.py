@@ -21,6 +21,7 @@ TITLES={'paper':('相纸工作室','Photographic Paper'),'wet':('湿版工作室
 LABELS={'wetting_seconds':('润湿时间尺度 s','Wetting time scale s'),'drying_lock_strength':('干燥通透损失','Drying access loss'),
  'enhancement_seconds':('增强时间尺度 s','Intensification time scale s'),'enhancement_nucleation':('非影像成核','Background nucleation'),
  'silver_load':('手动增强供银','Manual enhancement supply'),
+ 'exposure_response':('曝光感色响应','Exposure sensitivity'),
  'external_silver_load':('感光浴带入银量','Sensitizer silver carryover'),'physical_development_seconds':('外源银沉积时间尺度 s','Physical development time scale s'),
  'structure_model':('纹理模型','Structure model'),'material_long_edge_mm':('材料长边 mm','Material long edge mm'),
  'texture_scale_mm':('细纹尺度 mm','Fine texture scale mm'),'process_scale_mm':('工艺纹理尺度 mm','Process structure scale mm'),
@@ -52,6 +53,8 @@ LABELS={'wetting_seconds':('润湿时间尺度 s','Wetting time scale s'),'dryin
  'fingerprints':('指纹','Fingerprints'),'reagent_residue':('药液残留','Reagent residue'),
  'position_x':('横向位置','Horizontal position'),'position_y':('纵向位置','Vertical position'),'angle_degrees':('方向 °','Angle °')}
 OPS={'load_enhancer':('载入增强银','Charge intensifier'),'intensify':('加银增强','Intensify silver'),
+ 'display_fade':('展示光照褪蓝','Fade under display light'),
+ 'tilt':('移版与倾斜','Move and tilt plate'),
  'prepare':('涂布','Coat plate'),'sensitize':('感光化','Sensitize'),'expose':('曝光','Expose'),
  'develop':('显影','Develop'),'stop':('停显','Stop development'),'fix':('定影','Fix'),'bleach_fix':('漂白定影','Bleach-fix'),
  'wash':('水洗','Wash'),'clear':('清除残余铁盐','Clear residual salts'),'oxidize':('氧化成蓝','Oxidize'),
@@ -61,6 +64,8 @@ STAGES={'enhancing':('增强浴已载入','Intensifier charged'),'coated':('已�
  'developed':('已显影','Developed'),'stopped':('已停显','Stopped'),'fixed':('已定影','Fixed'),'washed':('已水洗','Washed'),
  'oxidized':('已氧化','Oxidized'),'cleared':('已清除残盐','Cleared'),'dry':('已干燥','Dried'),'varnished':('已上清漆','Varnished')}
 CHOICES={
+ 'exposure_response':(('blue_green_rgb_v1','蓝绿通道代理','Blue/green RGB proxy'),
+                      ('ff_analytic_blue_sensitive_v1','可见光谱 · 蓝敏','Visible spectrum · blue-sensitive')),
  'structure_model':(('millimetres_v1','材料毫米坐标','Material millimetres'),('relative_v1','旧相对画幅','Legacy relative frame')),
  'paper_base':(('rc','RC 涂塑纸','Resin-coated'),('fiber','纤维纸基','Fibre base')),
  'region':(('all','整张','Whole sheet'),('spot','局部圆区','Local spot')),
@@ -69,7 +74,7 @@ CHOICES={
  'support':(('glass_negative','玻璃负片 · 透射','Glass negative · transmission'),('ambrotype','玻璃黑底正像','Ambrotype'),('tintype','深色金属正像','Tintype')),
  'developer':(('material','匹配材料','Matched to material'),('bw','黑白显影','B&W developer'),('color','彩色显影','Color developer')),
  'edge':(('left','左','Left'),('right','右','Right'),('top','上','Top'),('bottom','下','Bottom'))}
-for key in ('pour_direction','brush_direction'):
+for key in ('pour_direction','brush_direction','direction'):
     CHOICES[key]=(('down','向下','Down'),('up','向上','Up'),('left','向左','Left'),('right','向右','Right'))
 RANGES={'wetting_seconds':(.1,86400),'drying_lock_strength':(0,4),'enhancement_seconds':(.1,86400),
  'physical_development_seconds':(.1,86400),'half_exposure':(.001,20),'response_contrast':(.2,8),'maximum_density':(.01,10),
@@ -95,6 +100,14 @@ TIPS={'external_silver_load':('感光浴带入的有限可溶银。显影消耗�
 
 
 TIPS.update({
+ 'exposure_response':('蓝敏模式按估计的可见光谱计算感光剂量。两种模式以同一中性灰曝光为基准。',
+                      'The visible-light model weights an estimated spectrum. Both modes share the same neutral exposure index.'),
+ 'film_retraction':('湿膜边缘回缩，邻近区域积膜。银浴开始后膜形固定。','Wet edges recede and form rims until the silver bath fixes the coating geometry.'),
+ 'tilt_degrees':('0° 为水平，90° 为竖直。入银浴前改变膜边；感光化后移动表面银液，曝光后的潜影留在原位。','0° is level, 90° is vertical. Tilting moves unset film edges before sensitizing and surface solution afterward. The exposed latent image stays in place.'),
+ 'motion_mm':('移动片夹时启停引起的液体等效位移。可重复执行并换向。','Equivalent liquid displacement from starting or stopping the holder. Repeat with a different downhill edge to rock the plate.'),
+ 'pour_rest_seconds':('从倒膜到入银浴的初始静置时间。入浴前的等待可继续推进回缩。','Initial settling after pouring. Additional waits before sensitization continue the retreat.'),
+ 'preflash_dose':('均匀白光预闪的相对线性光量，与景物曝光一起进入乳剂。','Relative linear dose from a uniform white preflash, added before the emulsion response.'),
+ 'printout_strength':('0 为显影型；提高后，潮湿纸上部分金属在曝光时形成，可直接清除再水洗。','Zero selects develop-out paper. With a printing-out sensitizer, moist paper forms metal during exposure and can proceed directly to clearing.'),
  'wetting_seconds':('控制药浴重新润湿；润湿不消除此前干燥造成的通透性损失。仅新v4湿版。','Controls rewetting without reversing earlier drying-induced permeability loss. New v4 wet plates.'),
  'drying_lock_strength':('空气中失水会降低后续药浴可达性；0关闭不可逆损失，仍保湿润变化。不是胶棉膜的精确溶剂模型。','Air drying reduces later chemical access. 0 disables irreversible loss while retaining wetness dynamics; not a calibrated solvent model.'),
  'enhancement_nucleation':('0时增强仅围绕已有银像；提高后无影像区也能成核，供银和处理时间会共同放大底雾。','0 grows silver only around existing image centres. Higher values allow background nuclei; supply and time also increase fog.'),
@@ -117,6 +130,19 @@ TIPS.update({
 from film_foundry.ui.material_controls import ResetNumber,viewing_control,sync_source_preview
 
 
+LABELS.update({
+ 'direction': ('低边方向','Downhill edge'),
+ 'tilt_degrees': ('版面倾角 °','Plate inclination °'),
+ 'motion_mm': ('启停造成的等效液移 mm','Liquid travel from movement mm'),
+ 'film_retraction': ('湿膜回缩强度','Wet-film retraction'),
+ 'pour_rest_seconds': ('倒膜后静置 s','Settling after pour s'),
+ 'printout_strength': ('晒出型感光剂比例','Printing-out sensitizer fraction'),
+ 'preflash_dose': ('均匀预闪光量','Uniform preflash dose'),
+ 'illumination': ('相对展示光强','Relative display illumination'),
+})
+RANGES.update(pour_rest_seconds=(0,86400), preflash_dose=(0,2), illumination=(0,100),
+              tilt_degrees=(0,90), motion_mm=(0,100))
+
 class _Number(ResetNumber):
     def textFromValue(self,value):return f'{value:.6f}'.rstrip('0').rstrip('.')
 
@@ -128,6 +154,7 @@ class SheetLabWindow(MaterialLabWindow):
         self.session=MaterialLabSession(kind);self.kind=kind;self.busy=False;self._closing=False;self.last_error=None
         self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='sheet-'+kind)
         self.signals=_Signals(self);self.signals.done.connect(self._completed)
+        self.signals.step.connect(self._show_standard_step, QtCore.Qt.ConnectionType.QueuedConnection)
         self.setWindowTitle('Film Foundry · '+text(*TITLES[kind]));self.resize(1180,800);self.setMinimumSize(820,540)
         root=QtWidgets.QWidget();self.setCentralWidget(root);layout=QtWidgets.QVBoxLayout(root)
         heading=QtWidgets.QHBoxLayout();layout.addLayout(heading)
@@ -176,12 +203,13 @@ class SheetLabWindow(MaterialLabWindow):
         self.operation_stack=CurrentPageStack();process_layout.addWidget(self.operation_stack)
         self.operation_controls={};self.operation_pages={}
         self.enhancement_intent={}
+        reference_steps=dict(self.session.module.default_operations(definition))
         for operation,function in self.session.module.OPERATION_FUNCTIONS.items():
             page=QtWidgets.QWidget();form=self._form(page);controls={}
             function=sheet_common.handling if operation=='handling' else function
             for key,param in inspect.signature(function).parameters.items():
                 if param.default is inspect.Parameter.empty:continue
-                value=param.default
+                value=reference_steps.get(operation,{}).get(key,param.default)
                 if value is None:value=definition.humidity
                 controls[key]=self._control(form,key,value)
             self.operation_controls[operation]=controls;self.operation_pages[operation]=self.operation_stack.addWidget(page)
@@ -338,6 +366,8 @@ class SheetLabWindow(MaterialLabWindow):
 
     def _sync_workflow(self):
         sequence=design.WORKFLOWS[self.kind]
+        if self.kind=='wet' and self.session.state is not None and self.session.state.schema_version<5:
+            sequence=tuple(op for op in sequence if op!='tilt')
         if self.kind=='paper' and self.material_controls['kind'].currentData()=='color':sequence=tuple('bleach_fix' if x=='fix' else x for x in sequence)
         if self.flow_sequence!=sequence:
             self.flow_bar.clear()
@@ -473,14 +503,18 @@ class SheetLabWindow(MaterialLabWindow):
         material=self._values(self.material_controls);seed=int(self.seed.value());params=self._operation_parameters(operation)
         return self._submit(lambda:self.session.process(operation,params,material,seed),text(*OPS[operation]))
 
+    def _standard_stages(self):
+        return ((button, (operation,)) for operation, button in self.flow_buttons.items())
+
     def run_standard(self):
         if not self.processing_bar.source_ready():return False
         material=self._values(self.material_controls);seed=int(self.seed.value());overrides={op:self._values(c) for op,c in self.operation_controls.items()}
-        return self._submit(lambda:self.session.run_standard(material,seed,overrides),text('处理材料…','Processing material…'))
+        return self._submit(lambda:self._run_standard_steps(material,seed,overrides),text('处理材料…','Processing material…'))
 
     def open_image_dialog(self):
         path,_=QtWidgets.QFileDialog.getOpenFileName(self,text('打开图像','Open image'),'','Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp *.dng)')
         if not path:return
+        self.dng_note.offer([path])
         preserve=self.kind=='wet' and self.session.state is not None and self.session.state.stage in ('coated','sensitized')
         size=self.work_size.value()
         self.replace_work(lambda:self._submit(lambda:self.session.open_image(path,size,preserve),text('读取图像…','Reading image…')),preserve=preserve)

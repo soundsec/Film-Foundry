@@ -4,7 +4,7 @@ RGB input is an explicit actinic proxy, not reconstructed UV. The families
 share field/transport helpers, but cyan pigment and noble-metal development
 remain different reactions with different endpoints.
 """
-from dataclasses import dataclass,replace
+from dataclasses import dataclass,field,replace
 import math
 import numpy as np
 from film_foundry.core import sheet_common as s, material_defects as defects
@@ -50,6 +50,7 @@ class CyanotypeMaterial(IronMaterial):
 
 @dataclass(frozen=True)
 class PlatinumMaterial(IronMaterial):
+    printout_strength: float = field(default=0., kw_only=True)
     response_contrast: float=.95
     coating_variation: float=.08
     platinum_fraction: float=.4
@@ -60,6 +61,7 @@ class PlatinumMaterial(IronMaterial):
         super().__post_init__();s.number(self.platinum_fraction,'platinum_fraction');s.number(self.clearing_seconds,'clearing_seconds',1,7200)
         if self.coating_method not in ('rod','brush'):raise ValueError('Invalid platinum coating method')
         s.number(self.paper_sizing,'paper_sizing')
+        s.number(self.printout_strength, 'printout_strength')
 
 BASE_FIELDS={'ferric':0,'ferrous':0,'iron_removed':0,'coating':0,'paper':0,'residue':3}
 
@@ -93,6 +95,17 @@ def expose(image,material,*,group_id,seed=0,schema_version=3):
     else:
         fields.update(spent_ferric=np.zeros(shape,np.float32),platinum_salt=cover*material.platinum_fraction,
             palladium_salt=cover*(1-material.platinum_fraction),platinum=np.zeros(shape,np.float32),palladium=np.zeros(shape,np.float32),metal_removed=np.zeros(shape,np.float32));cls=PlatinumState
+        if material.printout_strength:
+            # In a printing-out sensitizer the moist paper permits reduction
+            # during exposure. Count that iron and metal before any developer.
+            fraction = activated * material.printout_strength * material.humidity
+            for metal in ('platinum', 'palladium'):
+                deposited = fields[metal + '_salt'] * fraction
+                fields[metal] = deposited
+                fields[metal + '_salt'] -= deposited
+            spent = 2 * (fields['platinum'] + fields['palladium'])
+            fields['spent_ferric'] = spent
+            fields['ferrous'] = np.maximum(0, fields['ferrous'] - spent)
     fields.update({k:v for k,v in geometry.items() if k not in ('coating','paper')})
     if schema_version==3:fields.update(support.initial_fields(shape,material,material.humidity))
     return cls(group_id,seed,material,'exposed',0.,fields,schema_version=schema_version)
@@ -149,6 +162,17 @@ def alkali_contact(state,*,seconds=30.,activity=1.):
     f['blue_pigment']=f['blue_pigment']*(1-fraction);f['reduced_pigment']=f['reduced_pigment']*(1-fraction)
     f['iron_removed']=f['iron_removed']+removed
     return s.change(state,'alkali_contact',f,seconds=seconds,activity=activity)
+
+
+def display_fade(state, *, seconds=3600., illumination=1.):
+    """Explicit display exposure reduces blue pigment; subsequent air oxidation can restore it."""
+    s.require(state, 'washed', 'oxidized')
+    fraction = s.rate(seconds, 14400., illumination)
+    f = dict(state.fields)
+    faded = f['blue_pigment'] * fraction
+    f['blue_pigment'] = f['blue_pigment'] - faded
+    f['reduced_pigment'] = f['reduced_pigment'] + faded
+    return s.change(state, 'display_fade', f, seconds=seconds, illumination=illumination)
 
 def noble_develop(state,*,seconds=60.,temperature_c=20.,activity=1.):
     s.require(state,'exposed','developed');f=dict(state.fields)
@@ -264,7 +288,7 @@ class CyanotypeFamily:
     finish=staticmethod(products);observe=staticmethod(observe)
     @staticmethod
     def process(state,operation,**parameters):
-        handlers={'wash':cyan_wash,'oxidize':oxidize,'alkali_contact':alkali_contact,'light_leak':light_leak,'handling':handling,'dry':dry}
+        handlers={'wash':cyan_wash,'oxidize':oxidize,'display_fade':display_fade,'alkali_contact':alkali_contact,'light_leak':light_leak,'handling':handling,'dry':dry}
         if operation not in handlers:raise ValueError('Unsupported cyanotype operation')
         return handlers[operation](state,**parameters)
 

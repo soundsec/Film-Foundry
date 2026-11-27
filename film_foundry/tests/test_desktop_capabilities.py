@@ -132,7 +132,8 @@ def test_real_headless_material_batch_exposes_then_develops_and_records(tmp_path
     assert developed.completed==2 and not developed.failures
     assert not developed.record_error
     for path in exposed.medium_root.glob('*.npz'):
-        with pytest.raises(ValueError,match='已消耗'):load_exposed_latent(path)
+        _, metadata = load_exposed_latent(path)
+        assert metadata['consumed'] is False  # Batch development permits a second bath from the same exposure.
     for path in developed.medium_root.glob('*.npz'):
         medium=load_developed_medium_for_scan(path)
         assert medium.spectral_medium.profile==cfg.film.spectral_material_profile

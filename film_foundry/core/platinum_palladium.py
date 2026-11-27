@@ -8,4 +8,5 @@ def available_operations(state):
     if state is not None and state.schema_version==3 and state.stage in ('cleared','washed'):return ('clear','wash','dry','handling')
     return {None:('expose',),'exposed':('develop','clear','light_leak','handling'),'developed':('develop','clear','handling'),
         'cleared':('clear','wash','handling'),'washed':('clear','wash','handling')}[state.stage if state else None]
-def default_operations(material):return [('expose',{}),('develop',{}),('clear',{}),('wash',{})]
+def default_operations(material):
+    return [('expose',{}),('develop',{}),('clear',{'seconds':600.}),('wash',{})]

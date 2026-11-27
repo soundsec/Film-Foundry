@@ -8,10 +8,10 @@ import androidx.activity.ComponentActivity
 import com.filmfoundry.app.session.ProcessingIncidentDraft
 import kotlin.math.roundToInt
 
-/** Three independent effects; switching tools never applies or clears another effect. */
+/** Independent effects; switching tools never applies or clears another effect. */
 class ProcessIncidentControls(private val activity: ComponentActivity,private val shell: MobileShell,parent: LinearLayout,
     private val draft: ProcessingIncidentDraft,private val changed: (finished: Boolean)->Unit) {
-    private val labels=listOf("显影不匀" to "Uneven development","药液污染" to "Chemical stain","乳剂网裂" to "Reticulation")
+    private val labels=listOf("显影不匀" to "Uneven development","药液污染" to "Chemical stain","乳剂网裂" to "Reticulation","表面镀银" to "Silver plating")
     private var selected=0
     private var effective: Map<String,Any?> = emptyMap()
     private val summary=TextView(activity)

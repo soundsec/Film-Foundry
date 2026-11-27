@@ -9,6 +9,7 @@ import java.util.UUID
 
 class ProcessConfiguration(private val activity: ComponentActivity,private val shell: MobileShell,storage: StorageAdapter,
     private val current: ()->Map<String,Any?>,private val changed: ()->Unit) {
+    internal var samplePanel: SamplePanel?=null
     var onPreviewRecipe: (Map<String,Any?>)->Unit={}
     private val catalog=ProcessRecipeCatalog(PrivateRecipeCatalogStore(storage,"phone_process_recipes.json"))
     fun open() {
@@ -30,7 +31,7 @@ class ProcessConfiguration(private val activity: ComponentActivity,private val s
     }
     private fun edit(source: Map<String,Any?>,label: String) {
         val material=(current()["film"] as? Map<*,*>)?.entries?.associate { it.key.toString() to it.value }.orEmpty()
-        ProcessProgramEditor(activity,shell).apply { onPreviewRecipe=this@ProcessConfiguration.onPreviewRecipe }.open(source,material) { values ->
+        ProcessProgramEditor(activity,shell).apply { samplePanel=this@ProcessConfiguration.samplePanel;onPreviewRecipe=this@ProcessConfiguration.onPreviewRecipe }.open(source,material) { values ->
             askConfigurationName(activity,shell,shell.copy("保存冲洗配方：","Save process definition: ")+label) { name ->
                 catalog.save(UUID.randomUUID().toString(),name,values);changed()
             }

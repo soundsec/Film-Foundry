@@ -5,6 +5,9 @@ calibration. The resolved fields are frozen by the ordinary exposure snapshot.
 """
 from copy import deepcopy
 from dataclasses import replace
+import json
+from film_foundry.app.paths import preset_root
+from film_foundry.contracts.coating_stack import validate_stack
 from film_foundry.model.config import FilmStockConfig
 from film_foundry.contracts.spectral_exposure import make_historical_exposure_profile
 from film_foundry.contracts.process_events import validate_process_response
@@ -88,7 +91,13 @@ def compose_material(config, design, *, emulsion='standard', grain='standard',
     elif backing=='absent':
         film.halation_strength=.32;film.auxiliary_layer_amount=0.;film.auxiliary_layer_density_rgb=(0.,)*3
     if age=='aged':film.material_degradation=.55
+    # These authored starting points share the physical construction of a
+    # bundled stock. Other designs specify only a whole-film response.
+    structures = {'color_negative': 'clear_modern_negative', 'color_reversal': 'color_reversal_transparency',
+                  'panchromatic': 'monochrome_fine_negative', 'silver_reversal': 'monochrome_reversal_transparency'}
+    if design in structures:
+        source = preset_root() / 'film' / (structures[design] + '.json')
+        film.coating_stack = validate_stack(json.loads(source.read_bytes())['film']['coating_stack'])
     result.film=film;result.mode='bw_negative' if mono else 'color_negative'
     result.medium='film_'+film.medium_process
-    result.enable_subtractive=not mono
     return result

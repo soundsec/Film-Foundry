@@ -169,7 +169,16 @@ class CameraEffectsDialog(private val activity: ComponentActivity,private val sh
                 };separators.addView(this,LinearLayout.LayoutParams(0,-2,1f)) }
         }
         var printStyle=initial["imprint_style"]?.toString() ?: "optical_amber"
-        picker(printContent,listOf(c("关闭打印","No imprint"),c("激光点阵","Laser dots"),c("光学琥珀","Optical amber"),c("实验室绿色","Lab green")),CameraEffectsPreview.printStyles.indexOf(printStyle)) { printStyle=CameraEffectsPreview.printStyles[it] }
+        val methodPicker=picker(printContent,listOf(c("关闭打印","No imprint"),c("激光点阵","Laser dots"),c("光学琥珀","Optical amber"),c("实验室绿色","Lab green")),CameraEffectsPreview.printStyles.indexOf(printStyle)) { printStyle=CameraEffectsPreview.printStyles[it] }
+        val fonts=mutableListOf("legacy","dot_matrix","seven_segment_narrow","seven_segment_open")
+        val faceNames=mutableListOf(c("原机背字体","Original date back"),c("点阵","Dot matrix"),c("七段数码管 · 微缝","Seven segment · narrow gap"),c("七段数码管 · 宽缝","Seven segment · wide gap"))
+        if(initial["imprint_font"]=="seven_segment") { fonts.add("seven_segment");faceNames.add(c("七段数码管 · 旧字模","Seven segment · original plate")) }
+        var font=initial["imprint_font"]?.toString() ?: "legacy"
+        val fontPicker=picker(printContent,faceNames,fonts.indexOf(font)) { font=fonts[it] }
+        shell.action(printContent,"使用原版激光点阵","Use original laser dots") {
+            printStyle="laser_dot";font="legacy"
+            methodPicker.setSelection(CameraEffectsPreview.printStyles.indexOf(printStyle));fontPicker.setSelection(fonts.indexOf(font));changed()
+        }
         val placement=PrintPlacementControls(shell,initial,compact=landscapePrint) { changed() };printPosition.addView(placement)
         imprint.addTextChangedListener(object: TextWatcher { override fun beforeTextChanged(s: CharSequence?,start: Int,count: Int,after: Int)=Unit;override fun onTextChanged(s: CharSequence?,start: Int,before: Int,count: Int) { changed() };override fun afterTextChanged(s: Editable?)=Unit })
         shell.action(effectsPanel,"重设机身漏光身份","New body leak identity") { body=java.security.SecureRandom().nextLong();changed() }
@@ -181,14 +190,10 @@ class CameraEffectsDialog(private val activity: ComponentActivity,private val sh
             imprint.error=if(valid) null else error
             require(valid) { error }
             val camera=if(imprintOnly) initial else initial+mapOf("seed" to body,"gate_seed" to gate,"leak" to leak.progress/100.0,"leak_components" to components.map { it.toMap() })+dirt.mapValues { it.value.isChecked }
-            return CameraPrintSettings.update(camera,text,printStyle,if(placement.y<.5) "top" else "bottom",placement.brightness,placement.x,placement.y)
+            return CameraPrintSettings.update(camera+("imprint_font" to font),text,printStyle,if(placement.y<.5) "top" else "bottom",placement.brightness,placement.x,placement.y)
         }
         val handler=Handler(Looper.getMainLooper());val revision=java.util.concurrent.atomic.AtomicInteger();val closed=java.util.concurrent.atomic.AtomicBoolean();var inFlight=false
         var displayed: Bitmap?=null
-        fun bitmap(volume: FloatNd): Bitmap {
-            val pixels=IntArray(volume.shape[0]*volume.shape[1]) { i -> var color=0xFF000000.toInt();for(c in 0..2) color=color or ((volume.values[i*3+c].coerceIn(0f,1f)*255).toInt() shl (16-c*8));color }
-            return Bitmap.createBitmap(pixels,volume.shape[1],volume.shape[0],Bitmap.Config.ARGB_8888)
-        }
         lateinit var launch: Runnable
         launch=Runnable {
             if(closed.get() || activity.isDestroyed || inFlight) return@Runnable
@@ -199,7 +204,7 @@ class CameraEffectsDialog(private val activity: ComponentActivity,private val sh
             worker.execute {
                 val rendered=runCatching { samples.render(request,camera,ev,comparison) {
                     if(closed.get() || version!=revision.get() || Thread.currentThread().isInterrupted) throw InterruptedException("Sample superseded")
-                }.let(::bitmap) }
+                }.let(::sampleBitmap) }
                 activity.runOnUiThread {
                     inFlight=false
                     if(closed.get() || activity.isDestroyed || version!=revision.get()) rendered.getOrNull()?.recycle()
@@ -247,4 +252,9 @@ class CameraEffectsDialog(private val activity: ComponentActivity,private val sh
         changed()
         return dialog
     }
+}
+
+internal fun sampleBitmap(volume: FloatNd): Bitmap {
+    val pixels=IntArray(volume.shape[0]*volume.shape[1]) { i -> var color=0xFF000000.toInt();for(c in 0..2) color=color or ((volume.values[i*3+c].coerceIn(0f,1f)*255).toInt() shl (16-c*8));color }
+    return Bitmap.createBitmap(pixels,volume.shape[1],volume.shape[0],Bitmap.Config.ARGB_8888)
 }

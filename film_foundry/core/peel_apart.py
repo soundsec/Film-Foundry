@@ -26,6 +26,8 @@ def state_fields(version):return BASE_FIELDS | (CHEMISTRY_FIELDS if version>=2 e
 
 @dataclass(frozen=True)
 class PeelMaterial(ReagentMaterial):
+    ARCHIVED_DEFAULTS = {'peel_travel_fraction': 0.}
+    peel_travel_fraction: float = field(default=1., kw_only=True)
     transfer: str = "dye"  # dye or silver_compound: three pools versus one pool
     half_exposure: float = .18
     reaction_seconds: float = 60.
@@ -45,6 +47,7 @@ class PeelMaterial(ReagentMaterial):
     separation_variation: float = field(default=.4,kw_only=True)
 
     def __post_init__(self):
+        defects.fraction(self.peel_travel_fraction, 'Peel travel fraction')
         super().__post_init__()
         if self.transfer not in ("dye", "silver_compound"):raise ValueError("Unknown transfer mechanism")
         if any(not math.isfinite(x) or x <= 0 for x in (self.half_exposure,self.reaction_seconds,self.maximum_density)):
@@ -290,6 +293,20 @@ def advance(state, *, seconds):
 
 def peel(state,*,angle_degrees=150.,speed_mm_s=25.):
     if state.stage!="contact":raise ValueError("Only a contacted pair can be peeled")
+    if state.schema_version >= 5 and state.material.peel_travel_fraction:
+        if not math.isfinite(speed_mm_s) or not .1 <= speed_mm_s <= 1000:
+            raise ValueError('Peel speed must be in [.1,1000] mm/s')
+        shape = state.fields['coverage'].shape
+        direction = json.loads(state.process_json)['direction']
+        vertical = direction in ('up', 'down')
+        length = shape[0 if vertical else 1]
+        travel = state.material.material_long_edge_mm * length / max(shape) * state.material.peel_travel_fraction
+        duration = travel / speed_mm_s
+        times = (np.arange(length, dtype=np.float64) + .5) * duration / length
+        if direction in ('up', 'left'):
+            times = times[::-1]
+        local = np.broadcast_to(times[:, None] if vertical else times, shape)
+        state = inventory.advance(state, duration, local_seconds=local)
     if state.schema_version>=4:return separation.separate(state,angle_degrees,speed_mm_s)
     if angle_degrees!=150. or speed_mm_s!=25.:raise ValueError('Mechanical peeling requires a v4 pair')
     return replace(state,stage="separated")

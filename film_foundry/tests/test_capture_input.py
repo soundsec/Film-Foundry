@@ -5,7 +5,7 @@ from PIL import Image
 from film_foundry.core.source_image import load_formation_image, exposure_preview
 
 
-def write_dng(path):
+def write_dng(path, *, linear=False, orientation=1, lossless_jpeg=False):
     tifffile=pytest.importorskip('tifffile')
     # A real TIFF/DNG CFA fixture, decoded by LibRaw (not a mocked decoder).
     x=np.tile(np.linspace(1024,13000,96,dtype=np.uint16),(64,1))
@@ -15,18 +15,83 @@ def write_dng(path):
     (50714,'H',1,512,False),(50717,'I',1,16383,False),
     (50721,'2i',9,(10000,10000,0,10000,0,10000,0,10000,10000,10000,0,10000,0,10000,0,10000,10000,10000),False),
     (50728,'2I',3,(1,1,1,1,1,1),False),(50778,'H',1,21,False)]
-    tifffile.imwrite(path,x,photometric=32803,metadata=None,extratags=tags)
+    if orientation != 1:
+        tags.append((274, 'H', 1, orientation, False))
+    if linear:
+        tags = [tag for tag in tags if tag[0] not in (33421,33422,50710,50711,50714,50717)]
+        tags += [(50714,'H',3,(512,512,512),False),(50717,'I',3,(16383,16383,16383),False)]
+        x = np.repeat(x[..., None], 3, axis=2)
+    if lossless_jpeg:
+        codec = pytest.importorskip('imagecodecs')
+        tile = codec.ljpeg_encode(x, bitspersample=16)
+        tifffile.imwrite(path, iter([tile]), shape=x.shape, dtype=x.dtype, tile=x.shape,
+                         photometric=32803, compression=7, metadata=None, extratags=tags)
+        # The writer assumes 12-bit JPEG for uint16. The SOF3 tile stores 16 bits.
+        with tifffile.TiffFile(path, mode='r+b') as f:
+            f.pages[0].tags['BitsPerSample'].overwrite(16)
+    else:
+        tifffile.imwrite(path,x,photometric=34892 if linear else 32803,
+                         planarconfig='contig' if linear else None,metadata=None,extratags=tags)
 
 
-def test_dng_real_decode_and_dimensions(tmp_path):
+@pytest.mark.parametrize("linear", [False, True])
+def test_dng_real_decode_and_dimensions(tmp_path,linear):
     from film_foundry.core.io_utils import probe_image_dimensions, iter_images
-    path=tmp_path/'sensor.dng';write_dng(path)
+    path=tmp_path/'sensor.dng';write_dng(path,linear=linear)
+    original=path.read_bytes()
     pixels,color=load_formation_image(path)
     assert pixels.shape==(64,96,3) and pixels.dtype==np.float32
     assert color['encoding']=='linear_rgb' and color['auto_bright'] is False
+    from film_foundry.core.io_utils import load_image
+    from film_foundry.core.color import linear_to_srgb
+    np.testing.assert_array_equal(load_image(path), linear_to_srgb(pixels))
+    assert color["raw_layout"] == ("linear_planes" if linear else "cfa")
+    assert path.read_bytes() == original
     assert probe_image_dimensions(path)==(96,64)
     assert path in list(iter_images(tmp_path))
     assert pixels[:,20].mean()<pixels[:,70].mean()
+
+
+def test_lossless_jpeg_dng_preserves_linear_exposure(tmp_path):
+    plain, packed = tmp_path / 'plain.dng', tmp_path / 'packed.dng'
+    write_dng(plain)
+    write_dng(packed, lossless_jpeg=True)
+    np.testing.assert_array_equal(load_formation_image(plain)[0], load_formation_image(packed)[0])
+
+
+def test_monochrome_dng_supplies_neutral_rgb_for_exposure(tmp_path):
+    import tifffile
+    path = tmp_path / 'mono.dng'
+    ramp = np.tile(np.linspace(512, 16383, 96, dtype=np.uint16), (64, 1))
+    tags = [(50706, 'B', 4, (1, 4, 0, 0), False), (50708, 's', 0, 'FF Monochrome', False),
+            (50714, 'H', 1, 512, False), (50717, 'I', 1, 16383, False)]
+    # tifffile's writer assumes three samples for LinearRaw. Set the DNG tag
+    # after writing the single-sample TIFF so LibRaw sees a monochrome sensor.
+    tifffile.imwrite(path, ramp, photometric='minisblack', metadata=None, extratags=tags)
+    with tifffile.TiffFile(path, mode='r+b') as f:
+        f.pages[0].tags['PhotometricInterpretation'].overwrite(34892)
+    rgb, record = load_formation_image(path)
+    assert rgb.shape == (64, 96, 3) and rgb[0, 25, 0] < rgb[0, 75, 0]
+    np.testing.assert_array_equal(rgb[..., 0], rgb[..., 1])
+    np.testing.assert_array_equal(rgb[..., 0], rgb[..., 2])
+    assert record['raw_layout'] == 'single_plane' and record['white_balance'] == 'none'
+
+
+def test_unreadable_dng_reports_native_decoder_error(tmp_path):
+    import tifffile
+    path = tmp_path / 'broken.dng'
+    tifffile.imwrite(path, np.zeros((2, 2), np.uint8),
+                     extratags=[(50706, 'B', 4, (1, 4, 0, 0), False)])
+    with pytest.raises(ValueError, match=r'LibRaw could not decode DNG broken\.dng'):
+        load_formation_image(path)
+
+
+def test_mirrored_dng_probe_matches_decoded_frame(tmp_path):
+    from film_foundry.core.source_image import dng_dimensions
+    path = tmp_path / 'mirrored.dng'
+    write_dng(path, orientation=5)
+    pixels, _ = load_formation_image(path)
+    assert dng_dimensions(path) == pixels.shape[1::-1] == (64, 96)
 
 
 @pytest.mark.parametrize('gamut',['BT_709','DISPLAY_P3','BT_2100'])
@@ -73,6 +138,7 @@ def test_expose_file_keeps_capture_record(tmp_path):
     latent=expose_image_file(path,tmp_path/'test.darkroom_latent.npz',DarkroomConfig())
     state,metadata=load_exposed_latent(latent)
     assert metadata['input_color']['source']=='dng'
+    assert metadata['input_color']['raw_layout']=='cfa'
     assert state.developability.shape==(64,96,3)
 
 
@@ -104,7 +170,10 @@ def test_capture_file_full_pipeline_and_preview(tmp_path,kind):
     c.enable_grain=False;c.output.save_scanner_raw=False
     pixels,color=load_formation_image(path)
     expected=develop_negative(pixels,c,rng=np.random.default_rng(17),input_encoding=color['encoding'])
-    artifacts={};process_file(path,tmp_path/'render.png',c,artifact_paths=artifacts,resolved_seed_override=17)
+    artifacts, stages = {}, []
+    process_file(path,tmp_path/'render.png',c,artifact_paths=artifacts,resolved_seed_override=17,
+                 on_stage=stages.append)
+    assert stages == ['loading', 'developing', 'scanning', 'saving']
     medium_path=next(p for p in tmp_path.rglob('*.darkroom_negative.npz'))
     actual=load_developed_negative_npz(medium_path)
     np.testing.assert_array_equal(expected.optical_density_rgb,actual.optical_density_rgb)
@@ -143,3 +212,19 @@ def test_hdr_orientation_and_invalid_gainmap_are_explicit(tmp_path):
     bad.write_bytes(data[:2]+b'\xff\xe1'+struct.pack('>H',len(payload)+2)+payload+data[2:])
     with pytest.raises(ValueError,match='gain-map'):load_formation_image(bad)
     with pytest.raises(ValueError,match='Only DNG'):load_formation_image(tmp_path/'unsupported.cr3')
+
+
+def test_sdr_jpeg_and_linearraw_have_distinct_exposure_inputs(tmp_path):
+    from film_foundry.app.material_image_io import load_exposure_image
+
+    jpeg = tmp_path / "camera.jpg"
+    Image.new("RGB", (32, 24), (128, 128, 128)).save(jpeg)
+    pixels, meta = load_exposure_image(jpeg)
+    assert meta["color"]["capture_kind"] == "display_referred_srgb"
+    np.testing.assert_allclose(pixels, ((128 / 255 + .055) / 1.055) ** 2.4, atol=1e-6)
+    dng = tmp_path / "camera.dng"
+    write_dng(dng, linear=True)
+    linear, _ = load_formation_image(dng)
+    pixels, meta = load_exposure_image(dng)
+    assert meta["color"]["capture_kind"] == "sensor_raw_dng"
+    np.testing.assert_array_equal(pixels, linear)

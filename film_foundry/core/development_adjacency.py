@@ -57,6 +57,10 @@ def _provisional_first_development_source(
         material_process=material_process,
         layer_count=layer_count,
     )
+    compatibility = _compatibility_for_program(film, program.key, layer_count, program=program)
+    if film.ordered_coatings:
+        from .film_process.coatings import bath_parameters
+        material, program, compatibility, process_contact = bath_parameters(film, material, program, compatibility, process_contact)
     first_step = next(
         (
             step
@@ -68,12 +72,14 @@ def _provisional_first_development_source(
     )
     if first_step is None:
         raise ValueError("adjacency requires a process program with development")
-    compatibility = _compatibility_for_program(film, program.key, layer_count, program=program)
     if first_step.reaction_window is not None or process_contact is not None or recipe.latent_wait is not None:
         from film_foundry.core.film_process.operators import provisional_formed_silver_for_bath
         provisional=provisional_formed_silver_for_bath(state,program,first_step.bath_index,compatibility,process_contact)
     else:
         provisional = provisional_developed_halide(state, first_step, compatibility)
+    if film.ordered_coatings:
+        source = np.sum(provisional, axis=-1, dtype=np.float32) / sum(material.halide_capacity)
+        return np.clip(source, 0., 1.), str(first_step.label)
     capacity = np.asarray(material.halide_capacity, dtype=np.float32).reshape(
         (1,) * (provisional.ndim - 1) + (layer_count,)
     )

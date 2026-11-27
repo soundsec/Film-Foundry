@@ -21,7 +21,7 @@ internal fun rulerStepsPerTick(max: Int, fine: Boolean): Float {
     }
 }
 
-/** Relative touch input with the platform SeekBar's keyboard and accessibility range. */
+/** Absolute slider with long-press fine adjustment with the platform SeekBar's keyboard and accessibility range. */
 internal class ParameterRuler(
     context: Context, private val tickColor: Int, private val pointerColor: Int,
     private val fineLabel: String
@@ -32,8 +32,8 @@ internal class ParameterRuler(
     private var listener: OnSeekBarChangeListener? = null
     private var startX = 0f
     private var startY = 0f
-    private var lastX = 0f
-    private var position = 0f
+    private var fineOrigin = 0f
+
     private var tracking = false
     private var fineMode = false
     private var ignore = false
@@ -42,13 +42,21 @@ internal class ParameterRuler(
 
     private val taps = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent) = true
+        override fun onLongPress(e: MotionEvent) {
+            if (ignore || tracking || !isPressed) return
+            beginTracking()
+            fineMode = true
+            fineOrigin = progress.toFloat()
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            invalidate()
+        }
         override fun onDoubleTap(e: MotionEvent): Boolean {
             val reset = resetValue ?: return false
             ignore = true
             reset()
             return true
         }
-    }).apply { setIsLongpressEnabled(false) }
+    })
 
     init {
         background = null
@@ -75,28 +83,21 @@ internal class ParameterRuler(
     }
 
     override fun onDraw(canvas: Canvas) {
-        val center = width / 2f
         val middle = height / 2f
-        val spacing = 8 * density
-        val stepsPerTick = rulerStepsPerTick(max, fineMode).roundToInt().coerceAtLeast(1)
-        val origin = progress.toFloat() / stepsPerTick
-        val ticks = (center / spacing).toInt() + 1
+        val left = trackInset
+        val right = width - left
+        val fraction = if (max == 0) 0f else progress.toFloat() / max
+        val rtl = layoutDirection == LAYOUT_DIRECTION_RTL
+        val x = left + (right - left) * (if (rtl) 1f - fraction else fraction)
+        pen.strokeCap = Paint.Cap.ROUND
+        pen.strokeWidth = 4 * density
         pen.color = tickColor
-        pen.alpha = if (isEnabled) 65 else 30
-        pen.strokeWidth = density
-        canvas.drawLine(0f, middle, width.toFloat(), middle, pen)
-        for (i in origin.toInt()-ticks..origin.toInt()+ticks) {
-            if (i < 0 || i.toLong() * stepsPerTick > max) continue
-            val x = center + (i - origin) * spacing
-            val size = if (i % 5 == 0) 8 * density else 4 * density
-            pen.alpha = if (isEnabled) 160 else 75
-            pen.strokeWidth = density
-            canvas.drawLine(x, middle-size, x, middle+size, pen)
-        }
+        pen.alpha = if (isEnabled) 135 else 60
+        canvas.drawLine(left, middle, right, middle, pen)
         pen.color = pointerColor
         pen.alpha = if (isEnabled) 255 else 100
-        pen.strokeWidth = (if (fineMode) 5 else 3) * density
-        canvas.drawLine(center, middle-12*density, center, middle+12*density, pen)
+        canvas.drawLine(if (rtl) right else left, middle, x, middle, pen)
+        canvas.drawCircle(x, middle, (if (fineMode) 10 else 8) * density, pen)
         if (fineMode) {
             pen.textSize = 12 * density
             canvas.drawText(fineLabel, 4 * density, pen.textSize, pen)
@@ -109,16 +110,33 @@ internal class ParameterRuler(
         }
     }
 
+    private val trackInset get() = minOf(width / 2f, 12 * density)
+
+    private fun beginTracking() {
+        if (tracking) return
+        tracking = true
+        listener?.onStartTrackingTouch(this)
+    }
+
+    private fun moveThumb(x: Float) {
+        val span = (width - 2 * trackInset).coerceAtLeast(1f)
+        val rtl = layoutDirection == LAYOUT_DIRECTION_RTL
+        val fraction = (x - trackInset) / span
+        val position = if (fineMode) fineOrigin + (x - startX) * (if (rtl) -1 else 1) *
+            minOf(rulerStepsPerTick(max,true) / (8 * density), max / span * .2f)
+        else (if (rtl) 1f - fraction else fraction) * max
+        touchUpdate = true
+        try { progress = position.roundToInt().coerceIn(0,max) } finally { touchUpdate = false }
+    }
+
     private fun finish() {
-        if (fineMode) {
-            fineMode = false
-            invalidate()
-        }
+        fineMode = false
         if (tracking) {
             tracking = false
             listener?.onStopTrackingTouch(this)
         }
         isPressed = false
+        invalidate()
         parent?.requestDisallowInterceptTouchEvent(false)
     }
 
@@ -126,13 +144,12 @@ internal class ParameterRuler(
         if (!isEnabled) return false
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             startX = event.x
-            lastX = startX
+            isPressed = true
             startY = event.y
             ignore = false
-            position = progress.toFloat()
             parent?.requestDisallowInterceptTouchEvent(true)
         }
-        if (resetValue != null) taps.onTouchEvent(event)
+        taps.onTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_MOVE -> if (!ignore) {
                 val dx = event.x - startX
@@ -144,32 +161,17 @@ internal class ParameterRuler(
                         parent?.requestDisallowInterceptTouchEvent(false)
                         return true
                     }
-                    tracking = true
-                    isPressed = true
-                    listener?.onStartTrackingTouch(this)
+                    beginTracking()
                 }
-                val fine = dy < (if (fineMode) -24 else -30) * density
-                val modeChanged = fineMode != fine
-                if (modeChanged) {
-                    fineMode = fine
-                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    invalidate()
-                }
-                val sensitivity = rulerStepsPerTick(max, fine)
-                position = (position + (event.x-lastX) * sensitivity / (8*density)).coerceIn(0f, max.toFloat())
-                lastX = event.x
-                val next = position.roundToInt()
-                if (next != progress) {
-                    val stepsPerTick = sensitivity.roundToInt().coerceAtLeast(1)
-                    val tick = next / stepsPerTick != progress / stepsPerTick
-                    touchUpdate = true
-                    progress = next
-                    touchUpdate = false
-                    if (tick && !modeChanged) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                }
+                moveThumb(event.x)
             }
             MotionEvent.ACTION_POINTER_DOWN -> { ignore = true; finish() }
-            MotionEvent.ACTION_UP -> { if (!tracking && !ignore) performClick(); finish() }
+            MotionEvent.ACTION_UP -> { if (!ignore && !tracking) {
+                    beginTracking()
+                    moveThumb(event.x)
+                    performClick()
+                }
+                finish() }
             MotionEvent.ACTION_CANCEL -> finish()
         }
         return true

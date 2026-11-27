@@ -130,6 +130,119 @@ def compose_optical_density_rgb(
     return density.astype(np.float32, copy=False)
 
 
+def _latent_curve_tile(material, exposure, toe, shoulder, gamma, density_range):
+    # ``exposure`` is now always a private or explicitly consumed
+    # work field. Reuse it for log exposure rather than keeping clip,
+    # logarithm, and source arrays alive together.
+    np.maximum(exposure, 1e-6, out=exposure)
+    np.log10(exposure, out=exposure)
+    log_e = exposure
+
+    def softplus(value: np.ndarray, width: float) -> np.ndarray:
+        width = max(float(width), 1e-6)
+        value /= width
+        np.clip(value, -60.0, 60.0, out=value)
+        np.exp(value, out=value)
+        np.log1p(value, out=value)
+        value *= width
+        return value
+
+    toe_term = np.subtract(log_e, toe, dtype=np.float32)
+    toe_term = softplus(toe_term, material.latent_toe_width)
+    reversal_strength = float(material.latent_extreme_reversal_strength)
+    if reversal_strength > 0.0 or reference_execution_enabled():
+        # The research tail still needs the original log-exposure
+        # field after the ordinary curve has formed. Developer
+        # reference topology also retains the historical independent
+        # shoulder field for same-version allocation A/B.
+        shoulder_term = np.subtract(log_e, shoulder, dtype=np.float32)
+    else:
+        # Ordinary materials have no later logE consumer. Reuse that
+        # private field for the shoulder softplus rather than keeping
+        # two full layer arrays with identical lifetimes.
+        shoulder_term = log_e
+        np.subtract(log_e, shoulder, out=shoulder_term)
+    shoulder_term = softplus(shoulder_term, material.latent_shoulder_width)
+    toe_term -= shoulder_term
+    toe_term *= gamma
+    toe_term /= density_range
+    np.clip(toe_term, 0.0, 1.0, out=toe_term)
+    developability = toe_term
+    if reversal_strength > 0.0:
+        # The research reversal tail reuses both softplus buffers;
+        # keep the already completed ordinary curve in its own field.
+        developability = developability.copy()
+        reversal_start = _vector(
+            material.latent_extreme_reversal_start_loge,
+            material.layer_count,
+            "latent_extreme_reversal_start_loge",
+        )
+        reversal_width = max(float(material.latent_extreme_reversal_width), 1e-6)
+        # C1-continuous smoothstep: value and first derivative both
+        # join the ordinary shoulder without a synthetic hard kink.
+        # Reuse the completed toe/shoulder work buffers so enabling
+        # this research tail does not retain another full layer field.
+        np.subtract(log_e, reversal_start, out=toe_term)
+        np.divide(toe_term, reversal_width, out=toe_term)
+        np.clip(toe_term, 0.0, 1.0, out=toe_term)
+        np.multiply(toe_term, -2.0, out=shoulder_term)
+        shoulder_term += 3.0
+        np.multiply(toe_term, toe_term, out=toe_term)
+        np.multiply(toe_term, shoulder_term, out=toe_term)
+        np.multiply(toe_term, reversal_strength, out=shoulder_term)
+        np.subtract(1.0, shoulder_term, out=shoulder_term)
+        np.multiply(developability, shoulder_term, out=developability)
+        np.clip(developability, 0.0, 1.0, out=developability)
+    return developability
+
+
+def _latent_curve(material, exposure, workers):
+    toe = _vector(
+        material.latent_log_exposure_toe,
+        material.layer_count,
+        "latent_log_exposure_toe",
+    )
+    shoulder = _vector(
+        material.latent_log_exposure_shoulder,
+        material.layer_count,
+        "latent_log_exposure_shoulder",
+    )
+    gamma = _vector(material.latent_gamma, material.layer_count, "latent_gamma")
+    density_range = _vector(
+        material.latent_density_range,
+        material.layer_count,
+        "latent_density_range",
+    )
+
+    params = (toe, shoulder, gamma, density_range)
+    if material.layer_count == 3 and material.latent_extreme_reversal_strength == 0:
+        from ..exposure_compute import try_latent_curve
+        accelerated = try_latent_curve(exposure, params, material.latent_toe_width, material.latent_shoulder_width)
+        if accelerated is not None:
+            return accelerated
+    if (workers <= 1 or exposure.ndim != 3 or not exposure.flags.c_contiguous
+            or exposure.size // exposure.shape[-1] < 262144
+            or reference_execution_enabled()):
+        return _latent_curve_tile(material, exposure, *params)
+
+    # Each row owns its exposure buffer. The shared process worker lease and
+    # the caller's memory/native-thread policy bound simultaneous scratch.
+    from ..material_parallel import ordered_results
+    from ..computation_control import checkpoint
+    height, width = exposure.shape[:2]
+    rows = max(1, 131072 // width)
+
+    def process(start):
+        checkpoint()
+        tile = exposure[start:start + rows]
+        tile[:] = _latent_curve_tile(material, tile, *params)
+
+    with ordered_results(range(0, height, rows), process, workers=workers) as (_, completed):
+        for _ in completed:
+            pass
+    return exposure
+
+
 @dataclass(frozen=True, slots=True)
 class ReducedFilmMaterial:
     """Static material capacities and reduced optical coefficients.
@@ -178,6 +291,7 @@ class ReducedFilmMaterial:
     latent_extreme_reversal_width: float = 0.18
     chemical_fog_susceptibility: float = 1.0
     time_response: dict | None = None
+    coating_ids: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         from film_foundry.contracts.film_time import validate_response
@@ -263,6 +377,7 @@ class ReducedFilmMaterial:
         *,
         preserve_original_developability: bool = True,
         consume_layer_exposure: bool = False,
+        workers: int = 1,
     ) -> "FilmProcessState":
         """Create a latent state using one continuous developability field.
 
@@ -298,89 +413,8 @@ class ReducedFilmMaterial:
             # denominator has no pool-stage consumer.
             del denominator, exposure
         else:
-            # ``exposure`` is now always a private or explicitly consumed
-            # work field. Reuse it for log exposure rather than keeping clip,
-            # logarithm, and source arrays alive together.
-            np.maximum(exposure, 1e-6, out=exposure)
-            np.log10(exposure, out=exposure)
-            log_e = exposure
-            toe = _vector(
-                self.latent_log_exposure_toe,
-                self.layer_count,
-                "latent_log_exposure_toe",
-            )
-            shoulder = _vector(
-                self.latent_log_exposure_shoulder,
-                self.layer_count,
-                "latent_log_exposure_shoulder",
-            )
-            gamma = _vector(self.latent_gamma, self.layer_count, "latent_gamma")
-            density_range = _vector(
-                self.latent_density_range,
-                self.layer_count,
-                "latent_density_range",
-            )
-
-            def softplus(value: np.ndarray, width: float) -> np.ndarray:
-                width = max(float(width), 1e-6)
-                value /= width
-                np.clip(value, -60.0, 60.0, out=value)
-                np.exp(value, out=value)
-                np.log1p(value, out=value)
-                value *= width
-                return value
-
-            toe_term = np.subtract(log_e, toe, dtype=np.float32)
-            toe_term = softplus(toe_term, self.latent_toe_width)
-            reversal_strength = float(self.latent_extreme_reversal_strength)
-            if reversal_strength > 0.0 or reference_execution_enabled():
-                # The research tail still needs the original log-exposure
-                # field after the ordinary curve has formed. Developer
-                # reference topology also retains the historical independent
-                # shoulder field for same-version allocation A/B.
-                shoulder_term = np.subtract(log_e, shoulder, dtype=np.float32)
-            else:
-                # Ordinary materials have no later logE consumer. Reuse that
-                # private field for the shoulder softplus rather than keeping
-                # two full layer arrays with identical lifetimes.
-                shoulder_term = log_e
-                np.subtract(log_e, shoulder, out=shoulder_term)
-            shoulder_term = softplus(shoulder_term, self.latent_shoulder_width)
-            toe_term -= shoulder_term
-            toe_term *= gamma
-            toe_term /= density_range
-            np.clip(toe_term, 0.0, 1.0, out=toe_term)
-            developability = toe_term
-            if reversal_strength > 0.0:
-                # The research reversal tail reuses both softplus buffers;
-                # keep the already completed ordinary curve in its own field.
-                developability = developability.copy()
-                reversal_start = _vector(
-                    self.latent_extreme_reversal_start_loge,
-                    self.layer_count,
-                    "latent_extreme_reversal_start_loge",
-                )
-                reversal_width = max(float(self.latent_extreme_reversal_width), 1e-6)
-                # C1-continuous smoothstep: value and first derivative both
-                # join the ordinary shoulder without a synthetic hard kink.
-                # Reuse the completed toe/shoulder work buffers so enabling
-                # this research tail does not retain another full layer field.
-                np.subtract(log_e, reversal_start, out=toe_term)
-                np.divide(toe_term, reversal_width, out=toe_term)
-                np.clip(toe_term, 0.0, 1.0, out=toe_term)
-                np.multiply(toe_term, -2.0, out=shoulder_term)
-                shoulder_term += 3.0
-                np.multiply(toe_term, toe_term, out=toe_term)
-                np.multiply(toe_term, shoulder_term, out=toe_term)
-                np.multiply(toe_term, reversal_strength, out=shoulder_term)
-                np.subtract(1.0, shoulder_term, out=shoulder_term)
-                np.multiply(developability, shoulder_term, out=developability)
-                np.clip(developability, 0.0, 1.0, out=developability)
-            # The curve result is retained through ``developability``.  Log
-            # exposure and both toe/shoulder work references have completed
-            # before the four material pools are allocated, so do not keep
-            # them alive across that peak.
-            del toe_term, shoulder_term, log_e, exposure
+            developability = _latent_curve(self, exposure, workers)
+            del exposure
         capacity = _vector(self.halide_capacity, self.layer_count, "halide_capacity")
         halide = np.broadcast_to(capacity, state_shape).copy()
         silver = np.zeros_like(halide, dtype=np.float32)
@@ -430,7 +464,11 @@ class FilmProcessState:
     spectral_material_profile: SpectralMaterialProfile | None = None
     material_snapshot: MaterialSnapshot | None = None
     exposure_duration_seconds: float | None = field(default=None, kw_only=True)
+    lens_filter: dict | None = field(default=None, kw_only=True)
+    film_side: str = field(default="emulsion", kw_only=True)
+    rear_optics: dict | None = field(default=None, kw_only=True)
     film_border_snapshot: dict | None = field(default=None, kw_only=True)
+    incident_frame_seed: int | None = field(default=None, kw_only=True)
     emulsion_coverage: np.ndarray | None = None
     emulsion_removed: dict[str, float] | None = None
     emulsion_outside: dict[str, float] | None = None
@@ -462,6 +500,10 @@ class FilmProcessState:
             spectral_material_profile=self.spectral_material_profile,
             material_snapshot=self.material_snapshot,
             exposure_duration_seconds=self.exposure_duration_seconds,
+            lens_filter=None if self.lens_filter is None else dict(self.lens_filter),
+            film_side=self.film_side,
+            rear_optics=None if self.rear_optics is None else dict(self.rear_optics),
+            incident_frame_seed=self.incident_frame_seed,
             film_border_snapshot=None if self.film_border_snapshot is None else dict(self.film_border_snapshot),
             emulsion_coverage=None if self.emulsion_coverage is None else self.emulsion_coverage.copy(),
             emulsion_removed=None if self.emulsion_removed is None else dict(self.emulsion_removed),
@@ -472,8 +514,16 @@ class FilmProcessState:
         )
 
     def validate(self) -> None:
-        from film_foundry.contracts.film_exposure import validate_duration
+        from film_foundry.contracts.film_exposure import validate_duration, validate_film_side
+        validate_film_side(self.film_side)
+        if self.rear_optics is not None:
+            from film_foundry.contracts.film_exposure import rear_optics
+            rear_optics(self.rear_optics)
         validate_duration(self.exposure_duration_seconds)
+        from ..incident_identity import validate_incident_seed
+        validate_incident_seed(self.incident_frame_seed, "incident_frame_seed")
+        from film_foundry.contracts.lens_filters import validate_filter
+        validate_filter(self.lens_filter)
         if self.film_border_snapshot is not None:
             from film_foundry.core.formed_film_border import validate_border_snapshot
             validate_border_snapshot(self.film_border_snapshot)
@@ -482,10 +532,17 @@ class FilmProcessState:
         if self.spectral_material_profile is not None and not isinstance(self.spectral_material_profile, SpectralMaterialProfile):
             raise ValueError("spectral_material_profile must be a SpectralMaterialProfile")
         shape = np.asarray(self.halide).shape
+        stack = self.material_snapshot.film.get("coating_stack") if self.material_snapshot is not None else None
+        if stack is not None and stack.get("mode") == "reduced":
+            stack = None
+        if stack is not None:
+            layers = stack["layers"]
+            if not shape or shape[-1] != sum(r["kind"] == "emulsion" for r in layers):
+                raise ValueError("Latent pool count differs from the frozen coating stack")
         if self.spectral_exposure_profile is not None:
             if not isinstance(self.spectral_exposure_profile, SpectralExposureProfile):
                 raise ValueError("spectral_exposure_profile must be a SpectralExposureProfile")
-            if not shape or shape[-1] != self.spectral_exposure_profile.layer_count:
+            if stack is None and (not shape or shape[-1] != self.spectral_exposure_profile.layer_count):
                 raise ValueError("latent pool layers do not match spectral_exposure_profile")
         if self.material_geometry is not None:
             if not isinstance(self.material_geometry, MaterialGeometry):

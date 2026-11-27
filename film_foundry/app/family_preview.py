@@ -4,7 +4,7 @@ import json
 from film_foundry.app.diagnostic_targets import diagnostic_target
 from film_foundry.app.material_lab_session import MaterialLabSession
 from film_foundry.core.color import srgb_to_linear
-from film_foundry.core.material_family import ViewingConditions
+from film_foundry.app.material_reference import reference_view
 
 
 class FamilyPreviewSession:
@@ -25,7 +25,7 @@ class FamilyPreviewSession:
             definition = session.material_type(**material)
             session.run_standard(asdict(definition), seed=13579)
             self.session, self.source, self.key = session, source, key
-        view = ViewingConditions(**config.get('view', {}))
+        view = reference_view(self.kind, **config.get('view', {}))
         from film_foundry.app.material_scan import normalize_adjustments
         self.session.scan_adjustments=normalize_adjustments(config.get('scan_adjustments'))
         return self.source.copy(), self.session.preview(view), reused

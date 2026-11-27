@@ -539,8 +539,9 @@ def test_saved_medium_roundtrip_preserves_master_and_default_observation(tmp_pat
     loaded = load_developed_negative_npz(path)
     actual = scan_negative(loaded)
 
-    assert np.array_equal(loaded.density_cmy, medium.density_cmy)
-    assert np.array_equal(loaded.density_grain, medium.density_grain)
+    np.testing.assert_array_equal(loaded.optical_density_rgb, medium.optical_density_rgb)
+    np.testing.assert_array_equal(loaded.density_cmy, medium.density_cmy.astype(np.float16))
+    np.testing.assert_array_equal(loaded.density_grain, medium.density_grain.astype(np.float16))
     assert loaded.image_polarity == medium.image_polarity
     assert loaded.compatible_interpreters == medium.compatible_interpreters
     assert np.allclose(actual.output_srgb, expected.output_srgb, atol=1e-7)

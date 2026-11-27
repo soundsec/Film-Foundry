@@ -74,8 +74,9 @@ def test_film_border_preserves_image_gate_and_expands_formed_medium():
     layout = resolve_film_border_layout(bordered.film_border, image.shape)
     assert layout is not None
     assert layout.pipeline_status == "formed_rebate_reference_v1"
-    rows = layout.image_rect[1]
-    assert np.array_equal(medium_clean.optical_density_rgb, medium_border.optical_density_rgb[rows:-rows])
+    x,y,w,h = layout.image_rect
+    assert x>0 and y==0
+    assert np.array_equal(medium_clean.optical_density_rgb, medium_border.optical_density_rgb[y:y+h,x:x+w])
 
 
 def test_edge_imprint_adds_bounded_bright_linear_exposure_without_mutating_input():
@@ -92,7 +93,7 @@ def test_edge_imprint_adds_bounded_bright_linear_exposure_without_mutating_input
     )
     assert np.array_equal(image, original)
     assert mask is not None
-    assert 1.0 < float(np.max(flashed)) < 10.0
+    assert 1.0 < float(np.max(flashed)) <= .121 + 6.0 * 2**1.25
     assert float(np.mean(flashed[-10:])) > float(np.mean(flashed[:10]))
     empty, empty_mask = apply_edge_imprint_to_linear(
         image,

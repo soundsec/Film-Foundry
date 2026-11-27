@@ -19,6 +19,12 @@ EVENT_MODEL_V12='film_process_events_v12'
 EVENT_MODEL_V13='film_process_events_v13'
 EVENT_MODEL_V14='film_process_events_v14'
 EVENT_MODEL_V15='film_process_events_v15'
+EVENT_MODEL_V16='film_process_events_v16'
+EVENT_VERSIONS={f'film_process_events_v{i}':i for i in range(1,17)}
+LOCAL_CONTACT_KINDS=('bath_contact','developer_inhibitor','fixer_contact','contaminate','silver_bath',
+                     'dye_bath','emulsion_wear','backing_condition','backing_wash')
+CONTACT_PLACEMENTS=('automatic','manual','legacy')
+CONTACT_CENTERS=(-1.,2.)
 WETTING_CHOICES={'wetting_model':('periodic_arc_v1','edge_front_v1'),'contact_edge':('bottom','top')}
 EDGE_WETTING_FIELDS={'meniscus_width_mm':(.7,.01,20.),'meniscus_roughness_mm':(.8,0.,20.),
     'residue_concentration_mg_l':(0.,0.,100000.),'retained_ml_m2':(20.,0.,1000.),
@@ -116,35 +122,43 @@ def validate_process_response(raw):
 
 def validate_process_events(raw):
     if raw is None:return None
-    if not isinstance(raw,dict) or set(raw)!={'model','events'} or raw['model'] not in (EVENT_MODEL,EVENT_MODEL_V2,EVENT_MODEL_V3,EVENT_MODEL_V4,EVENT_MODEL_V5,EVENT_MODEL_V6,EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):raise ValueError('Unsupported process events model')
+    if not isinstance(raw,dict) or set(raw)!={'model','events'} or raw['model'] not in EVENT_VERSIONS:raise ValueError('Unsupported process events model')
+    version=EVENT_VERSIONS[raw['model']]
     rows=raw['events']
     if not isinstance(rows,(list,tuple)) or len(rows)>64:raise ValueError('Process events require at most 64 operations')
     result=[];surface_started=False;contacts=set()
     for row in rows:
         if not isinstance(row,dict) or row.get('kind') not in EVENT_FIELDS:raise ValueError('Unknown process operation')
         kind=row['kind'];fields=EVENT_FIELDS[kind]
-        if raw['model'] not in (EVENT_MODEL_V14,EVENT_MODEL_V15):
+        if version < 14:
             fields={key:val for key,val in fields.items() if key not in MENISCUS_FIELDS and key not in BOUNDARY_FIELDS}
-        if raw['model']!=EVENT_MODEL_V15 and kind=='rotary_contact':
+        if version<15 and kind=='rotary_contact':
             fields={key:val for key,val in fields.items() if key not in EDGE_WETTING_FIELDS}
-        choices=WETTING_CHOICES if kind=='rotary_contact' and raw['model']==EVENT_MODEL_V15 else {}
+        choices=WETTING_CHOICES if kind=='rotary_contact' and version>=15 else {}
+        if version>=16 and kind in LOCAL_CONTACT_KINDS:
+            mode=row.get('placement','manual' if 'center_x' in row or 'center_y' in row else 'automatic')
+            if mode not in CONTACT_PLACEMENTS:raise ValueError('Unknown local contact placement')
+            choices={**choices,'placement':(mode,)}
+            fields={**fields,'contact_seed':(len(result),0,2147483647)}
+            for axis in ('center_x','center_y'):
+                fields[axis]=(.5,0.,1.) if mode=='legacy' else (.5,*CONTACT_CENTERS)
         if kind=='rotary_contact':
-            if raw['model'] not in (EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):raise ValueError('Rotary contact requires process events v12 or later')
+            if version < 12:raise ValueError('Rotary contact requires process events v12 or later')
             if raw['model']==EVENT_MODEL_V12:fields={key:val for key,val in fields.items() if key not in ROTARY_INSTABILITY_FIELDS}
-        if kind=='dye_bath' and raw['model'] not in (EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):fields={key:val for key,val in fields.items() if key not in PLACEMENT}
-        if raw['model'] not in (EVENT_MODEL_V5,EVENT_MODEL_V6,EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):fields={key:val for key,val in fields.items() if key not in DISTRIBUTION_FIELDS}
-        if kind=='developer_inhibitor' and raw['model'] not in (EVENT_MODEL_V3,EVENT_MODEL_V4,EVENT_MODEL_V5,EVENT_MODEL_V6,EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):raise ValueError('Developer inhibitor requires process events v3 or later')
-        if kind=='fixer_contact' and raw['model'] not in (EVENT_MODEL_V4,EVENT_MODEL_V5,EVENT_MODEL_V6,EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):raise ValueError('Fixer contact requires process events v4 or later')
-        if kind=='dye_bath' and raw['model'] not in (EVENT_MODEL_V6,EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):raise ValueError('Dye bath requires process events v6 or later')
-        if kind=='emulsion_shear' and raw['model'] not in (EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):raise ValueError('Emulsion shear requires process events v11 or later')
+        if kind=='dye_bath' and version < 7:fields={key:val for key,val in fields.items() if key not in PLACEMENT}
+        if version < 5:fields={key:val for key,val in fields.items() if key not in DISTRIBUTION_FIELDS}
+        if kind=='developer_inhibitor' and version < 3:raise ValueError('Developer inhibitor requires process events v3 or later')
+        if kind=='fixer_contact' and version < 4:raise ValueError('Fixer contact requires process events v4 or later')
+        if kind=='dye_bath' and version < 6:raise ValueError('Dye bath requires process events v6 or later')
+        if kind=='emulsion_shear' and version < 11:raise ValueError('Emulsion shear requires process events v11 or later')
         if kind=='emulsion_wear':
-            if raw['model'] not in (EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):raise ValueError('Emulsion wear requires process events v9 or later')
+            if version < 9:raise ValueError('Emulsion wear requires process events v9 or later')
             if raw['model']==EVENT_MODEL_V9 and ('before_bath' in row or row.get('after_bath',0)!=0):raise ValueError('Emulsion wear is only supported after all chemical baths')
         backing=kind in ('backing_condition','backing_wash')
-        if backing and raw['model'] not in (EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):raise ValueError('Carbon backing operations require process events v8')
+        if backing and version < 8:raise ValueError('Carbon backing operations require process events v8')
         if (backing or kind in ('emulsion_wear','emulsion_shear')) and 'before_bath' in row and 'after_bath' in row:raise ValueError('Choose before_bath or after_bath, not both')
         before=(backing and 'after_bath' not in row) or (kind in ('emulsion_wear','emulsion_shear') and 'before_bath' in row)
-        scheduled=raw['model']!=EVENT_MODEL and kind not in (*CONTACT_KINDS,'developer_inhibitor','fixer_contact') and (kind!='dye_bath' or raw['model'] in (EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15))
+        scheduled=raw['model']!=EVENT_MODEL and kind not in (*CONTACT_KINDS,'developer_inhibitor','fixer_contact') and (kind!='dye_bath' or version >= 7)
         if set(row)-{'kind',*fields,*choices}-({'before_bath'} if before else {'after_bath'} if scheduled else set()):raise ValueError('Unknown process operation parameters')
         clean={'kind':kind}
         for key,options in choices.items():
@@ -163,6 +177,9 @@ def validate_process_events(raw):
         if 'distribution_seed' in clean:
             if clean['distribution_seed']!=int(clean['distribution_seed']):raise ValueError('Distribution seed must be an integer')
             clean['distribution_seed']=int(clean['distribution_seed'])
+        if 'contact_seed' in clean:
+            if clean['contact_seed']!=int(clean['contact_seed']):raise ValueError('Contact seed must be an integer')
+            clean['contact_seed']=int(clean['contact_seed'])
         if 'rotation_seed' in clean:
             if clean['rotation_seed']!=int(clean['rotation_seed']):raise ValueError('Rotation seed must be an integer')
             clean['rotation_seed']=int(clean['rotation_seed'])

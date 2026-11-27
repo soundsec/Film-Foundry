@@ -192,6 +192,8 @@ def _save_full_developed_medium_materials(
     developed_path: Path | None = None,
     _transactional: bool = True,
     _export_config_prepared: bool = False,
+    archive_only: bool = False,
+    published_path: Path | None = None,
 ) -> dict[str, str]:
     """Save the reusable developed medium created by the full pipeline."""
     from film_foundry.core import engine as _host
@@ -216,7 +218,7 @@ def _save_full_developed_medium_materials(
     if is_positive or config.output.save_scanner_raw:
         _validate_scan_runtime(config)
     negative_path = developed_path or _developed_medium_path(input_path, output_path, negative)
-    bundle_targets = _developed_medium_bundle_targets(negative_path)
+    bundle_targets = (negative_path,) if archive_only else _developed_medium_bundle_targets(negative_path)
     _assert_output_set_safe(input_path, bundle_targets)
     from .export_jobs import archive_writer
     # Validate the complete input once, before entering its transaction. A
@@ -231,8 +233,8 @@ def _save_full_developed_medium_materials(
         provenance = provenance_payload(
             stage=provenance_stage,
             input_path=input_path,
-            output_path=output_path,
-            negative_path=negative_path,
+            output_path=published_path or output_path,
+            negative_path=published_path or negative_path,
             resolved_seed=resolved_seed,
         )
         npz_payload: dict[str, np.ndarray] = {
@@ -283,6 +285,8 @@ def _save_full_developed_medium_materials(
             **npz_payload,
         )
         del npz_payload
+        if archive_only:
+            return {material_key: str(negative_path)}
 
         # Transparent renditions depend only on the final medium. They need
         # neither the preview nor scanner raw, so prepare them alongside those
@@ -332,6 +336,10 @@ def _save_full_developed_medium_materials(
         scanner_raw_path: Path | None = None
         scanner_raw_border_px = 0
         if config.output.save_scanner_raw:
+            clear_base_reference = (
+                _clear_base_scanner_sample(config, negative).reshape(3)
+                if is_positive or config.save_sidecar else None
+            )
             scanner_raw_border_px = scanner_raw_export_border_width(
                 negative.density_grain.shape,
                 config.output.scanner_raw_border_percent,
@@ -347,7 +355,7 @@ def _save_full_developed_medium_materials(
                     )
                 scanner_raw = scanner_raw_with_reference_border(
                     scanner_raw,
-                    _clear_base_scanner_sample(config, negative).reshape(3),
+                    clear_base_reference,
                     border_percent=config.output.scanner_raw_border_percent,
                     border_min_px=config.output.scanner_raw_border_min_px,
                 )
@@ -382,7 +390,7 @@ def _save_full_developed_medium_materials(
                         negative=negative,
                         provenance=provenance if config.output.watermark_metadata else None,
                         border_width_px=scanner_raw_border_px,
-                        clear_base_reference_rgb=_clear_base_scanner_sample(config,negative).reshape(3),
+                        clear_base_reference_rgb=clear_base_reference,
                     ),
                 )
                 paths["scanner_raw_sidecar"] = str(scanner_raw_sidecar_path)
@@ -476,6 +484,9 @@ def save_developed_medium_at_path(
     medium: DevelopedNegative,
     config: DarkroomConfig,
     resolved_seed: int | None = None,
+    *,
+    archive_only: bool = False,
+    published_path: Path | None = None,
 ) -> dict[str, str]:
     """Save a developed medium at an explicit path using the unified exporter."""
     developed_path = Path(developed_path)
@@ -489,6 +500,8 @@ def save_developed_medium_at_path(
         config,
         resolved_seed,
         developed_path=developed_path,
+        archive_only=archive_only,
+        published_path=published_path,
     )
 
 

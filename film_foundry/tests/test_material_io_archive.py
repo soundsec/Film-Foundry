@@ -30,7 +30,7 @@ def test_input_precision_linear_resize_and_frozen_source_contract(tmp_path):
     session=MaterialLabSession('paper');session.open_image(path,0)
     np.testing.assert_array_equal(session.image,srgb_to_linear(display))
     assert np.unique(session.image[...,0]).size==1024
-    assert session.source_info['color']==color and color['bit_depth']==16
+    assert session.source_info['color']=={**color,'encoding':'srgb'} and color['bit_depth']==16
     session.open_image(path,512)
     np.testing.assert_array_equal(session.image,resize_to_long_edge(srgb_to_linear(display),512))
     session.run_standard();before=session.source_info.copy()
@@ -49,7 +49,7 @@ def test_profile_and_orientation_share_main_input_path(tmp_path):
     session=MaterialLabSession('cyanotype');session.open_image(path,0)
     assert session.image.shape==(6,4,3)
     np.testing.assert_array_equal(session.image,srgb_to_linear(expected))
-    assert session.source_info['color']==color and color['source']!='assumed_srgb'
+    assert session.source_info['color']=={**color,'encoding':'srgb'} and color['source']!='assumed_srgb'
     assert not np.allclose(expected[0,0],pixels[0,0]/255,atol=.005)
 
 
@@ -87,7 +87,7 @@ def test_export_pair_rollback_and_source_protection(tmp_path,monkeypatch,depth,s
 def test_repeated_saves_share_formation_but_views_and_new_processing_update(tmp_path,monkeypatch):
     session=formed(tmp_path);root=tmp_path/'library';calls=[];renders=[]
     save=material_families.save;export=session.export_png
-    def tracked(path,value):calls.append(path);return save(path,value)
+    def tracked(path,value,**kwargs):calls.append(path);return save(path,value,**kwargs)
     def rendered(*args):renders.append(args[0]);return export(*args)
     monkeypatch.setattr(material_families,'save',tracked);monkeypatch.setattr(session,'export_png',rendered)
     view=ViewingConditions();first=archive_material_result(session,root,view);count=len(calls)
@@ -145,7 +145,7 @@ def test_failed_view_refresh_keeps_previous_archive_generation(tmp_path,monkeypa
 def test_both_window_types_export_tiff16_without_duplicate_catalog_runs(tmp_path,monkeypatch,kind):
     import os
     os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
-    from film_foundry.ui.qt import _application,QtWidgets
+    from film_foundry.ui.qt import _application
     from film_foundry.ui.material_lab_window import create_material_window
     from film_foundry.tests.test_sheet_windows import wait
     from film_foundry.app.desktop_catalog import DesktopCatalog
@@ -160,9 +160,11 @@ def test_both_window_types_export_tiff16_without_duplicate_catalog_runs(tmp_path
         window._sync();catalog=DesktopCatalog();window.result_ready.connect(catalog.register_result)
         for name in ('first','second'):
             path=tmp_path/(name+'.tif')
-            monkeypatch.setattr(QtWidgets.QFileDialog,'getSaveFileName',lambda *a,**kw:(str(path),'TIFF 16-bit (*.tif *.tiff)'))
-            window.save_dialog('png');wait(window)
+            window.save_dialog('png')
+            dialog=window._export_dialog
+            dialog.format.setCurrentIndex(dialog.format.findText('TIFF · 16-bit'))
+            dialog.path.setText(str(path));dialog.apply();wait(window)
             assert io_utils.cv_imread_unicode(path).dtype==np.uint16
-        assert len(catalog.results)==1 and len(catalog.results[0]['runs'])==1
-        assert {'export:first.tif','export:second.tif'}<=set(catalog.results[0]['runs'][0]['artifacts'])
+        assert len(catalog.results)==1
+        assert [Path(run['medium']).name for run in catalog.results[0]['runs']]==['first.tif','second.tif']
     finally:window.close();_application().processEvents()

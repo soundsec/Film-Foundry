@@ -69,10 +69,10 @@ def test_platinum_sizing_changes_clearing_access_without_removing_formed_metal()
 def test_legacy_states_and_products_keep_version_and_observation(tmp_path,module,material):
     state=module.expose(uniform(),material,group_id='legacy',seed=7,schema_version=1)
     legacy_keys=set(state.fields)
-    path=tmp_path/'legacy.ffmaterial.npz';api.save(path,state);loaded=api.load(path)
+    path=tmp_path/'legacy.ffmaterial.npz';api.save(path,state,precision='full');loaded=api.load(path)
     assert loaded.schema_version==1 and set(loaded.fields)==legacy_keys
     expected=finish(module,state);actual=finish(module,loaded)
     for key in expected.fields:np.testing.assert_array_equal(actual.fields[key],expected.fields[key])
-    group=module.products(actual);api.save(path,group);product=api.load(path)
+    group=module.products(actual);api.save(path,group,precision='full');product=api.load(path)
     assert product.bodies[0].schema_version==1
     np.testing.assert_array_equal(api.observe(group.bodies[0]),api.observe(product.bodies[0]))

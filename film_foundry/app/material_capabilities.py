@@ -51,6 +51,8 @@ def describe_family(name,*,state=None,material=None,group=None,exposure_availabl
     material=state.material if state is not None else from_record(material_type,material) if group is not None else material_type(**(material or {}))
     declared=FAMILIES[name]
     version=state.schema_version if state is not None else group.bodies[0].schema_version if group is not None else declared['current_version']
+    if group is not None and name == 'wet_collodion_v1' and provenance.get('version') == 5:
+        version = 5
     reagent_version={'peel_apart_transfer_v1':5,'integral_instant_v1':4}.get(name)
     available=module.available_operations(state) if group is None and (state is not None or exposure_available) else ()
     available=tuple(op for op in available if op!='expose' or exposure_available)
@@ -61,9 +63,10 @@ def describe_family(name,*,state=None,material=None,group=None,exposure_availabl
         for key,spec in parameter_spec(module,operation).items():
             item={'required':spec.default is inspect.Parameter.empty}
             if not item['required']:item['default']=spec.default
-            if key in ('seconds','spread_seconds'):item['unit']='s'
+            if key in ('seconds','spread_seconds','shield_seconds'):item['unit']='s'
             elif key in ('temperature_c','solar_warming'):item['unit']='degC'
-            elif key=='angle_degrees':item['unit']='degrees'
+            elif key in ('angle_degrees','tilt_degrees'):item['unit']='degrees'
+            elif key=='motion_mm':item['unit']='mm'
             parameters[key]=item
         operations.append({'operation':operation,'available':operation in available,
             'parameters':parameters,**operation_semantics(name,operation)})
@@ -71,6 +74,7 @@ def describe_family(name,*,state=None,material=None,group=None,exposure_availabl
             if operation in ('environment','contaminate','clean'):operations[-1]['minimum_version']=3
             if operation=='advance' and version>=3:operations[-1]['time_model']='incremental_competing_rates'
             if operation=='spread':parameters['reagent_load']['minimum_version']=reagent_version
+            if operation=='spread' and name=='integral_instant_v1':parameters['shield_seconds']['minimum_version']=4
             if operation=='finish':operations[-1]['minimum_version']=4
             if version>=reagent_version and operation in ('advance','stabilize'):
                 operations[-1]['targets']+=['developer_inventory','alkali_inventory','neutralizer_inventory']
@@ -89,6 +93,7 @@ def describe_family(name,*,state=None,material=None,group=None,exposure_availabl
         if name=='wet_collodion_v1' and version>=3 and operation in ('sensitize','develop','fix','wash'):
             operations[-1]['targets'].append('external_silver_inventory')
         if name=='wet_collodion_v1':
+            if operation=='tilt':operations[-1]['minimum_version']=5
             if operation in ('load_enhancer','intensify'):operations[-1]['minimum_version']=4
             added={'sensitize':('coverage','temperature_c'),'develop':('coverage',),
                    'fix':('coverage','temperature_c'),'wash':('coverage','temperature_c'),'dry':('humidity','temperature_c')}
@@ -134,6 +139,8 @@ def describe_family(name,*,state=None,material=None,group=None,exposure_availabl
             if op=='peel':
                 for spec in operation['parameters'].values():spec['minimum_version']=4
                 if version>=4:operation['targets']=['receiver_layer','donor_layer','layer_ownership']
+                if version>=5 and material.peel_travel_fraction:
+                    operation.update(time_model='moving_contact_boundary')
             elif op in ('clean','handling'):
                 for key in ('target','abrasion','marks','angle_degrees'):
                     if key in operation['parameters'] and (op=='clean' or key=='target'):

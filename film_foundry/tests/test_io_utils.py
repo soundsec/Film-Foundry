@@ -999,18 +999,9 @@ def test_load_16bit_tiff_preserves_range(tmp_path):
     assert np.isclose(image[..., 1].max(), 32768 / 65535, atol=1e-4)
 
 
-def test_raw_dng_input_is_rejected_with_clear_message(tmp_path):
-    path = tmp_path / "input.dng"
-    path.write_bytes(b"not really a dng")
-
-    with pytest.raises(ValueError, match="DNG only"):
-        load_image(path)
-
-
 def test_iter_images_ignores_unsupported_single_file(tmp_path):
-    path = tmp_path / "input.dng"
-    path.write_bytes(b"not really a dng")
-
+    path = tmp_path / "input.unsupported"
+    path.touch()
     assert iter_images(path) == []
 
 

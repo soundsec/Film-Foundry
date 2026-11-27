@@ -445,7 +445,8 @@ def test_clean_digital_like_is_high_latitude_negative_not_diagnostic_clear_base(
 
     assert config.film.medium_process == "negative"
     assert config.film.image_polarity == "negative"
-    assert max(config.film.hd_gamma) < 0.60
+    standard = DarkroomConfig.from_json(preset.with_name("clear_modern_negative.json"))
+    assert all(clean < regular for clean, regular in zip(config.film.hd_gamma, standard.film.hd_gamma))
     assert config.film.hd_toe_width >= 0.20
     assert config.film.hd_shoulder_width >= 0.30
     assert config.film.film_base_density_rgb[2] > config.film.film_base_density_rgb[1] > config.film.film_base_density_rgb[0]
@@ -465,11 +466,11 @@ def test_scanner_preset_roles_are_separated():
     assert neutral.scanner.scan_saturation < rich.scanner.scan_saturation
     assert neutral.look.print_contrast < dense.look.print_contrast
     assert warm.scanner.scan_saturation < rich.scanner.scan_saturation
-    assert neutral.scanner.scan_saturation >= 1.10
+    assert neutral.scanner.scan_saturation == 1.0
     assert clean.scanner.scan_saturation >= 1.08
     assert warm.scanner.print_color_shift[0] > neutral.scanner.print_color_shift[0]
-    assert dense.scanner.scan_normalize_strength > neutral.scanner.scan_normalize_strength
-    assert clean.scanner.scan_normalize_strength > neutral.scanner.scan_normalize_strength
+    assert dense.scanner.scan_black_percentile > neutral.scanner.scan_black_percentile
+    assert 0 < clean.scanner.scan_normalize_strength < neutral.scanner.scan_normalize_strength
     assert neutral.scanner.scan_normalize_strength >= 0.40
     assert clean.scanner.print_gamma < neutral.scanner.print_gamma
     assert diagnostic.scanner.scan_normalize is False

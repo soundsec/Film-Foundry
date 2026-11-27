@@ -21,6 +21,11 @@ dependencies {
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
+tasks.processResources {
+    from("../../film_foundry/assets") { include("edge_sans.txt", "edge_rounded.txt", "date_segments.txt", "date_segments_narrow.txt", "harman_red_125_wedge.txt") }
+    from("../../third_party_licenses/ROBOTO_APACHE_2_0.txt") { into("filmfoundry-licenses") }
+}
+
 tasks.test {
     useJUnitPlatform()
 }

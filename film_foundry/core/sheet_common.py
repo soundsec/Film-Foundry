@@ -97,7 +97,13 @@ def rate(seconds,tau,activity=1.,temperature_c=20.,reference_c=20.):
 
 def response(dose,half,contrast=1.):
     # Evaluate in log space; arbitrary high dose cannot overflow powers.
-    return np.exp(-np.logaddexp(0.,-contrast*(np.log(np.maximum(dose,1e-30))-math.log(half)))).astype(np.float32)
+    log_half = math.log(half)
+    if isinstance(dose, np.ndarray) and dose.ndim == 2 and dose.dtype == np.float32:
+        from .exposure_compute import try_sheet_response
+        accelerated = try_sheet_response(dose, log_half, contrast)
+        if accelerated is not None:
+            return accelerated
+    return np.exp(-np.logaddexp(0.,-contrast*(np.log(np.maximum(dose,1e-30))-log_half))).astype(np.float32)
 
 
 def spatial_rate(seconds,tau,activity,access,temperature_c=20.):
@@ -131,8 +137,8 @@ def handling(state,*,fingerprints=0.,reagent_residue=0.,position_x=.5,position_y
                   position_x=position_x,position_y=position_y,angle_degrees=angle_degrees)
 
 
-def finish(state,family,role,model,fields,*,negative=False):
-    body=MediumBody(family,state.schema_version,state.group_id,state.group_id+':'+role,role,model,fields,usable_negative=negative,
+def finish(state,family,role,model,fields,*,negative=False,body_version=None):
+    body=MediumBody(family,body_version or state.schema_version,state.group_id,state.group_id+':'+role,role,model,fields,usable_negative=negative,
         presentation_json=json.dumps({'frame':'none','material':asdict(state.material)}))
     provenance={'family':family,'version':state.schema_version,'material':asdict(state.material),'seed':state.seed,
                 'process':json.loads(state.process_json),'process_seconds':state.elapsed_seconds,

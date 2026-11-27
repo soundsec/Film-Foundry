@@ -26,12 +26,12 @@ internal object PhoneObserve {
         preparedDevice: PhoneScannerCapture? = null,
         transmissionCompute: DensityTransmissionCompute?=null,
     ): ScanObservation {
-        return capture(optical,recipe,fallbackBase,preparedDevice,transmissionCompute=transmissionCompute).render(recipe,linearOnly,false)
+        return capture(optical,recipe,fallbackBase,preparedDevice,transmissionCompute=transmissionCompute, includeApertures=!linearOnly).render(recipe,linearOnly,false)
     }
     fun capture(optical: OpticalMaster,recipe: Map<String,Any?>,fallbackBase: FloatArray,
         preparedDevice: PhoneScannerCapture?=null,checkCancel: (()->Unit)?=null,transmissionCompute: DensityTransmissionCompute?=null,
-        retainTransport: Boolean=false): Captured {
-        require(recipe[PhoneScanModels.OPTION]==null || recipe[PhoneScanModels.OPTION] in listOf(PhoneScanModels.LEGACY,PhoneScanModels.RESULT_BASE,PhoneScanModels.CALIBRATED,PhoneScanModels.CURRENT)) { "Unknown scan interpretation implementation" }
+        retainTransport: Boolean=false, includeApertures: Boolean=true): Captured {
+        require(recipe[PhoneScanModels.OPTION]==null || recipe[PhoneScanModels.OPTION] in listOf(PhoneScanModels.LEGACY,PhoneScanModels.RESULT_BASE,PhoneScanModels.CALIBRATED,PhoneScanModels.CURRENT,PhoneScanModels.NEUTRAL)) { "Unknown scan interpretation implementation" }
         val mode = observeMode(recipe)
         val lightTable = mode == "viewer_light_table"
         val projection = mode == "viewer_projection"
@@ -77,7 +77,11 @@ internal object PhoneObserve {
         // Spatial camera-light frames retain the existing per-frame capture path.
         val transport=retainTransport && sceneImage==null
         val base = working.clearBaseOpticalDensityRgb ?: fallbackBase
-        val removeBaseDefault=if(recipe[PhoneScanModels.OPTION]==PhoneScanModels.LEGACY) true else PhoneScanDefaults.removeBase(positive(working),base)
+        val removeBaseDefault=when {
+            !viewer && PhoneScanModels.desktopPrint(recipe) -> !positive(working)
+            recipe[PhoneScanModels.OPTION]==PhoneScanModels.LEGACY -> true
+            else -> PhoneScanDefaults.removeBase(positive(working),base)
+        }
         val baseRaw = FloatArray(3) { channel ->
             val transmittance = spectral?.baseTransmission(channel) ?: transmittanceOf(base[channel])
             if(transport) return@FloatArray transmittance
@@ -109,6 +113,10 @@ internal object PhoneObserve {
         if(!transport) device?.apply(raw)
         return Captured(samplingKey(recipe,transport),mode,width,height,raw,baseRaw,positive(working),removeBaseDefault,
             com.filmfoundry.interchange.FilmRebateGeometry.gateRows(working.metadata,height),
+            com.filmfoundry.interchange.FilmRebateGeometry.gateRows(working.metadata,width,columns=true),
+            if (includeApertures && !lightTable) ScanPerforations.from(working.metadata,width,height) { y ->
+                density.values.copyOfRange(y*width*3,(y+1)*width*3)
+            } else null,
             gridRecord(optical,working,presented.sampler),
             if(spectral==null) emptyMap() else mapOf("optical_capture" to mapOf("model" to PhoneSpectralCapture.MODEL,
                 "observer_profile_id" to spectral.profileId,"normalization" to "open_gate_per_channel_v1")),
@@ -119,7 +127,7 @@ internal object PhoneObserve {
         val keys=listOf("scan_grid_long_edge","transmission_light_ev","transmission_light_temperature_k","scanner_light_color",
             "scanner_response_matrix","device_response_rgb",SpectralOptics.OBSERVER_KEY)
         val fixed=if(transport) keys-filterLightKeys else keys
-        return fixed.associateWith { freezeKey(field(scanner,recipe,it)) }+mapOf(PhoneScanModels.OPTION to recipe[PhoneScanModels.OPTION],"observe_mode" to observeMode(recipe),
+        return fixed.associateWith { freezeKey(field(scanner,recipe,it)) }+mapOf(PhoneScanModels.OPTION to recipe[PhoneScanModels.OPTION],"desktop_print" to PhoneScanModels.desktopPrint(recipe),"observe_mode" to observeMode(recipe),
             "viewer_illuminant" to recipe["viewer_illuminant"],"scene_illuminant_rgb" to freezeKey(recipe["scene_illuminant_rgb"]),
             "scene_illuminant_rgb_image" to freezeKey(recipe["scene_illuminant_rgb_image"]),"film" to freezeKey(recipe["film"]))
     }
@@ -131,8 +139,8 @@ internal object PhoneObserve {
         else -> value
     }
     class Captured(private val key: Map<String,Any?>,private val mode: String,private val width: Int,private val height: Int,
-        private val samples: FloatArray,private val baseRaw: FloatArray,private val isPositive: Boolean,private val removeBaseDefault: Boolean,private val imageRows: IntRange,
-        private val grid: Map<String,Any?>,private val spectralRecord: Map<String,Any?>,
+        private val samples: FloatArray,private val baseRaw: FloatArray,private val isPositive: Boolean,private val removeBaseDefault: Boolean,private val imageRows: IntRange,private val imageColumns: IntRange,
+        private val apertures: ScanPerforations?, private val grid: Map<String,Any?>,private val spectralRecord: Map<String,Any?>,
         private val deviceRecord: Map<String,Any?>?,private val deviceCurve: Boolean,
         private val transport: Boolean=false,private val device: PhoneScannerCapture?=null): PreparedObservation {
         override val retainedBytes get()=samples.size.toLong()*4+baseRaw.size*4
@@ -157,13 +165,16 @@ internal object PhoneObserve {
             device?.apply(raw)
         }
         if (!viewer) {
-            interpretScanner(raw, litBase, pixels, scanner, recipe,isPositive,removeBaseDefault,!linearOnly,imageRows.first*width,imageRows.count()*width)
+            interpretScanner(raw, litBase, pixels, scanner, recipe,isPositive,removeBaseDefault,!linearOnly,imageRows.first*width+imageColumns.first,imageRows.count()*imageColumns.count(),width,imageColumns.count())
         } else if (projection && !isPositive) {
             projectNegative(raw, litBase, pixels)
         }
         val curve = if (viewer) null else parseCurve(field(scanner, recipe, "color_curve_rgb"))
         val tone = if (viewer) null else parseToneCurve(field(scanner, recipe, "tone_curve"))
-        if(!linearOnly) encodeRows(raw,recipe,viewer,invertTransmission=booleanOf(field(scanner,recipe,"invert_transmission"),!isPositive))
+        if (!linearOnly) {
+            encodeRows(raw,recipe,viewer,invertTransmission=booleanOf(field(scanner,recipe,"invert_transmission"),!isPositive))
+            apertures?.show(raw,0,height,openGateLamp(recipe))
+        }
         return ScanObservation(
             outputRgb = FloatNd(intArrayOf(height, width, 3), raw),
             metadata = observationMetadata(mode, lightTable, projection, isPositive, removeBaseDefault, scanner, recipe, curve != null, tone != null && tone.any { kotlin.math.abs(it.first - it.second) > 1e-7f }) +
@@ -192,14 +203,15 @@ internal object PhoneObserve {
         val look=recipe["look"] as? Map<*,*>
         val lampEv=if(calibratedExposure(recipe,viewer)) numberOf(field(scanner,recipe,"transmission_light_ev"),0f) else 0f
         val invert=invertTransmission ?: booleanOf(field(scanner,recipe,"invert_transmission"),true)
-        val effectiveEv=numberOf(look?.get("print_exposure_ev"),0f)+(if(invert) -lampEv else lampEv)
+        val desktopPrint=!viewer && PhoneScanModels.desktopPrint(recipe)
+        val effectiveEv=(if(desktopPrint) 0f else numberOf(look?.get("print_exposure_ev"),0f))+(if(invert) -lampEv else lampEv)
         val printGain=if(viewer) 1f else 2.0.pow(effectiveEv.toDouble()).toFloat()
         val lampColor=if(rangeFirstModel(recipe) && !viewer) {
             val cct=colorTemperatureRgb(numberOf(field(scanner,recipe,"transmission_light_temperature_k"),5500f))
             val neutral=colorTemperatureRgb(5500f)
             FloatArray(3) { c -> if(invert) neutral[c]/cct[c].coerceAtLeast(.02f) else cct[c]/neutral[c] }
         } else null
-        val contrast=if(viewer) 1f else numberOf(look?.get("print_contrast"),1f).coerceAtLeast(.01f)
+        val contrast=if(viewer || desktopPrint) 1f else numberOf(look?.get("print_contrast"),1f).coerceAtLeast(.01f)
         require(contrast.isFinite()) { "look.print_contrast must be finite" }
         return ScanOutputPlan.Encoding(printGain,lampColor?.toList(),contrast,curve?.toList(),tone,if(viewer) null else ColorMixer.parse(field(scanner,recipe,"color_mixer")))
     }
@@ -249,7 +261,7 @@ internal object PhoneObserve {
         positive: Boolean,
         removeBaseDefault: Boolean,
         normalize: Boolean = true,
-        sampleStart: Int=0,samplePixels: Int=pixels,
+        sampleStart: Int=0,samplePixels: Int=pixels,sampleStride: Int=pixels,sampleWidth: Int=pixels,
     ) {
         val removeMask = booleanOf(field(scanner, recipe, "remove_base_mask"), removeBaseDefault)
         val invert = booleanOf(field(scanner, recipe, "invert_transmission"), !positive)
@@ -257,8 +269,19 @@ internal object PhoneObserve {
         val sigmoid=mapping=="sigmoid"
         val rangeFirst=rangeFirstNegative(recipe,invert)
         val printlike=mapping=="printlike" || sigmoid
-        val saturation = numberOf(field(scanner, recipe, "scan_saturation"), 1f)
+        val requestedSaturation = numberOf(field(scanner, recipe, "scan_saturation"), 1f)
         val legacy=recipe[PhoneScanModels.OPTION]==PhoneScanModels.LEGACY
+        val desktopPrint=PhoneScanModels.desktopPrint(recipe)
+        val look=recipe["look"] as? Map<*,*>
+        val gain=if(desktopPrint) 2.0.pow(numberOf(look?.get("print_exposure_ev"),0f).toDouble()).toFloat() else 1f
+        val gamma=if(desktopPrint) numberOf(field(scanner,recipe,"print_gamma"),1f)*numberOf(look?.get("print_contrast"),1f).coerceAtLeast(.01f) else 1f
+        val positiveControl=numberOf(field(scanner,recipe,"positive_scan_color_control_strength"),.35f).coerceIn(0f,1f)
+        val positiveContrast=1f+(gamma-1f)*positiveControl
+        val saturation=if(desktopPrint && !invert) 1f+(requestedSaturation-1f)*positiveControl else requestedSaturation
+        val reference=if(desktopPrint && invert) {
+            val density=float3(field(scanner,recipe,"print_reference_density")) ?: floatArrayOf(1.54f,1.54f,1.54f)
+            FloatArray(3) { c -> 10.0.pow(-density[c].toDouble()).toFloat() }
+        } else null
         for (i in 0 until pixels) {
             var r = raw[i * 3]
             var g = raw[i * 3 + 1]
@@ -268,7 +291,16 @@ internal object PhoneObserve {
                 g = (g / baseRaw[1]).coerceAtLeast(1e-6f)
                 b = (b / baseRaw[2]).coerceAtLeast(1e-6f)
             }
-            if (invert) {
+            if (reference!=null) {
+                // 10^(D - Dref) equals 10^(-Dref) / balanced transmission.
+                r=printReflectance(r,reference[0],gamma,gain)
+                g=printReflectance(g,reference[1],gamma,gain)
+                b=printReflectance(b,reference[2],gamma,gain)
+            } else if(desktopPrint) {
+                r=(r*gain-.5f)*positiveContrast+.5f
+                g=(g*gain-.5f)*positiveContrast+.5f
+                b=(b*gain-.5f)*positiveContrast+.5f
+            } else if (invert) {
                 if (removeMask) {
                     r = (1f / r) * PhoneReducedKernel.OBSERVE_GAIN
                     g = (1f / g) * PhoneReducedKernel.OBSERVE_GAIN
@@ -292,6 +324,9 @@ internal object PhoneObserve {
             raw[i * 3] = luma + (r - luma) * saturation
             raw[i * 3 + 1] = luma + (g - luma) * saturation
             raw[i * 3 + 2] = luma + (b - luma) * saturation
+            if(desktopPrint) {
+                for(c in 0..2) raw[i*3+c]=raw[i*3+c].coerceIn(0f,1f)
+            }
         }
         if (normalize && booleanOf(field(scanner, recipe, "scan_normalize"), true)) {
             normalize(
@@ -300,7 +335,7 @@ internal object PhoneObserve {
                 numberOf(field(scanner, recipe, "scan_normalize_strength"), 0.45f).coerceIn(0f, 1f),
                 field(scanner, recipe, "scan_normalize_mode")?.toString() ?: "luma",
                 numberOf(field(scanner, recipe, "scan_black_percentile"), 0.3f),
-                numberOf(field(scanner, recipe, "scan_white_percentile"), 99.7f),sampleStart,samplePixels,rangeFirst,
+                numberOf(field(scanner, recipe, "scan_white_percentile"), 99.7f),sampleStart,samplePixels,rangeFirst,sampleStride,sampleWidth,
             )
         } else if(normalize && rangeFirst) boundNegative(raw)
     }
@@ -313,10 +348,10 @@ internal object PhoneObserve {
         blackPercentile: Float,
         whitePercentile: Float,
         sampleStart: Int=0,samplePixels: Int=pixels,
-        boundedInput: Boolean=false,
+        boundedInput: Boolean=false,sampleStride: Int=pixels,sampleWidth: Int=pixels,
     ) {
         if (strength <= 0f || pixels <= 0) { if(boundedInput) boundNegative(linear);return }
-        val measured = ScanNormalization.measure(linear, samplePixels, strength, mode, blackPercentile, whitePercentile,sampleStart)
+        val measured = ScanNormalization.measure(linear, samplePixels, strength, mode, blackPercentile, whitePercentile,sampleStart,sampleStride,sampleWidth)
         // Only application is partitioned. Every block uses the same whole-frame measurements.
         val blockPixels = 262144
         for (start in 0 until pixels step blockPixels) measured.apply(linear, start, min(blockPixels, pixels - start),boundedInput)
@@ -377,12 +412,30 @@ internal object PhoneObserve {
         }
     }
 
-    private fun calibratedExposure(recipe: Map<String,Any?>,viewer: Boolean)=!viewer &&
-        (recipe[PhoneScanModels.OPTION]==null || recipe[PhoneScanModels.OPTION] in listOf(PhoneScanModels.CURRENT,PhoneScanModels.CALIBRATED))
+    private fun printReflectance(transmission: Float,reference: Float,gamma: Float,gain: Float): Float {
+        val dose=reference/transmission.coerceIn(1e-6f,1f)
+        val shaped=if(gamma==1f) dose else dose.pow(gamma)
+        return -Math.expm1((-gain*shaped).toDouble()).toFloat()
+    }
 
-    private fun rangeFirstModel(recipe: Map<String,Any?>)=recipe[PhoneScanModels.OPTION]==null || recipe[PhoneScanModels.OPTION]==PhoneScanModels.CURRENT
+    private fun calibratedExposure(recipe: Map<String,Any?>,viewer: Boolean)=!viewer &&
+        (rangeFirstModel(recipe) || recipe[PhoneScanModels.OPTION]==PhoneScanModels.CALIBRATED)
+
+    private fun rangeFirstModel(recipe: Map<String,Any?>)=recipe[PhoneScanModels.OPTION] in listOf(null,PhoneScanModels.CURRENT,PhoneScanModels.NEUTRAL)
     internal fun rangeFirstNegative(recipe: Map<String,Any?>,invert: Boolean)=rangeFirstModel(recipe) && invert && field(scannerMap(recipe),recipe,"print_mapping_mode")=="sigmoid"
     internal fun boundNegative(raw: FloatArray) { for(i in raw.indices) raw[i]=ScanNormalization.bounded(raw[i]) }
+
+    internal fun openGateLamp(recipe: Map<String,Any?>): FloatArray {
+        val scanner = scannerMap(recipe)
+        val ev = numberOf(field(scanner,recipe,"transmission_light_ev"),0f)
+        val kelvin = numberOf(field(scanner,recipe,"transmission_light_temperature_k"),5500f)
+        val tint = float3(field(scanner,recipe,"scanner_light_color")) ?: floatArrayOf(1f,1f,1f)
+        val color = if (field(scanner,recipe,SpectralOptics.OBSERVER_KEY) != null)
+            FloatArray(3) { tint[it]*2.0.pow(ev.toDouble()).toFloat() }
+        else illuminantRgb(recipe,false,ev,kelvin)
+        if (observeMode(recipe) == "scanner") PhoneScannerCapture(scanner,recipe).apply(color)
+        return FloatArray(3) { encodeSrgb(color[it]) }
+    }
 
     private fun captureLight(recipe: Map<String,Any?>,viewer: Boolean,spectral: Boolean,ev: Float,kelvin: Float): FloatArray {
         // The calibrated phone scanner measures its base/device/normalization at
@@ -413,7 +466,8 @@ internal object PhoneObserve {
         }
         val cct = colorTemperatureRgb(kelvin)
         val gain = 2.0.pow(ev.toDouble()).toFloat()
-        return FloatArray(3) { max(cct[it] * gain, 1e-6f) }
+        val tint = float3(field(scannerMap(recipe),recipe,"scanner_light_color")) ?: floatArrayOf(1f,1f,1f)
+        return FloatArray(3) { max(cct[it] * gain * tint[it], 1e-6f) }
     }
 
     private fun colorTemperatureRgb(temperatureK: Float): FloatArray {
@@ -500,6 +554,7 @@ internal object PhoneObserve {
             },
             "transmission_capture" to DataKernel.PHONE_TRANSMISSION_CAPTURE_ID,
             "negative_interpretation" to when {
+                !viewer && PhoneScanModels.desktopPrint(recipe) -> PhoneScanModels.NEUTRAL
                 !viewer && field(scanner,recipe,"print_mapping_mode")=="sigmoid" -> "phone_bounded_negative_print_v1"
                 !viewer && field(scanner,recipe,"print_mapping_mode")=="printlike" -> "phone_negative_print_v1"
                 else -> "legacy_reciprocal_v0"
@@ -537,7 +592,7 @@ internal object PhoneObserve {
                 "lamp_ev" to ev,"effective_ev" to if(calibrated && invert) -ev else ev,
                 "calibration_ev" to if(calibrated) 0f else ev)
         }
-        if(!viewer) payload["interpretation_defaults"]=mapOf("model" to (recipe[PhoneScanModels.OPTION] ?: PhoneScanModels.CURRENT),
+        if(!viewer) payload["interpretation_defaults"]=mapOf("model" to (recipe[PhoneScanModels.OPTION] ?: if(PhoneScanModels.desktopPrint(recipe)) PhoneScanModels.NEUTRAL else PhoneScanModels.CURRENT),
             "remove_base_mask" to removeBaseDefault,"invert_transmission" to !positive,"basis" to "final_medium_polarity_and_base_v1")
         if(!viewer && rangeFirstModel(recipe)) payload["scanner_lamp_color"]=mapOf("model" to "relative_cct_rgb_calibration_v1",
             "temperature_k" to numberOf(field(scanner,recipe,"transmission_light_temperature_k"),5500f),

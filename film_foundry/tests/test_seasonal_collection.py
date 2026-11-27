@@ -76,6 +76,7 @@ def test_desktop_unlock_and_material_selection_preserve_scan_style(tmp_path,monk
         monkeypatch.setattr(QtWidgets.QInputDialog,"getMultiLineText",lambda *a:(seasons._phrase_bytes().decode(),True))
         panel._enter_share_code()
         assert asdict(panel._config())==before
+        panel.link_scanner.set(False)  # Exercise independent scanner selection.
         scan_key=panel.scanner_preset.get()
         scan_before=asdict(panel._config().scanner)
         key="season_spring_negative"
@@ -95,6 +96,10 @@ def test_desktop_unlock_and_material_selection_preserve_scan_style(tmp_path,monk
         shared=DarkroomConfig();shared.look.exposure_ev=.37
         monkeypatch.setattr(QtWidgets.QInputDialog,"getMultiLineText",lambda *a:(workflow.encode_recipe_share(shared),True))
         panel._enter_share_code()
+        dialog=panel.root.qt._inline_editor_host.frames[-1][1]
+        for check in dialog.keep_checks:check.setChecked(False)
+        for check in dialog.apply_checks:check.setChecked(check.isEnabled())
+        dialog.commit()
         assert panel._config().look.exposure_ev==.37
     finally:
         panel.root.destroy()

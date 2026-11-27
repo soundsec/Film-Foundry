@@ -122,8 +122,12 @@ def light_leak(state,**parameters):
     return replace(state,fields=dict(state.fields)|dict(base.fields),process_json=base.process_json)
 
 
-def spread(state,*,light_protection=1.,ambient_light=1.,solar_warming=0.,**parameters):
+def spread(state,*,light_protection=1.,ambient_light=1.,solar_warming=0.,shield_seconds=0.,**parameters):
     if state.stage!="ejected":raise ValueError("Eject the sheet before reagent spreading")
+    if not math.isfinite(shield_seconds) or not 0 <= shield_seconds <= 86400:
+        raise ValueError('Invalid initial shield time')
+    if shield_seconds and state.schema_version < 4:
+        raise ValueError('Timed shielding requires a finite-reagent sheet')
     light_protection=defects.fraction(light_protection,"Development light protection")
     if not math.isfinite(ambient_light) or not 0<=ambient_light<=10:raise ValueError("Ambient light must be within [0,10]")
     if not math.isfinite(solar_warming) or not 0<=solar_warming<=30:raise ValueError("Additional warming must be within [0,30] degrees")
@@ -136,6 +140,8 @@ def spread(state,*,light_protection=1.,ambient_light=1.,solar_warming=0.,**param
     base=transfer.spread(base,**parameters)
     settings=json.loads(base.process_json)
     settings.update(light_protection=light_protection,ambient_light=ambient_light,solar_warming=solar_warming,initial_temperature_c=initial_temperature)
+    if shield_seconds:
+        settings['shield_seconds'] = shield_seconds
     snapshot=json.dumps(settings,sort_keys=True,allow_nan=False)
     if state.schema_version==2 and light_protection<1 and ambient_light>0:
         y,x=defects.coordinates(base.fields["coverage"].shape)
@@ -167,7 +173,13 @@ def advance(state,*,seconds):
     if state.stage!="reacting":raise ValueError("Only reacting integral sheets can advance")
     if not math.isfinite(seconds) or seconds<0:raise ValueError("Invalid time increment")
     if state.schema_version>=4:
-        base=transfer.advance(_transfer_state(state,"contact"),seconds=seconds)
+        base = _transfer_state(state, "contact")
+        until = json.loads(state.process_json).get('shield_seconds', 0.)
+        covered = min(seconds, max(0., until - state.elapsed_seconds))
+        if covered:
+            base = inventory.advance(base, covered, light_protection=1.)
+        if seconds > covered:
+            base = transfer.advance(base, seconds=seconds-covered)
         progress,opacifier=inventory.optical_progress(base.fields,state.material)
         stable=not np.any(base.fields["alkali_remaining"]>1e-6)
         return replace(state,stage="stable" if stable else "reacting",elapsed_seconds=base.elapsed_seconds,fields=dict(base.fields)|{"opacifier":opacifier,"stabilization":progress},process_json=base.process_json)

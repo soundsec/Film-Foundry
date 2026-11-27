@@ -55,7 +55,7 @@ def test_route_session_recipe_and_capabilities_agree(kind,tmp_path):
         same_fields(route,direct);same_fields(route,session.state)
         assert json.loads(route.process_json)[KEY]==session.recipe()
         if index==0:
-            path=tmp_path/'paused.npz';api.save(path,route);route=api.load(path)
+            path=tmp_path/'paused.npz';api.save(path,route,precision='full');route=api.load(path)
     replay=MaterialLabSession(kind);replay.image=pixels;replay.replay_recipe(json.loads(route.process_json)[KEY])
     same_fields(route,replay.state)
     assert route.group_id!=replay.state.group_id
@@ -109,14 +109,14 @@ def test_version_limits_conditional_products_and_cli(tmp_path,capsys):
     from film_foundry.app.cli import main
     old=wet.prepare((20,28),group_id='old',schema_version=1)
     descriptor=describe_family(wet.FAMILY,state=old)
-    assert descriptor['material_version']==1 and descriptor['current_version']==4
+    assert descriptor['material_version']==1 and descriptor['current_version']==describe_family(wet.FAMILY,state=wet.prepare((20,28),group_id='new'))['material_version']
     assert 'v1_no_pour_unevenness_or_residue_exposure_filter' in descriptor['limitations']
     assert descriptor['products'][0]['usable_negative']
     assert not describe_family(wet.FAMILY,material={'support':'tintype'})['products'][0]['usable_negative']
     declared=describe_family(peel.FAMILY,material={'transfer':'silver_compound','donor_mode':'silver_negative'})
     assert declared['products'][-1]['replaces']=='donor_residue'
     assert not any(p['usable_negative'] for p in describe_family(peel.FAMILY)['products'])
-    path=tmp_path/'old.npz';api.save(path,old)
+    path=tmp_path/'old.npz';api.save(path,old,precision='full')
     assert main(['material-info',wet.FAMILY,'--state',str(path)])==0
     report=json.loads(capsys.readouterr().out)
     assert report==descriptor

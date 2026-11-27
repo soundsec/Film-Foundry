@@ -27,8 +27,8 @@ def wait(window):
 
 @pytest.mark.parametrize("kind,steps",[
     ("peel",("expose","spread","advance","peel")),
-    ("integral",("expose","eject","spread","advance","stabilize")),
-    ("plate",("prepare","polish","sensitize","expose","develop","fix","gild","surface")),
+    ("integral",("expose","eject","spread","advance","stabilize","finish")),
+    ("plate",("prepare","polish","sensitize","expose","develop","fix","load_gilding","gild","rinse_gilding","finish","surface")),
 ])
 def test_window_workflow_save_export_and_independent_observation(kind,steps,tmp_path,monkeypatch):
     source=tmp_path/'input.png';Image.fromarray(np.linspace(0,255,24*36*3,dtype=np.uint8).reshape(24,36,3)).save(source)
@@ -88,12 +88,12 @@ def test_window_workflow_save_export_and_independent_observation(kind,steps,tmp_
         window.view_ev.setValue(.5);window.refresh_preview();wait(window)
         for k,v in before.items():np.testing.assert_array_equal(v,window.session.state.fields[k])
         archive=tmp_path/'products.ffmaterial.npz'
-        monkeypatch.setattr(QtWidgets.QFileDialog,"getSaveFileName",lambda *a,**k:(str(archive),""))
-        window.save_dialog("products");wait(window)
+        window.save_dialog("products")
+        window._export_dialog.path.setText(str(archive));window._export_dialog.apply();wait(window)
         restored=api.load(archive);assert len(restored.bodies)==len(window.session.group.bodies)
         png=tmp_path/'view.png'
-        monkeypatch.setattr(QtWidgets.QFileDialog,"getSaveFileName",lambda *a,**k:(str(png),""))
-        window.save_dialog("png");wait(window)
+        window.save_dialog("png")
+        window._export_dialog.path.setText(str(png));window._export_dialog.apply();wait(window)
         with Image.open(png) as image:
             assert image.size==(36,24)
             expected_shape=window.session.preview(window.conditions(),max(0,window.body_choice.currentIndex())).shape

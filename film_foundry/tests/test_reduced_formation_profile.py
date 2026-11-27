@@ -127,7 +127,7 @@ def test_reduced_bath_resume_keeps_inventory_and_old_checkpoint_meaning(tmp_path
     monkeypatch.setenv('FILM_FOUNDRY_COMPUTE','cpu')
     # Exercise an actually reduced contact grid on the small continuation fixture.
     original=ContactTimeFieldCache.__init__
-    def bounded(self,shape,extent,edge):original(self,shape,extent,min(edge,16))
+    def bounded(self,shape,extent,edge,**kwargs):original(self,shape,extent,min(edge,16),**kwargs)
     monkeypatch.setattr(ContactTimeFieldCache,'__init__',bounded)
     c=config();c.fast_mode=True
     c.processing.reduced_profile=LEGACY_REDUCED_PROFILE if legacy else DETAILED_REDUCED_PROFILE

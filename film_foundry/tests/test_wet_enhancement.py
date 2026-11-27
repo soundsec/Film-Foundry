@@ -117,11 +117,11 @@ def test_archive_recipe_capabilities_and_readonly_final(tmp_path):
     session=MaterialLabSession('wet');session.image=IMAGE
     for op in ('prepare','sensitize','expose','develop','fix','load_enhancer'):session.process(op,seed=18)
     session.process('intensify',{'seconds':27})
-    path=tmp_path/'wet.npz';session.save(path)
+    path=tmp_path/'wet.npz';session.save(path,precision='full')
     resumed=api.load(path)
     session.process('intensify',{'seconds':80})
     same(session.state,w.intensify(resumed,seconds=80),0)
-    cap=session.capabilities();assert cap['current_version']==4
+    cap=session.capabilities();assert cap['current_version']==session.state.schema_version
     assert cap['effect_intents'][0]['id']=='enhancement_silver_supply'
     replay=MaterialLabSession('wet');replay.image=IMAGE;replay.replay_recipe(session.recipe());same(session.state,replay.state,0)
     session.process('wash');session.save_products(path);group=api.load(path);body=group.bodies[0]
@@ -170,3 +170,20 @@ def test_bounded_rows_and_silver_ledger_reject_invented_deposit(monkeypatch):
     same(expected,w.intensify(base,seconds=80,coverage=.7),0)
     with pytest.raises(ValueError,match='conserved'):
         replace(base,fields={**base.fields,'enhancement_deposit':np.ones_like(base.fields['silver'])})
+
+
+def test_tilt_transports_only_carried_silver_and_keeps_its_budget(tmp_path):
+    base=w.expose(IMAGE,group_id='wet5',seed=17)
+    tilted=chemistry.tilt(base,direction='left',seconds=7,tilt_degrees=50,motion_mm=3)
+    f=tilted.fields
+    for key in ('dose','latent','halide','silver','external_supplied'):
+        np.testing.assert_array_equal(f[key],base.fields[key])
+    assert f['external_removed'][:,0].sum()>0
+    assert f['external_removed'][:,-1].sum()==0
+    np.testing.assert_allclose(f['surface_allocation'],f['external_silver']+f['external_removed'],atol=2e-6)
+    np.testing.assert_allclose(f['surface_allocation'].sum(dtype=np.float64),f['external_supplied'].sum(dtype=np.float64),rtol=2e-6)
+    path=tmp_path/'tilted.npz'
+    api.save(path,tilted,precision='full')
+    same(w.develop(api.load(path)),w.develop(tilted),0)
+    with pytest.raises(ValueError,match='total sensitizer supply'):
+        replace(tilted,fields={**f,'surface_allocation':f['surface_allocation']+1})

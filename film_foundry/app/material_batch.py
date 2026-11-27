@@ -68,7 +68,9 @@ def run_material_batch(command, source, output_root, config, *, scaled_override=
         try:
             if control is not None:
                 control.check_cancel()
-            result = run_request(WorkflowRequest(command, path, medium_root, config,
+            from film_foundry.app.workspace_jobs import numbered_photo_config
+            item_config = numbered_photo_config(config,item_index+1) if command == "expose" else config
+            result = run_request(WorkflowRequest(command, path, medium_root, item_config,
                 scaled_override=scaled_override, control=control,
                 frame_identity=frame_identity_for_item(settings, item_index, len(inputs)),
                 path_seed_offset=offset_for(path,payload['path_seed_offsets'])))

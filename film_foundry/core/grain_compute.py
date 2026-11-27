@@ -9,10 +9,12 @@ import cv2
 import numpy as np
 from . import desktop_compute as compute
 from .execution_topology import reference_execution_enabled
-from .random_fields import standard_normal_float32, fill_standard_normal_float32
+from .random_fields import fill_standard_normal_float32
 
 _calls = 0
 _shift_kernel = None
+_sum_squared_deviations = None
+_standardize = None
 _SHIFT = r'''
 __device__ int reflect_grain(int x,int n) {
  if(n==1)return 0;int period=2*n-2;x=x%period;
@@ -40,16 +42,27 @@ def status():
 
 
 def _normalize(cp, field):
-    field -= cp.mean(field, dtype=cp.float32)
-    deviation = cp.sqrt(cp.mean(cp.square(field), dtype=cp.float32))
-    field /= cp.maximum(deviation, cp.float32(1e-6))
+    global _sum_squared_deviations, _standardize
+    if _sum_squared_deviations is None:
+        _sum_squared_deviations = cp.ReductionKernel(
+            'float32 x, float32 center', 'float32 total',
+            '(x-center)*(x-center)', 'a+b', 'total=a', '0', 'grain_sum_squared_deviations',
+            options=('--fmad=false',))
+        _standardize = cp.ElementwiseKernel(
+            'float32 x, float32 center, float32 total, float32 count', 'float32 y',
+            'y = (x-center)/fmaxf(sqrtf(total/count), 1.e-6f)', 'grain_standardize')
+    center = cp.mean(field, dtype=cp.float32)
+    total = _sum_squared_deviations(field, center)
+    _standardize(field, center, total, np.float32(field.size), field)
     return field
 
 
-def _blur(cp, field, sigma, kernel):
+def _blur(cp, field, sigma, kernel, taps):
     h, w = field.shape
     size = int(round(sigma*8+1)) | 1
-    weights = cp.asarray(cv2.getGaussianKernel(size, sigma, cv2.CV_32F).ravel(), blocking=True)
+    if sigma not in taps:
+        taps[sigma] = cp.asarray(cv2.getGaussianKernel(size, sigma, cv2.CV_32F).ravel(), blocking=True)
+    weights = taps[sigma]
     temporary = cp.empty_like(field); result = cp.empty_like(field)
     args = (weights, np.int32(size//2), np.int32(w), np.int32(h))
     grid = ((field.size+255)//256,)
@@ -58,12 +71,12 @@ def _blur(cp, field, sigma, kernel):
     return result
 
 
-def _local(cp, field, sigma, plan, kernel):
+def _local(cp, field, sigma, plan, kernel, taps):
     if plan is None:
-        return _blur(cp, field, sigma, kernel)
+        return _blur(cp, field, sigma, kernel, taps)
     result = None
     for index, anchor in enumerate(plan.anchors):
-        sample = _normalize(cp, _blur(cp, field, sigma*anchor, kernel))
+        sample = _normalize(cp, _blur(cp, field, sigma*anchor, kernel, taps))
         if plan.weights:
             sample *= cp.asarray(np.ascontiguousarray(plan.weights[index]), blocking=True)
         if result is None: result = sample
@@ -84,26 +97,55 @@ def _run(cp, rng, shape, sigma, shared_mix, plans, kernel):
     h, w = shape; count = h*w
     max_shift = float(np.clip(sigma*.42, .35, 2.25))
     layer_mix = float(np.sqrt(max(1.-shared_mix*shared_mix, 0.)))
-    host = standard_normal_float32(rng, shape)
-    shared = _normalize(cp, _local(cp, cp.asarray(host, blocking=True), sigma, plans[0], kernel))
+    taps = {}
+    # At preview sizes, overlap the original CPU generator with device filtering.
+    # Each pinned slot may be refilled as soon as its DMA completes.
+    stream = cp.cuda.get_current_stream()
+    nbytes = count * np.dtype(np.float32).itemsize
+    pinned = nbytes <= 8 * 1024 * 1024
+    if pinned:
+        # Use bounded size classes even as the viewport changes one pixel at a time.
+        capacity = 1 << (nbytes - 1).bit_length()
+        hosts = [np.ndarray(shape, np.float32, buffer=cp.cuda.alloc_pinned_memory(capacity)) for _ in range(2)]
+    else:
+        hosts = [np.empty(shape, np.float32)]
+    fences = [None] * len(hosts)
+    device_input = cp.empty(shape, cp.float32)
+
+    def upload(index):
+        slot = index % len(hosts)
+        if fences[slot] is not None:
+            fences[slot].synchronize()
+        fill_standard_normal_float32(rng, hosts[slot])
+        device_input.set(hosts[slot], stream=stream)
+        if pinned:
+            fences[slot] = stream.record()
+        else:
+            stream.synchronize()
+        return device_input
+
     mixed = cp.empty((*shape, 3), cp.float32)
     grid = ((count+255)//256,)
-    for channel in range(3):
-        dx, dy = rng.uniform(-max_shift, max_shift, 2)
-        _shift_kernel(grid, (256,), (shared, mixed, np.int32(w), np.int32(h),
-                      _translation(dx), _translation(dy), np.float32(shared_mix), np.int32(channel), np.int32(0)))
-        fill_standard_normal_float32(rng, host)
-        layer = _normalize(cp, _local(cp, cp.asarray(host, blocking=True), sigma, plans[channel+1], kernel))
-        dx, dy = rng.uniform(-max_shift, max_shift, 2)
-        _shift_kernel(grid, (256,), (layer, mixed, np.int32(w), np.int32(h),
-                      _translation(dx), _translation(dy), np.float32(layer_mix), np.int32(channel), np.int32(1)))
-    return _normalize(cp, mixed)
+    try:
+        shared = _normalize(cp, _local(cp, upload(0), sigma, plans[0], kernel, taps))
+        for channel in range(3):
+            dx, dy = rng.uniform(-max_shift, max_shift, 2)
+            _shift_kernel(grid, (256,), (shared, mixed, np.int32(w), np.int32(h),
+                          _translation(dx), _translation(dy), np.float32(shared_mix), np.int32(channel), np.int32(0)))
+            layer = _normalize(cp, _local(cp, upload(channel + 1), sigma, plans[channel+1], kernel, taps))
+            dx, dy = rng.uniform(-max_shift, max_shift, 2)
+            _shift_kernel(grid, (256,), (layer, mixed, np.int32(w), np.int32(h),
+                          _translation(dx), _translation(dy), np.float32(layer_mix), np.int32(channel), np.int32(1)))
+        return _normalize(cp, mixed)
+    finally:
+        # Keep host storage alive through the last submitted copy, including on failure.
+        stream.synchronize()
 
 
 def try_multilayer(rng, shape, sigma, shared_mix, out, radius_response, radius_plans):
     global _calls
     if (reference_execution_enabled() or not isinstance(rng, np.random.Generator)
-            or shape[0]*shape[1] < 1048576
+            or shape[0]*shape[1] < 524288
             or os.environ.get('FILM_FOUNDRY_GRAIN_RESIDENT') == '0'
             or compute.selected_backend() != 'cuda'
             or (radius_response is not None and radius_plans is None)):
@@ -150,7 +192,9 @@ def try_multilayer(rng, shape, sigma, shared_mix, out, radius_response, radius_p
                         compute.reject(f'{type(exc).__name__}: {exc}')
                 device_result = None
                 try:
-                    compute._runtime[3].free_all_blocks()
+                    pool = compute._runtime[3]
+                    if pool.free_bytes() > 128 * 1024 * 1024:
+                        pool.free_all_blocks()
                 except Exception as exc:
                     if compute._failure is None:
                         compute.reject(f'{type(exc).__name__}: {exc}')

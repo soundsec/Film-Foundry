@@ -25,7 +25,7 @@ def condition_driven_config(config):
     recipe.bath_overrides=validate_bath_overrides(old.bath_overrides)
     recipe.latent_wait=deepcopy(old.latent_wait)
     recipe.post_process_light=deepcopy(old.post_process_light)
-    for name in (*RAW_CONDITIONS,*RAW_CHEMISTRY,'program_key','process_mode','frame_size','frame_long_edge_mm','incident_identity_seed','formation_history_model'):
+    for name in (*RAW_CONDITIONS,*RAW_CHEMISTRY,'program_key','process_mode','frame_size','frame_long_edge_mm','incident_identity_seed','incident_frame_seed','incident_pattern_scope','formation_history_model'):
         setattr(recipe,name,deepcopy(getattr(old,name)))
     validate_process_conditions({name:getattr(recipe,name) for name in (*RAW_CONDITIONS,*RAW_CHEMISTRY)})
     from film_foundry.core.development import DEVELOPER_PROFILES,FIXER_PROFILES

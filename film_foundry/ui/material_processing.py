@@ -83,6 +83,7 @@ class MaterialProcessingBar(QtWidgets.QWidget):
 
     def source_ready(self):
         owner=self.owner
+        owner.dng_note.offer([owner.session.source_path])
         if owner.session.state is None and owner.session.group is None and not self.apply.isHidden() and self.apply.isEnabled():
             self.reload_timer.stop();self.reload();return False
         return True
@@ -92,6 +93,9 @@ def install_processing_bar(owner, layout):
     owner.processing_bar = MaterialProcessingBar(owner)
     index=layout.indexOf(owner.file_bar)
     layout.removeWidget(owner.file_bar)
+    from film_foundry.ui.raw_import_notice import RawImportNotice
+    owner.dng_note = RawImportNotice()
+    layout.insertWidget(index, owner.dng_note)
     # Keep source actions on the title line. The compact menu fits even when
     # translated labels or accessibility fonts make the individual buttons wide.
     heading = layout.itemAt(0).layout()

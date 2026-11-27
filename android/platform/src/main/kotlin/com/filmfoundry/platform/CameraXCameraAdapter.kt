@@ -350,7 +350,7 @@ class CameraXCameraAdapter(
                 val size=DngRawDecoder.storedDimensions(target,applyOrientation=true)
                 val result=lastStillResult.get().orEmpty()
                 return StoredStillInfo(size.first,size.second,CaptureRecord(CaptureKind.SENSOR_RAW_DNG,false,
-                    sourceEncoding="stored_sensor_dng_v1",bitDepth=null,
+                    sourceEncoding="stored_sensor_dng_v2",bitDepth=null,
                     exposureTimeNs=(result["exposure_time_ns"] as? Number)?.toLong(),iso=(result["iso"] as? Number)?.toInt()),
                     mapOf("native_exposure_compensation" to nativeEv.metadata(),"native_zoom_ratio" to nativeZoomRatio,
                         "native_capture_requests" to nativeSettings.metadata(),"native_camera" to (nativeLens?.metadata() ?: emptyMap<String,Any?>()),
@@ -538,7 +538,7 @@ class CameraXCameraAdapter(
     }
     private fun validateNativeSettings(lens: NativeCameraCatalog.Lens,settings: NativeCaptureSettings=nativeSettings) {
         val chars=lens.characteristics
-        val format=when(settings.format) { "raw"->android.graphics.ImageFormat.RAW_SENSOR;"ultra_hdr"->android.graphics.ImageFormat.JPEG_R;else->android.graphics.ImageFormat.JPEG }
+        val format=CameraOutputCatalog.streamFormat(settings.format,motionFrames)
         if(frameWidth>0 && frameHeight>0) require(lens.sizes(format).any { (it.first==frameWidth && it.second==frameHeight) || (it.first==frameHeight && it.second==frameWidth) }) { "Selected lens and format cannot provide this roll's capture size" }
         require(settings.format!="ultra_hdr" || lens.ultraHdr) { "Ultra HDR is unavailable for this camera selection" }
         require(settings.format!="raw" || lens.rawCapture) { "RAW file capture is unavailable for this selection" }

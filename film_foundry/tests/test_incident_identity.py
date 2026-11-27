@@ -35,6 +35,32 @@ def test_application_freezes_one_identity_and_preserves_recipe():
     assert a.chemistry.incident_identity_seed!=c.chemistry.incident_identity_seed
 
 
+
+def test_identified_frames_share_the_bath_and_replay_their_own_contacts():
+    from film_foundry.core.incident_identity import bind_incident_frame, incident_rng
+    from film_foundry.core.process_operations import events_for
+    from film_foundry.contracts.process_events import EVENT_MODEL_V16
+    cfg = config()
+    ops = [dict(kind="bath_contact", bubble_radius_mm=2., bubble_release_s=30.),
+           dict(kind="emulsion_wear", placement="manual", center_x=.3, radius_mm=3.)]
+    cfg.chemistry.process_events = dict(model=EVENT_MODEL_V16, events=ops)
+    def frame(index):
+        return bind_incident_frame(cfg, identity=dict(roll_id="a", frame_index=index))
+    def samples(c, kind):
+        return incident_rng(c.chemistry, np.random.default_rng(43), kind).random(4)
+    a, b = frame(1), frame(2)
+    assert cfg.chemistry.incident_frame_seed is None
+    for kind in ("process_variation", "light_leak", "uneven_development"):
+        np.testing.assert_array_equal(samples(a, kind), samples(b, kind))
+    for kind in ("chemical_stain", "silver_plating", "reticulation"):
+        assert not np.array_equal(samples(a, kind), samples(b, kind))
+        np.testing.assert_array_equal(samples(a, kind), samples(frame(1), kind))
+    first, second = events_for(a), events_for(b)
+    assert first[0]["contact_seed"] != second[0]["contact_seed"]
+    assert first[1] == second[1]
+    assert first == events_for(frame(1))
+
+
 def test_shared_leak_and_gate_geometry_do_not_depend_on_frame_rng_or_other_toggles(monkeypatch):
     from film_foundry.core import accidents
     recipe=config().chemistry;recipe.light_leak_strength=.6

@@ -16,6 +16,8 @@ from film_foundry.core.derived_cache import pseudoinverse_3x3
 
 from film_foundry.core.development import build_effective_development
 from film_foundry.core.incident_identity import incident_rng
+from film_foundry.core.material_parallel import run_rows
+from film_foundry.core.computation_control import checkpoint
 from film_foundry.core.io_utils import cv_imread_unicode
 from film_foundry.model.config import DevelopRecipeConfig, FilmStockConfig
 
@@ -687,7 +689,7 @@ def _resize_work_map(map_data: np.ndarray, target_shape: tuple[int, int]) -> np.
     height, width = target_shape
     if map_data.shape == (height, width):
         return map_data.astype(np.float32, copy=False)
-    return cv2.resize(map_data, (width, height), interpolation=cv2.INTER_LINEAR).astype(np.float32)
+    return cv2.resize(map_data, (width, height), interpolation=cv2.INTER_LINEAR).astype(np.float32, copy=False)
 
 
 def _bounded_pathology(value: float) -> float:
@@ -811,6 +813,8 @@ def apply_light_leak_to_exposure(
     secondary_pattern: LightLeakPatternSpec | None = None,
     mask: np.ndarray | None = None,
     exposure_ceiling: float | None = 4.0,
+    edge_rgb: np.ndarray | None = None,
+    vertical_edge: bool = False,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Add light-leak exposure before H-D density formation."""
     state = build_effective_development(recipe)
@@ -890,13 +894,14 @@ def apply_light_leak_to_exposure(
             leak_map = compose_light_leak_coverage(leak_map, secondary_field, mix)
         if use_mask:
             leak_map = compose_light_leak_coverage(leak_map, mask, mix)
-    leak_map = np.clip(leak_map * strength, 0.0, 1.0).astype(np.float32)
+    leak_map = np.multiply(leak_map, strength, dtype=np.float32)
+    np.clip(leak_map, 0., 1., out=leak_map)
     if work_shape != (height, width):
         leak_map = cv2.resize(
             leak_map,
             (width, height),
             interpolation=cv2.INTER_LINEAR,
-        ).astype(np.float32)
+        )
 
     # Base-side entry tends toward red/orange; emulsion-side entry can be much
     # less red. Randomly interpolate those reduced spectral tendencies instead
@@ -916,65 +921,33 @@ def apply_light_leak_to_exposure(
             color_variation,
             (width, height),
             interpolation=cv2.INTER_LINEAR,
-        ).astype(np.float32)
+        )
 
-    # Apply the scalar exposure contribution channel-by-channel.  This keeps
-    # one output RGB frame plus scalar maps instead of a second full RGB color
-    # field, while preserving the exposure-side semantics.
-    leaked = image_linear.copy()
-    contribution = np.empty((height, width), dtype=np.float32)
-    np.multiply(leak_map, 0.85 + 0.35 * color_variation, out=contribution)
-    contribution *= float(leak_color[0] * 1.25)
-    leaked[..., 0] += contribution
-    np.multiply(leak_map, 1.08 - 0.16 * color_variation, out=contribution)
-    contribution *= float(leak_color[1] * 1.25)
-    leaked[..., 1] += contribution
-    np.multiply(leak_map, 0.78 + 0.22 * color_variation, out=contribution)
-    contribution *= float(leak_color[2] * 1.25)
-    leaked[..., 2] += contribution
-    return np.clip(leaked, 0.0, exposure_ceiling, out=leaked).astype(np.float32, copy=False), leak_map
-    if work_shape != (height, width):
-        leak_map = cv2.resize(
-            leak_map,
-            (width, height),
-            interpolation=cv2.INTER_LINEAR,
-        ).astype(np.float32)
+    leaked = np.empty_like(image_linear)
+    gains = leak_color * np.float32(1.25)
 
-    # Base-side entry tends toward red/orange; emulsion-side entry can be much
-    # less red. Randomly interpolate those reduced spectral tendencies instead
-    # of claiming that every leak has the same colour.
-    base_side_mix = float(np.clip(pattern.base_side_mix, 0.0, 1.0))
-    leak_color = (
-        np.asarray((1.0, 0.92, 0.78), dtype=np.float32) * (1.0 - base_side_mix)
-        + np.asarray((1.0, 0.42, 0.15), dtype=np.float32) * base_side_mix
-    )
-    color_variation = _low_frequency_noise(
-        work_shape,
-        field_rng,
-        max(2.0, float(max(work_shape)) * 0.12),
-    )
-    if work_shape != (height, width):
-        color_variation = cv2.resize(
-            color_variation,
-            (width, height),
-            interpolation=cv2.INTER_LINEAR,
-        ).astype(np.float32)
+    def add_leak(start, stop):
+        checkpoint()
+        variation = color_variation[start:stop]
+        work = np.empty_like(variation)
+        for c, (base, slope) in enumerate(((.85, .35), (1.08, -.16), (.78, .22))):
+            np.multiply(variation, slope, out=work)
+            work += base
+            work *= leak_map[start:stop]
+            work *= gains[c]
+            if edge_rgb is not None and vertical_edge:
+                edge_rgb[0, start:stop, c] = work[:, -1]
+                edge_rgb[1, start:stop, c] = work[:, 0]
+            elif edge_rgb is not None:
+                if start == 0:
+                    edge_rgb[0, :, c] = work[0]
+                if stop == height:
+                    edge_rgb[1, :, c] = work[-1]
+            np.add(image_linear[start:stop, :, c], work, out=leaked[start:stop, :, c])
+        np.clip(leaked[start:stop], 0., exposure_ceiling, out=leaked[start:stop])
 
-    # Apply the scalar exposure contribution channel-by-channel.  This keeps
-    # one output RGB frame plus scalar maps instead of a second full RGB color
-    # field, while preserving the exposure-side semantics.
-    leaked = image_linear.copy()
-    contribution = np.empty((height, width), dtype=np.float32)
-    np.multiply(leak_map, 0.85 + 0.35 * color_variation, out=contribution)
-    contribution *= float(leak_color[0] * 1.25)
-    leaked[..., 0] += contribution
-    np.multiply(leak_map, 1.08 - 0.16 * color_variation, out=contribution)
-    contribution *= float(leak_color[1] * 1.25)
-    leaked[..., 1] += contribution
-    np.multiply(leak_map, 0.78 + 0.22 * color_variation, out=contribution)
-    contribution *= float(leak_color[2] * 1.25)
-    leaked[..., 2] += contribution
-    return np.clip(leaked, 0.0, exposure_ceiling, out=leaked).astype(np.float32, copy=False), leak_map
+    run_rows(height, width, add_leak, chunk_pixels=131072)
+    return leaked, leak_map
 
 
 def apply_density_accident_components(
@@ -1055,6 +1028,8 @@ def apply_density_accident_components(
         deposit_sigma = max(2.0, float(max(work_shape)) * 0.075)
         deposit = _stain_deposit_map(work_shape, plating_rng, deposit_sigma)
         along_y = bool(plating_rng.integers(0, 2))
+        if recipe.incident_pattern_scope == "frame" and recipe.incident_frame_seed is not None and recipe.incident_identity_seed is not None:
+            along_y = bool(int(recipe.incident_identity_seed) & 1)
         streaks = _axis_streaks(
             work_shape,
             plating_rng,
@@ -1294,8 +1269,14 @@ def apply_exposure_occlusion_to_linear(
         ).astype(np.float32, copy=False)
         np.clip(occlusion, 0.0, 1.0, out=occlusion)
 
-    occluded = image_linear.copy()
-    occluded *= (1.0 - occlusion)[..., None]
+    occluded = np.empty_like(image_linear)
+
+    def attenuate(start, stop):
+        checkpoint()
+        np.multiply(image_linear[start:stop], (1.0 - occlusion[start:stop])[..., None],
+                    out=occluded[start:stop])
+
+    run_rows(height, width, attenuate, chunk_pixels=131072)
     return occluded, occlusion
 
 

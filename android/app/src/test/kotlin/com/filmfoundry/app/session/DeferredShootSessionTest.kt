@@ -54,16 +54,72 @@ class DeferredShootSessionTest {
         }
         Unit
     }
+    @Test fun jpegRawJpegOnOneRollKeepsEachSourceAndUsesItsOwnDecoder() = runBlocking {
+        val library=FilmLibrary()
+        library.loadRoll("switch",12,emptyMap())
+        val media=MediumStore(storage())
+        val captures=CaptureReceiptStore(root.toFile())
+        val dng=requireNotNull(javaClass.getResourceAsStream("/fixtures/synthetic_bayer.dng")).use { it.readBytes() }
+        val buffer=java.awt.image.BufferedImage(4,4,java.awt.image.BufferedImage.TYPE_INT_RGB)
+        for (y in 0..3) for (x in 0..3) buffer.setRGB(x,y,0x808080)
+        val jpeg=ByteArrayOutputStream().use { out ->
+            check(javax.imageio.ImageIO.write(buffer,"JPEG",out))
+            out.toByteArray()
+        }
+        val session=DeferredShootSession(library,media,captures,root.resolve("scratch").toFile(),openPixels={ file ->
+            if (file.extension=="dng") openStoredExposurePixels(file) else {
+                val image=javax.imageio.ImageIO.read(file)
+                object: StoredExposurePixels {
+                    override val width=image.width
+                    override val height=image.height
+                    override fun encodedRows(start: Int,count: Int)=FloatArray(count*width*3) { i ->
+                        ((image.getRGB(i/3%width,start+i/3/width) shr (16-i%3*8)) and 255)/255f
+                    }
+                    override fun close()=Unit
+                }
+            }
+        })
+        val formats=listOf("jpeg","raw","jpeg")
+        for (format in formats) {
+            val raw=format=="raw"
+            val kind=if (raw) CaptureKind.SENSOR_RAW_DNG else CaptureKind.DISPLAY_REFERRED_SRGB
+            assertEquals(if (raw) android.graphics.ImageFormat.RAW_SENSOR else android.graphics.ImageFormat.JPEG,
+                CameraOutputCatalog.streamFormat(format))
+            assertEquals(android.graphics.ImageFormat.YUV_420_888,CameraOutputCatalog.streamFormat(format,motion=true))
+            session.capture("switch",object: StoredStillCamera {
+                override fun sourceFileName()=if (raw) "source.dng" else "source.jpg"
+                override fun saveStill(target: File): StoredStillInfo {
+                    target.writeBytes(if (raw) dng else jpeg)
+                    return StoredStillInfo(4,4,CaptureRecord(kind,!raw,
+                        sourceEncoding=if(raw) "stored_sensor_dng_v2" else "iec61966_2_1_srgb"))
+                }
+            },advanceMode="auto")
+        }
+        session.seal("switch")
+        for ((index,format) in formats.withIndex()) {
+            val frame=index+1
+            val path=captures.path("switch",frame)
+            val original=captures.sourceFile(path,captures.read(path).sources.single())
+            session.prepareFrame("switch",frame)
+            val record=media.readLatent(cameraLatentPath("switch",frame)).metadata["capture"] as Map<*,*>
+            val raw=format=="raw"
+            assertEquals(if(raw) "sensor_raw_dng" else "display_referred_srgb",record["kind"])
+            assertEquals(if(raw) DngRawDecoder.BAYER_MODEL else "iec61966_2_1_srgb",record["source_encoding"])
+            assertArrayEquals(if(raw) dng else jpeg,original.readBytes())
+        }
+    }
+
     @Test fun rawIsSavedWithoutDecodingAndSharesTheExistingLatentFormationAndConditions() = runBlocking {
         val library=FilmLibrary();library.loadRoll("raw",12,emptyMap());var opened=0
         val rawCamera=object: StoredStillCamera {
             override fun sourceFileName()="source.dng"
-            override fun saveStill(target: File): StoredStillInfo { target.writeBytes(byteArrayOf(42));return StoredStillInfo(2,2,CaptureRecord(CaptureKind.SENSOR_RAW_DNG,false,sourceEncoding="stored_sensor_dng_v1",bitDepth=16)) }
+            override fun saveStill(target: File): StoredStillInfo { target.writeBytes(byteArrayOf(42));return StoredStillInfo(2,2,CaptureRecord(CaptureKind.SENSOR_RAW_DNG,false,sourceEncoding="stored_sensor_dng_v1")) }
         }
         val session=DeferredShootSession(library,MediumStore(storage()),CaptureReceiptStore(root.toFile()),root.resolve("scratch").toFile(),openPixels= { file ->
             assertEquals("source.dng",file.name);opened++
             object: StoredExposurePixels {
                 override val width=2;override val height=2
+                override fun decodedRawMetadata() = mapOf("source_encoding" to DngRawDecoder.LINEAR_MODEL,"bit_depth" to 16)
                 override fun encodedRows(start: Int,count: Int): FloatArray=error("RAW must not use sRGB")
                 override fun linearWindowRows(left: Int,top: Int,windowWidth: Int,count: Int,kind: CaptureKind): FloatArray { assertEquals(CaptureKind.SENSOR_RAW_DNG,kind);return FloatArray(windowWidth*count*3){2f} }
                 override fun close()=Unit
@@ -75,7 +131,8 @@ class DeferredShootSessionTest {
         val reference=DefaultWorkflowFacade().run(WorkflowRequests.expose("ref.darkroom_latent.npz",emptyMap(),2,2,FloatArray(12){2f})).requireLatentArchive()
         for((key,array) in reference.arrays) assertArrayEquals(array.values,latent.arrays.getValue(key).values,0f)
         val capture=latent.metadata["capture"] as Map<*,*>
-        assertEquals("sensor_raw_dng",capture["kind"]);assertEquals(false,capture["isp_processed"]);assertEquals(DngRawDecoder.MODEL,capture["source_encoding"])
+        assertEquals("sensor_raw_dng",capture["kind"]);assertEquals(false,capture["isp_processed"]);assertEquals(DngRawDecoder.LINEAR_MODEL,capture["source_encoding"])
+        assertEquals(16,(capture["bit_depth"] as Number).toInt())
         assertArrayEquals(byteArrayOf(42),root.resolve("raw/frame_01.capture/exposure_000001/source.dng").toFile().readBytes())
         Unit
     }

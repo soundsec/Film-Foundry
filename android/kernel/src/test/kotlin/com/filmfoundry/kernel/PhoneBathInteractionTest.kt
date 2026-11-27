@@ -10,6 +10,59 @@ class PhoneBathInteractionTest {
     private val film=mapOf<String,Any?>("grain_strength" to .04,"grain_scales" to listOf(.004,.02,.06),"grain_scale_weights" to listOf(.7,.22,.08),
         "cross_process_layer_balance" to listOf(.7,1.15,.9),"cross_process_dye_coupling" to .8,"cross_process_dye_stability" to .85)
     private fun recipe(develop: Map<String,Any?>,stock: Map<String,Any?> = film)=mapOf("film" to stock,"develop" to (mapOf("program_key" to "auto")+develop),PhoneProcessModels.OPTION to PhoneProcessModels.CURRENT)
+    @Test fun bathDoseDevelopsFogAndChangesContrastOnTheSameLatent() {
+        val wedge=floatArrayOf(.016f,.18f,1f)
+        val frame=RgbVolume(3,1,linearRgb=FloatArray(9) { wedge[it/3] })
+        for(profile in listOf(PhoneFormationProfile.STOCK_LIGHTWEIGHT,PhoneFormationProfile.LIGHTWEIGHT,
+            PhoneFormationProfile.PREVIOUS_STOCK_DETAILED,PhoneFormationProfile.STOCK_DETAILED)) {
+            val base=recipe(emptyMap(),emptyMap())+(PhoneFormationProfile.OPTION to profile)
+            val latent=kernel.expose(frame,base)
+            fun optical(minutes: Int)=kernel.develop(latent,base+("develop" to
+                mapOf("program_key" to "color_negative","time_min" to minutes))).opticalDensityRgb.values
+            val normal=optical(8);val long=optical(16)
+            if(PhoneFormationProfile.hasBathDose(profile)) {
+                assertTrue(long[0]<normal[0],"longer development increases shadow separation")
+                assertTrue(long[6]>=normal[6],"bright exposure must not lose density from an unpivoted gamma")
+            } else assertArrayEquals(normal,long,0f)
+        }
+        fun program(susceptibility: Double)=PhoneProcessProgram.from(mapOf("program_key" to "color_reversal",
+            "time_min" to 16,"compensation" to .4),true,true,mapOf("chemical_fog_susceptibility" to susceptibility),true,true,true,true)!!
+        val short=PhoneProcessProgram.from(mapOf("program_key" to "color_negative","time_min" to 4),
+            true,false,interactive=true,doseResponse=true)!!.record()["effective_fractions"] as List<*>
+        assertTrue((short[0] as Float) < 1f);assertEquals(listOf(1f,1f,1f),short.drop(1))
+        val retained=PhoneProcessProgram.from(mapOf("program_key" to "color_negative","silver_bleach_completion" to 0.0),
+            true,false,interactive=true,doseResponse=true)!!
+        assertTrue("metallic_silver" in retained.imageComponents(true))
+        assertFalse("metallic_silver" in PhoneProcessProgram.from(mapOf("program_key" to "color_negative"),
+            true,false,interactive=true,doseResponse=true)!!.imageComponents(true))
+        val record=program(1.0).record()
+        assertEquals(1f,(record["effective_gamma"] as List<*>)[2])
+        assertEquals(0f,(record["effective_compensation"] as List<*>)[2])
+        fun firstFog(s: Double): Float {
+            val projection=PhoneProcessProgram.Projection()
+            program(s).apply(PhoneProcessProgram.Pools(1f,0f,0f,1f,0f,0f),true,1f,projection=projection)
+            return projection.firstSilver
+        }
+        assertEquals(0f,firstFog(0.0));assertTrue(firstFog(1.0)>0f)
+    }
+
+    @Test fun stockCurveReproducesDesktopLatentWedgeOnNewRolls() {
+        val stock = mapOf("hd_gamma" to List(3) { .72 }, "density_min" to List(3) { .08 },
+            "density_max" to List(3) { 1.88 }, "log_exposure_toe" to List(3) { -2.2 },
+            "log_exposure_shoulder" to List(3) { .5 }, "hd_toe_width" to .17, "hd_shoulder_width" to .24,
+            "layer_sensitivity_matrix" to List(3) { y -> List(3) { x -> if (x == y) 1.0 else 0.0 } })
+        val wedge = floatArrayOf(0f, .016f, .18f, 1f, 2f)
+        val frame = RgbVolume(wedge.size, 1, linearRgb=FloatArray(wedge.size * 3) { wedge[it / 3] })
+        val common = recipe(emptyMap(), stock)
+        // Clear Modern Negative, measured at the desktop material.expose() boundary.
+        val reference = floatArrayOf(0f, .16767663f, .58158672f, .86873454f, .96564215f)
+        for (profile in listOf(PhoneFormationProfile.LIGHTWEIGHT, PhoneFormationProfile.STOCK_DETAILED)) {
+            val latent = kernel.expose(frame, common + (PhoneFormationProfile.OPTION to profile))
+            assertEquals("phone_stock_hd_v1", latent.metadata["phone_layer_response"])
+            val actual = latent.arrays.getValue("developability").values
+            for (i in actual.indices) assertEquals(reference[i / 3], actual[i], 1e-5f)
+        }
+    }
     @Test fun crossedStockAndDeveloperChangeMaterialPoolsAndGrainWhileObservationStaysReadOnly() {
         val latent=kernel.expose(pixels,mapOf("film" to film));val before=latent.arrays.mapValues { it.value.values.copyOf() }
         val native=kernel.develop(latent,recipe(emptyMap()));val cross=kernel.develop(latent,recipe(mapOf("chemistry" to "cross")))

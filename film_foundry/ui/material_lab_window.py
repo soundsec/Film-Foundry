@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 from film_foundry.app.preview_budget import Priority, preview_budget
 from film_foundry.app.material_lab_session import MaterialLabSession
+from film_foundry.app.material_reference import PLATE_VIEW_ANGLE
 from film_foundry.core.material_family import ViewingConditions
 from film_foundry.ui.qt import QtCore,QtGui,QtWidgets,_application
 from film_foundry.ui.image_view import ImageView
@@ -31,6 +32,8 @@ PARAMETERS={"fixing_seconds":("定影时间尺度 s","Fixing time scale s",.1,72
     "neutralization_delay_seconds":("中和延迟 s","Neutralization delay s",0,86400),
     "neutralization_seconds":("中和释放时间 s","Acid release time s",.1,86400),
     "interlayer_adhesion":("片间粘附","Interlayer adhesion",0,1),
+    "peel_travel_fraction":("有效揭片行程比例","Fraction of peel travel",0,1),
+    "iodized_response":("碘化银蓝敏响应比例","Iodized blue response fraction",0,1),
     "receiver_cohesion":("接收层内聚强度","Receiver cohesion",0,1),
     "donor_cohesion":("供体层内聚强度","Donor cohesion",0,1),
     "separation_variation":("局部强度差异","Local strength variation",0,1),
@@ -56,6 +59,7 @@ PARAMETERS={"fixing_seconds":("定影时间尺度 s","Fixing time scale s",.1,72
 
 class _Signals(QtCore.QObject):
     done=QtCore.Signal(object,object,str)
+    step=QtCore.Signal(int,int,str)
 
 
 class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
@@ -68,6 +72,7 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         self.busy=False;self._closing=False;self.last_error=None
         self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix="material-"+kind)
         self.signals=_Signals(self);self.signals.done.connect(self._completed)
+        self.signals.step.connect(self._show_standard_step, QtCore.Qt.ConnectionType.QueuedConnection)
         self.setWindowTitle("Film Foundry · "+text(*TITLES[kind]));self.resize(1160,800)
         self.setMinimumSize(780,560)
         root=QtWidgets.QWidget();self.setCentralWidget(root);layout=QtWidgets.QVBoxLayout(root)
@@ -159,6 +164,8 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
             ("scratches","局部划伤","Scratches"),("pitting","表面蚀斑","Surface pits"),("edge_tarnish","边缘变色","Edge tarnish"))
         for key,zh,en in defect_parameters:self.defect_controls[key]=self._number(form,text(zh,en),0,0,1)
         if kind=="integral":
+            self.defect_controls["shield_seconds"]=self._number(form,text("出片后完全遮光 s","Initial full shielding s"),0,0,86400)
+            self.defect_controls["shield_seconds"].setToolTip(text("时限内完全遮光，随后按下方显影避光与环境光继续处理。","Fully shield until this time, then use the selected protection and ambient light."))
             self.defect_controls["light_protection"]=self._number(form,text("显影避光（1=充分）","Light protection (1=full)"),1,0,1)
             self.defect_controls["ambient_light"]=self._number(form,text("环境光（1=参考亮度）","Ambient light (1=reference)"),1,0,10)
             self.defect_controls["solar_warming"]=self._number(form,text("日晒额外升温 °C","Additional solar warming °C"),0,0,30)
@@ -266,7 +273,7 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         if kind!="plate":form.addRow(text("输出样式","Output style"),self.border_choice)
         self.view_angle=self.light_angle=self.background=None
         if kind=="plate":
-            self.view_angle=viewing_control(second_form,text("观看倾角 °","View tilt °"),25,-85,85)
+            self.view_angle=viewing_control(second_form,text("观看倾角 °","View tilt °"),PLATE_VIEW_ANGLE,-85,85)
             self.light_angle=viewing_control(form,text("光源倾角 °","Light tilt °"),0,-85,85)
             self.background=viewing_control(second_form,text("背景亮度","Background level"),.02,0,1)
         self.left.addStretch()
@@ -531,6 +538,8 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
             self.shortage_enabled.setEnabled(allowed)
             self.shortage_strength.setEnabled(allowed and self.shortage_enabled.isChecked())
             self.process_controls['reagent_load'].setEnabled(allowed and not self.shortage_enabled.isChecked())
+            if self.kind == 'integral':
+                self.defect_controls['shield_seconds'].setEnabled(allowed)
             from film_foundry.core.transfer_inventory import MATERIAL_LIMITS
             for key in MATERIAL_LIMITS:self.material_controls[key].setEnabled(editable and finite)
             if self.kind=='integral':self.material_controls['stabilization_seconds'].setEnabled(editable and not finite)
@@ -608,6 +617,8 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         elif operation in ("advance","develop"):params={"seconds":self.seconds.value()}
         elif operation=="spread":
             params={k:c.value() for k,c in self.process_controls.items()}|{"direction":self.direction.currentData()}|{k:c.value() for k,c in self.defect_controls.items()}
+            if self.kind == 'integral' and self.session.state is not None and self.session.state.schema_version < 4:
+                params.pop('shield_seconds', None)
             if self.session.state is not None and self.session.state.schema_version<(5 if self.kind=='peel' else 4):params.pop('reagent_load',None)
             elif self.shortage_enabled.isChecked():
                 from film_foundry.app.transfer_intent import reagent_shortage_parameters
@@ -626,6 +637,31 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         params=self._operation_parameters(operation);seed=int(self.seed.value())
         return self._submit(lambda:self.session.process(operation,params,material,seed),text(*OPERATIONS[operation]),body_index=1 if operation=="clear_negative" or params.get('target')=='donor' else 0)
 
+    def _standard_stages(self):
+        return self.workflow.flow_buttons
+
+    @QtCore.Slot(int, int, str)
+    def _show_standard_step(self, index, total, operation):
+        if not self.busy:
+            return
+        name = text(*self.inspector.labels[operation]) if operation else ''
+        for button, operations in self._standard_stages():
+            active = operation in operations
+            visited = button.visited or (button.running and not active)
+            status = text('处理中','Running') if active else text('已执行','Completed') if visited else text('未到达','Upcoming')
+            button.setChecked(active)
+            button.set_stage(button.stage_title, status, visited=visited, running=active)
+            if active and len(operations) == 1:
+                name = button.stage_title
+        if hasattr(self, 'source_preview_badge'):
+            self.source_preview_badge.setText(text('来源预览','Source preview'))
+            self.source_preview_badge.adjustSize()
+        self.status.setText(f'{index}/{total}  {name}' if operation else text('生成观察图…','Rendering view…'))
+
+    def _run_standard_steps(self, material, seed, overrides):
+        self.session.run_standard(material, seed, overrides, on_step=self.signals.step.emit)
+        self.signals.step.emit(0, 0, '')
+
     def run_standard(self):
         if self.busy or self.session.state is not None or self.session.group is not None or self.session.image is None:return False
         if not self.processing_bar.source_ready():return False
@@ -633,7 +669,7 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
         material={k:c.currentData() if isinstance(c,QtWidgets.QComboBox) else c.value() for k,c in self.material_controls.items()}
         steps=reference_operations(self.kind,self.session.module,self.session.material_type(**material))
         overrides={op:self._operation_parameters(op) for op,_ in steps};seed=int(self.seed.value())
-        return self._submit(lambda:self.session.run_standard(material,seed,overrides),text('执行标准步骤…','Running reference steps…'),body_index=0)
+        return self._submit(lambda:self._run_standard_steps(material,seed,overrides),text('执行标准步骤…','Running reference steps…'),body_index=0)
 
     def request_preview(self,*_):
         if getattr(self,'_test_strip_dialog',None) is not None:return
@@ -706,6 +742,7 @@ class MaterialLabWindow(MaterialDeliveryMixin, QtWidgets.QMainWindow):
     def open_image_dialog(self):
         path,_=QtWidgets.QFileDialog.getOpenFileName(self,text("打开图像","Open image"),"","Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp *.dng)")
         if not path:return
+        self.dng_note.offer([path])
         preserve=self.kind=="plate" and self.session.state is not None and self.session.state.stage in ("blank","polished","sensitized")
         size=self.work_size.value()
         self.replace_work(lambda:self._submit(lambda:self.session.open_image(path,size,preserve),text("读取图像…","Reading image…"),body_index=0),preserve=preserve)

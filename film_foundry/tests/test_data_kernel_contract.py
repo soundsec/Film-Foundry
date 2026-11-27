@@ -142,18 +142,10 @@ def test_developed_medium_metadata_emits_optional_frame_identity():
 
 
 def test_execution_implementation_keys_match_plan_dict():
-    from film_foundry.core.implementation_plan import ImplementationPlan
+    from film_foundry.core.implementation_plan import resolve_implementation_plan
+    from film_foundry.model.config import DarkroomConfig
 
-    plan = ImplementationPlan(
-        execution_mode="quality",
-        scaling_enabled=False,
-        quality_mode="standard",
-        profile_id="canonical_full_v1",
-        lower_order_enabled=False,
-        emulsion_mtf_model="adaptive_dual_psf_v1",
-        emulsion_grain_model="multiscale_layer_density_v1",
-        halation_source_model="scattered_peak_area_v1",
-    )
+    plan = resolve_implementation_plan(DarkroomConfig())
     assert tuple(plan.as_dict()) == data_kernel.EXECUTION_IMPLEMENTATION_KEYS
 
 
@@ -220,7 +212,7 @@ def test_config_share_catalog_constants_are_exported():
     assert data_kernel.CONFIG_SHARE_KIND == "film_foundry_config_share"
     assert data_kernel.CONFIG_SHARE_VERSION == 2
     assert data_kernel.CONFIG_SHARE_PREFIX == "FFC2:"
-    assert data_kernel.CONFIG_SHARE_FIELDS[0:3] == ("film", "develop", "scanner")
+    assert {"film","exposure","develop","scanner"} <= set(data_kernel.CONFIG_SHARE_FIELDS)
     assert "look" in data_kernel.CONFIG_SHARE_FIELDS
     assert contracts.CONFIG_SHARE_PREFIX == data_kernel.CONFIG_SHARE_PREFIX
     assert "share-config" not in data_kernel.WORKFLOW_COMMANDS
@@ -363,3 +355,39 @@ def test_phone_observe_gallery_catalog_is_scanner_commit_only():
     assert data_kernel.PHONE_CAMERAX_STILL_USE_CASES[0] not in data_kernel.CAPTURE_KIND_VALUES
     assert contracts.PHONE_MEDIASTORE_COLLECTION == data_kernel.PHONE_MEDIASTORE_COLLECTION
     assert "image_capture" not in data_kernel.CAPTURE_KIND_VALUES
+
+
+def test_shared_material_state_fields_match_desktop_exposure():
+    from film_foundry.core import (peel_apart, integral_instant, silver_plate,
+        photographic_paper, wet_plate, cyanotype, platinum_palladium)
+
+    catalog = json.loads(Path(data_kernel.__file__).with_name("material_state_fields.json").read_text())
+    assert catalog["film_latent"] == {
+        "required": list(data_kernel.LATENT_REQUIRED_ARRAY_KEYS),
+        "optional": list(data_kernel.LATENT_OPTIONAL_ARRAY_KEYS),
+        "scalars": list(data_kernel.LATENT_SCALAR_FIELDS),
+    }
+    families = (peel_apart, integral_instant, silver_plate, photographic_paper,
+                wet_plate, cyanotype, platinum_palladium)
+    specs = catalog["material_families"]
+    terms = {key for keys in catalog["film_latent"].values() for key in keys}
+    terms.update(key for spec in specs.values() for group in ("scalar", "rgb", "layers")
+                 for key in spec.get(group, []))
+    for version, names in catalog["desktop_state_additions"][wet_plate.FAMILY].items():
+        fields = wet_plate.WetPlateState.FIELD_VERSIONS
+        assert set(names) == fields[int(version)].keys() - fields[int(version)-1].keys()
+        terms.update(names)
+    assert set(catalog["terms"]) == terms and all(catalog["terms"].values())
+    assert set(specs) == {family.FAMILY for family in families}
+    image = np.full((6, 8, 3), .2, dtype=np.float32)
+    for family in families:
+        spec = specs[family.FAMILY]
+        material_type = {peel_apart: peel_apart.PeelMaterial,
+                         integral_instant: integral_instant.InstantMaterial}.get(family)
+        for layers in ((1, 3) if material_type else (3,)):
+            options = {"material": material_type(transfer="silver_compound" if layers == 1 else "dye")} if material_type else {}
+            state = family.expose(image, group_id="contract", schema_version=spec["schema_version"], **options)
+            expected = {key: (6, 8) + tail
+                        for group, tail in (("scalar", ()), ("rgb", (3,)), ("layers", (layers,)))
+                        for key in spec.get(group, [])}
+            assert {key: array.shape for key, array in state.fields.items()} == expected, family.FAMILY

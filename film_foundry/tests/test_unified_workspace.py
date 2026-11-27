@@ -136,7 +136,7 @@ def test_light_table_close_waits_for_export(panel, tmp_path, monkeypatch):
     from film_foundry.app import film_observation
     monkeypatch.setattr(RollLightTable, 'observe', lambda *_args, **_kwargs: np.zeros((8, 12, 3), np.float32))
     page = RollLightTableDialog(medium_path=tmp_path/'medium.npz')
-    panel._present_workspace_dialog(page)
+    panel._present_workspace_dialog(page, key="light-table:export")
     wait(lambda: page.view_valid)
     gate = Event();target = tmp_path/'export.png'
     monkeypatch.setattr(QtWidgets.QFileDialog, 'getSaveFileName', lambda *_: (str(target), 'PNG'))
@@ -165,12 +165,12 @@ def test_roll_recipe_draft_cannot_thaw_started_roll(panel, tmp_path, monkeypatch
     monkeypatch.setattr(electronic_roll, 'RollSession', lambda _: session)
     panel.open_roll_workspace()
     panel._configure_roll(session)
-    draft = panel.workspace_host.currentWidget()
-    assert not draft.isWindow()
+    draft = panel.find_configuration_dialog('roll-recipe:' + str(session.path))
+    assert draft is not None
     draft.controls['temperature_c'].setValue(27)
     panel.open_library();panel._configure_roll(session)
-    assert panel.workspace_host.currentWidget() is draft
+    assert panel.find_configuration_dialog('roll-recipe:' + str(session.path)) is draft
     session.data['phase'] = 'developing'
     draft.apply()
     assert not session.saved and 'recipe_draft' not in session.data
-    assert panel.workspace_host.indexOf(draft) == -1
+    assert panel.find_configuration_dialog('roll-recipe:' + str(session.path)) is None

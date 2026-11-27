@@ -1,15 +1,15 @@
 """Family-specific workspace presentation; no processing formulas or defaults."""
 SECTIONS={
- 'wet':(('片基与银像','Support & silver',('support','particle_reflectance','base_transmission','maximum_density','external_silver_load','physical_development_seconds')),
-        ('倒膜与缺陷','Pour & defects',('pour_direction','flow_ridges','edge_pooling','pinholes','coating_variation','edge_loss','texture')),
+ 'wet':(('片基与银像','Support & silver',('support','exposure_response','particle_reflectance','base_transmission','maximum_density','external_silver_load','physical_development_seconds')),
+        ('倒膜与缺陷','Pour & defects',('pour_direction','film_retraction','pour_rest_seconds','flow_ridges','edge_pooling','pinholes','coating_variation','edge_loss','texture')),
         ('湿度与时机','Wetness & timing',('humidity','drying_seconds','exposure_delay_s','wetting_seconds','drying_lock_strength')),
         ('加银增强','Silver intensification',('enhancement_seconds','enhancement_nucleation'))),
  'cyanotype':(('纸与刷涂','Paper & brushing',('brush_direction','brush_overlap','coating_variation','edge_loss','texture','paper_reflectance')),
              ('颜料与水洗','Pigment & washing',('pigment_binding','paper_buffer','oxidation_seconds','alkali_susceptibility','humidity'))),
- 'platinum':(('金属与影调','Metals & tone',('platinum_fraction','maximum_density','response_contrast','half_exposure')),
+ 'platinum':(('金属与影调','Metals & tone',('platinum_fraction','printout_strength','maximum_density','response_contrast','half_exposure')),
              ('纸与上药','Paper & coating',('coating_method','paper_sizing','texture','coating_variation','edge_loss','paper_reflectance')),
              ('湿度与清除','Humidity & clearing',('humidity','clearing_seconds','sensitizer_remaining'))),
- 'paper':(('乳剂与纸基','Emulsion & paper',('kind','paper_reflectance','warmth','maximum_density')),
+ 'paper':(('乳剂与纸基','Emulsion & paper',('kind','preflash_dose','paper_reflectance','warmth','maximum_density')),
           ('表面与老化','Surface & aging',('coating_variation','edge_loss','texture','fog_level','sensitivity_remaining','wash_seconds')))}
 V2_KEYS={'wet':('pour_direction','flow_ridges','edge_pooling','pinholes'),
          'cyanotype':('brush_direction','brush_overlap','pigment_binding','paper_buffer'),
@@ -19,7 +19,7 @@ for kind in ('paper','cyanotype','platinum'):
     SECTIONS[kind]+= (('纸基与湿干','Paper & moisture',PAPER_KEYS),)
 for kind in SECTIONS:
     SECTIONS[kind]+=(('材料尺度','Material scale',('structure_model','material_long_edge_mm','texture_scale_mm','process_scale_mm')),)
-WORKFLOWS={'wet':('prepare','sensitize','expose','develop','fix','wash','dry','varnish'),
+WORKFLOWS={'wet':('prepare','sensitize','tilt','expose','develop','fix','wash','dry','varnish'),
            'cyanotype':('expose','wash','oxidize','dry'),'platinum':('expose','develop','clear','wash','dry'),
            'paper':('expose','develop','fix','wash','dry')}
 STEP_NAMES={'wet':{'prepare':('倒膜','Pour'),'sensitize':('银浴','Silver bath'),'expose':('湿态曝光','Wet exposure'),'develop':('倾注显影','Pour developer'),'dry':('干燥','Dry'),'varnish':('上清漆','Varnish')},

@@ -48,6 +48,9 @@ class MaterialSnapshot:
     def __post_init__(self):
         if not isinstance(self.film, Mapping):
             raise ValueError("material snapshot film must be an object")
+        if self.film.get("coating_stack") is not None:
+            from .coating_stack import validate_stack
+            object.__setattr__(self, "film", {**self.film, "coating_stack": validate_stack(_thaw(self.film["coating_stack"]))})
         film = _freeze(self.film)
         if len(json.dumps(_thaw(film), ensure_ascii=False).encode("utf-8")) > 262144:
             raise ValueError("material snapshot is too large")

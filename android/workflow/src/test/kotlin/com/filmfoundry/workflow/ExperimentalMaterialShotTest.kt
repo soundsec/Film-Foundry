@@ -5,8 +5,9 @@ import org.junit.jupiter.api.Test
 
 class ExperimentalMaterialShotTest {
     @Test fun easterEggCodeIsExactAndTheEntryStaysHidden() {
-        assertTrue(ExperimentalMaterialAccess.matches("  ffc2:open-materials \n"))
-        assertFalse(ExperimentalMaterialAccess.matches("FFC2:OPEN-MATERIAL"))
+        assertTrue(ExperimentalMaterialAccess.matches("  filmfoundry \n"))
+        assertFalse(ExperimentalMaterialAccess.matches("FFC2:OPEN-MATERIALS"))
+        assertFalse(ExperimentalMaterialAccess.matches("FILMFOUNDARY"))
         assertFalse(ExperimentalMaterialAccess.visible(developmentPath = false, unlocked = false))
         assertTrue(ExperimentalMaterialAccess.visible(developmentPath = true, unlocked = false))
         assertTrue(ExperimentalMaterialAccess.visible(developmentPath = false, unlocked = true))

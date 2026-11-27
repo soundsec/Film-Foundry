@@ -7,7 +7,7 @@ from copy import deepcopy
 import math
 import numpy as np
 from film_foundry.contracts.effect_intent import validate_effect_intent,EFFECTS
-from film_foundry.contracts.process_events import EVENT_MODEL_V5,EVENT_MODEL_V6,EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,validate_process_events,validate_process_response
+from film_foundry.contracts.process_events import EVENT_MODEL_V5,EVENT_MODEL_V6,EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,EVENT_MODEL_V16,validate_process_events,validate_process_response
 
 
 def compile_effect_intent(config,shape=(512,512)):
@@ -32,7 +32,10 @@ def compile_effect_intent(config,shape=(512,512)):
     events=deepcopy(prior['events'] if prior else [])
     generated=[];amounts=intent['amounts'];response=validate_process_response(result.film.process_response)
     seed=int(recipe.incident_identity_seed if recipe.incident_identity_seed is not None else result.random_seed or 0)%2147483647
-    def spread(offset):return {'distribution_variation':1.,'distribution_scale_mm':2.,'distribution_seed':(seed+offset)%2147483647}
+    from .incident_identity import local_incident_seed
+    def spread(offset, *, local=False):
+        scope = local_incident_seed(recipe, seed) if local else seed
+        return {'distribution_variation':1.,'distribution_scale_mm':2.,'distribution_seed':(scope+offset)%2147483647}
     if amounts['uneven_development']:
         bath=next((i+1 for i,row in enumerate(rows) if row['action'] in ('develop_silver','develop_color')),None)
         if bath is None:raise ValueError('Uneven development needs a developing bath')
@@ -69,7 +72,7 @@ def compile_effect_intent(config,shape=(512,512)):
         temperature=history['final_temperature_c'];wet=history['wet_seconds'];hardening=history['final_hardening_fraction']
     if amounts['chemical_stain']:
         mass=20.*amounts['chemical_stain']
-        generated.append({'kind':'contaminate','concentration_mg_l':mass*50,'retained_ml_m2':20.,'contact_s':0.,'radius_mm':0.,**spread(23)})
+        generated.append({'kind':'contaminate','concentration_mg_l':mass*50,'retained_ml_m2':20.,'contact_s':0.,'radius_mm':0.,**spread(23, local=True)})
         audit['targets']['residue_mg_m2']=mass
     if amounts['silver_plating']:
         fraction=-math.expm1(-response['silver_reduction_l_mmol_s']*2.*120.*2**((temperature-20)/20))
@@ -78,7 +81,7 @@ def compile_effect_intent(config,shape=(512,512)):
         audit['targets']['surface_silver_mg_m2']=mass
         if fraction>0:
             generated.append({'kind':'silver_bath','silver_mg_l':mass/(.1*fraction),'solution_ml_m2':100.,'reducer_mmol_l':2.,
-                'duration_s':120.,'temperature_c':temperature,'transfer_s':0.,'radius_mm':0.,**spread(37)})
+                'duration_s':120.,'temperature_c':temperature,'transfer_s':0.,'radius_mm':0.,**spread(37, local=True)})
             wet+=120.
         else:audit['targets']['silver_unreachable']='Material reduction response is zero'
     if amounts.get('dye_damage_strength',0.):
@@ -108,7 +111,7 @@ def compile_effect_intent(config,shape=(512,512)):
     # Existing explicit operations retain their order; synthesized after-bath
     # effects occur last. Before-bath inhibitor is scheduled by its bath identity.
     model=EVENT_MODEL_V6 if any(e['kind']=='dye_bath' for e in events+generated) or prior and prior['model']==EVENT_MODEL_V6 else EVENT_MODEL_V5
-    if prior and prior['model'] in (EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):model=prior['model']
+    if prior and prior['model'] in (EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,EVENT_MODEL_V16):model=prior['model']
     recipe.process_events=validate_process_events({'model':model,'events':events+generated})
     audit['generated_events']=deepcopy(recipe.process_events['events'][len(events):])
     return result,audit

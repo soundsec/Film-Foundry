@@ -59,11 +59,6 @@ for group, items in definitions.items():
         recipe = {section: {k: v for k, v in raw.items() if k in allowed[section]}}
         if args.catalog_only and key in previous:
             recipe = previous[key]["recipe"]
-        if section == 'scanner':
-            # Bound reciprocal negative signals before optional black/white normalization.
-            # Curves retain each style; old saved/custom maps are not rewritten.
-            recipe[section]['print_mapping_mode'] = 'sigmoid'
-            recipe[section]['scan_normalize_strength'] = 1.0
         entries.append(dict(id=key, label_zh=zh, label_en=en, source=source.as_posix(), recipe=recipe))
     if args.catalog_only:
         entries += [entry for key,entry in previous.items() if key not in {e[0] for e in items}]
@@ -85,7 +80,7 @@ if args.catalog_only:
     known={item[0] for item in definitions['materials']}
     output['daily_material_ids'] += [entry['id'] for entry in output['materials'] if entry['id'] not in known]
 if not args.catalog_only and not args.scanners_only:
-    output['revision']='phone_reduced_materials_v3'
+    output['revision']='phone_reduced_materials_v4'
 
 # Embedded creative materials must follow the same catalog as newly loaded rolls.
 pair_path=destination.parent/'phone_creative_pairings.json'

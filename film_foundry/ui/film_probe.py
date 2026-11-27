@@ -28,7 +28,8 @@ class ExposurePlot(QtWidgets.QWidget):
             p.drawText(plot,QtCore.Qt.AlignmentFlag.AlignCenter,text('等待有完整逐层曝光记录的照片预览','Waiting for measured layer exposures'))
             return
         for i,counts in enumerate(probe.bins):
-            colour=QtGui.QColor(('#349ba9','#c35c9c','#c29532')[i] if len(probe.bins)>1 else '#888888')
+            colour=(QtGui.QColor.fromHsv((i*137+185)%360,155,200) if len(probe.bins)>3 else
+                    QtGui.QColor(('#349ba9','#c35c9c','#c29532')[i] if len(probe.bins)>1 else '#888888'))
             p.setPen(colour)
             p.drawText(plot.right()-32*(len(probe.bins)-i),plot.top()+18, f"L{i+1}")
             p.setPen(QtGui.QPen(colour,1))

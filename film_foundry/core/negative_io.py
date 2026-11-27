@@ -146,6 +146,17 @@ def _read_developed_medium_metadata_from_npz(path: Path) -> dict[str, Any]:
         raise ValueError(f"{path} 中的 developed_medium_metadata 不是有效 JSON：{exc}") from exc
 
 
+def has_formed_film_rebate(path: Path) -> bool:
+    """Check the selected archive's gate geometry without loading its pixels."""
+    from film_foundry.contracts.data_kernel import FORMED_FILM_REBATE_KEY
+
+    descriptor = _read_developed_medium_metadata_from_npz(path)
+    if not descriptor and path.with_suffix(path.suffix + ".json").is_file():
+        # Legacy archives can carry their entire material descriptor in the sidecar.
+        _, descriptor, _ = _load_medium_metadata(path)
+    return bool(descriptor.get(FORMED_FILM_REBATE_KEY))
+
+
 def _metadata_kwargs(payload: dict[str, Any], path: Path) -> dict[str, Any]:
     keys = {
         "medium_family",

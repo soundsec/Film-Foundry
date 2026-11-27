@@ -9,9 +9,23 @@ import androidx.activity.ComponentActivity
 import com.filmfoundry.platform.NativeCameraCatalog
 import com.filmfoundry.platform.NativeCaptureSettings
 
+internal fun captureFormats(lens: NativeCameraCatalog.Lens?, motion: Boolean): List<String> = buildList {
+    add("jpeg")
+    if (!motion && lens != null) {
+        if (lens.ultraHdr) add("ultra_hdr")
+        if (lens.rawCapture) add("raw")
+    }
+}
+
+internal fun captureFormatLabel(format: String) = when (format) {
+    "raw" -> "RAW / DNG"
+    "ultra_hdr" -> "Ultra HDR"
+    else -> "JPEG"
+}
+
 /** Device controls stay separate from film defects and processing recipes. */
 fun showNativeCameraDialog(activity: ComponentActivity,shell: MobileShell,lenses: List<NativeCameraCatalog.Lens>,
-    selected: NativeCameraCatalog.Lens,settings: NativeCaptureSettings,shooting: Boolean=false,isoUnlocked: Boolean=false,
+    selected: NativeCameraCatalog.Lens,settings: NativeCaptureSettings,shooting: Boolean=false,isoUnlocked: Boolean=false,motion: Boolean=false,
     apply: (NativeCameraCatalog.Lens,NativeCaptureSettings,Boolean)->Unit) {
     fun text(zh: String,en: String)=shell.copy(zh,en)
     val panel=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;setPadding(shell.dp(16),shell.dp(8),shell.dp(16),shell.dp(16)) }
@@ -34,9 +48,9 @@ fun showNativeCameraDialog(activity: ComponentActivity,shell: MobileShell,lenses
             if(!enabled) { it.visibility=View.GONE;shell.note(target,"$zh · 本镜头不支持","$en · unavailable on this lens") }
         }
         fun number(zh: String,en: String,value: String)=EditText(activity).also { it.inputType=InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL;it.setText(value);shell.field(target,it,text(zh,en),resettable=false) }
-        val formats=listOf("jpeg")+(if(lens.ultraHdr) listOf("ultra_hdr") else emptyList())+(if(lens.rawCapture) listOf("raw") else emptyList())
-        val format=spinner("采集格式","Capture format",formats.map { when(it) { "raw"->"RAW / DNG";"ultra_hdr"->"Ultra HDR";else->"JPEG" } }).apply { setSelection(formats.indexOf(initial.format).coerceAtLeast(0)) }
-        shell.note(body,"RAW 保留传感器原片，冲洗时再解码；仅支持已实现的未压缩 Bayer DNG。需装填相机原生精度或匹配 RAW 尺寸的静照卷，未知格式保留原片并提示。","RAW retains the sensor file for deferred development. The current decoder supports uncompressed Bayer DNG. Use native or RAW-compatible still resolution; unsupported files remain retained.")
+        val formats=captureFormats(lens,motion)
+        val format=spinner("采集格式","Capture format",formats.map(::captureFormatLabel)).apply { setSelection(formats.indexOf(initial.format).coerceAtLeast(0)) }
+        shell.note(body,"RAW 保留传感器原片，冲洗时再解码；支持未压缩 8／16 位 Bayer 和三通道交错 LinearRaw DNG。需装填相机原生精度或匹配 RAW 尺寸的静照卷，已入卷的原片可单独导出。","RAW retains the sensor file for deferred development. The decoder reads uncompressed 8/16-bit Bayer and interleaved three-channel LinearRaw DNG. Use native or RAW-compatible still resolution; saved originals can be exported separately.")
         shell.note(body,"Ultra HDR 保留原文件，形成潜影时恢复增益图高光；目前支持 sRGB 基图。缺少增益图或不支持的色彩空间会提示，原片保留。它不是 RAW，也不是应用内多帧 HDR 合成；扫描输出仍为普通照片。","Ultra HDR keeps the original and reconstructs gain-map highlights during latent formation; sRGB base images are supported. Missing gain maps or unsupported color spaces are reported while originals are kept. This is neither RAW nor in-app HDR bracketing; scans remain standard photos.")
         val flashAvailable=chars.get(C.FLASH_INFO_AVAILABLE)==true
         val flash=spinner("照片闪光","Photo flash",listOf(text("关闭","Off"),text("自动","Auto"),text("开启","On"))).apply {

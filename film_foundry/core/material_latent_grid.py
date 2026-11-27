@@ -14,8 +14,21 @@ from film_foundry.core.film_process.integration import (
     _exposure_material, _material_latent_state, _material_layer_count,
     _color_material, _is_monochrome_material, _silver_material,
 )
+from film_foundry.core.film_process.coatings import emulsions
 from film_foundry.core.film_process.model import FilmProcessState
 from film_foundry.core.spatial_fields import global_field_grid
+
+
+def _resize_rows(values, width):
+    height, _, layers = values.shape
+    if layers <= 4:
+        return cv2.resize(values, (width,height), interpolation=cv2.INTER_AREA).reshape(height,width,layers)
+    # OpenCV's area kernel handles at most four interleaved channels on some backends.
+    out = np.empty((height,width,layers), values.dtype)
+    for start in range(0,layers,4):
+        group = values[...,start:start+4]
+        out[...,start:start+4] = cv2.resize(group, (width,height), interpolation=cv2.INTER_AREA).reshape(height,width,group.shape[-1])
+    return out
 
 
 class MaterialLatentSource:
@@ -24,7 +37,7 @@ class MaterialLatentSource:
     POOLS = ("halide", "developability", "metallic_silver", "coupler", "dye", "bleached_halide")
 
     def __init__(self, film, *, image_linear=None, exposed_latent=None,
-                 latent_layer_exposure_addition=None, exposure_duration_seconds=None):
+                 latent_layer_exposure_addition=None, exposure_duration_seconds=None, film_side="emulsion"):
         if (image_linear is None) == (exposed_latent is None):
             raise ValueError("local development requires either image rows or frozen latent pools")
         if exposed_latent is not None:
@@ -47,6 +60,8 @@ class MaterialLatentSource:
         self.film, self.image, self.latent = film, image_linear, exposed_latent
         self.addition = latent_layer_exposure_addition
         self.exposure_duration_seconds = exposure_duration_seconds
+        self.pool_count = len(emulsions(film)) if film.ordered_coatings else self.material.layer_count
+        self.film_side = film_side
         self._grids = {}
 
     def _rows(self, start, stop):
@@ -62,7 +77,7 @@ class MaterialLatentSource:
                         else np.asarray(addition)[start:stop])
         return _material_latent_state(self.image[start:stop], self.film, self.material,
                                      latent_layer_exposure_addition=addition,
-                                     exposure_duration_seconds=self.exposure_duration_seconds)
+                                     exposure_duration_seconds=self.exposure_duration_seconds, film_side=self.film_side)
 
     def prepare_working_states(self, work_long_edges, *, workers=1):
         """Share source exposure between two reduced grids, preserving each integral.
@@ -80,7 +95,7 @@ class MaterialLatentSource:
             grid=global_field_grid(self.shape,max(1,int(edge)))
             grids[grid.work_shape]=grid
         if len(grids)!=2 or any(not grid.reduced for grid in grids.values()):return False
-        grids=list(grids.values());height,width=self.shape;layers=self.material.layer_count
+        grids=list(grids.values());height,width=self.shape;layers=self.pool_count
         block_rows=max(1,self.ROW_PIXELS//width)
         def requests(index,grid):
             gh,gw=grid.work_shape
@@ -106,7 +121,7 @@ class MaterialLatentSource:
                 for name in self.POOLS:
                     values=getattr(rows,name)
                     horizontal[index][name]=(None if values is None else values if width==gw else
-                        cv2.resize(values,(gw,cached_stop-cached_start),interpolation=cv2.INTER_AREA).reshape(cached_stop-cached_start,gw,layers))
+                        _resize_rows(values, gw))
             return cached_start,batch,horizontal,rows.auxiliary_remaining,rows.masking_coupler_remaining
         from .material_parallel import ordered_results, PARALLEL_MIN_PIXELS
         fields=[None,None]
@@ -145,7 +160,7 @@ class MaterialLatentSource:
         else:
             height, width = self.shape
             gh, gw = grid.work_shape
-            layers = self.material.layer_count
+            layers = self.pool_count
             fields = None
             block_rows = max(1, self.ROW_PIXELS // width)
             from .execution_topology import reference_execution_enabled
@@ -167,8 +182,7 @@ class MaterialLatentSource:
                             for name in self.POOLS:
                                 values = getattr(cached_rows, name)
                                 cached_horizontal[name] = (None if values is None else values if width == gw else
-                                    cv2.resize(values, (gw, cached_stop-cached_start), interpolation=cv2.INTER_AREA)
-                                    .reshape(cached_stop-cached_start, gw, layers))
+                                    _resize_rows(values, gw))
                         rows = cached_rows
                     else:
                         rows = self._rows(start, stop)
@@ -187,8 +201,7 @@ class MaterialLatentSource:
                             horizontal = cached_horizontal[name][start-cached_start:stop-cached_start]
                         else:
                             values = getattr(rows, name)
-                            horizontal = (values if width == gw else cv2.resize(
-                                values, (gw, stop-start), interpolation=cv2.INTER_AREA).reshape(stop-start, gw, layers))
+                            horizontal = (values if width == gw else _resize_rows(values, gw))
                         target[y] += np.einsum("y,yxl->xl", weight, horizontal)
             state = FilmProcessState(**fields,
                 auxiliary_remaining=rows.auxiliary_remaining,

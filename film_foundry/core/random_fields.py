@@ -7,7 +7,9 @@ from collections.abc import Sequence
 import numpy as np
 
 
-_DEFAULT_FLOAT64_TEMP_VALUES = 2_000_000
+# A 256 KiB conversion block keeps the float64 samples hot until their
+# float32 copy and bounds scratch even when several grain layers are in flight.
+_DEFAULT_FLOAT64_TEMP_VALUES = 32_768
 
 try:
     _probe_rng = np.random.default_rng(0)

@@ -26,7 +26,7 @@ class PhoneMaterialState internal constructor(val family: MaterialFamily,val gro
  * for comparison. No UI or platform/GPU dependency.
  */
 object PhoneMaterialKernel {
-    const val MODEL="phone_material_reduced_v3"
+    const val MODEL="phone_material_reduced_v4"
     const val ARITHMETIC_FULL="float32"
     const val ARITHMETIC_HALF="float16"
     /** Imported desktop definitions retain unimplemented parameters, explicitly reported below. */
@@ -37,15 +37,15 @@ object PhoneMaterialKernel {
             MaterialFamily.PEEL,MaterialFamily.INSTANT -> setOf("transfer","half_exposure","reaction_seconds","maximum_density","paper_reflectance",
                 "batch_variation","batch_seed","border_style","light_sensitivity","developer_capacity","texture",
                 "temperature_sensitivity")+
-                if(family==MaterialFamily.PEEL)setOf("donor_mode") else setOf("stabilization_seconds")
+                if(family==MaterialFamily.PEEL)setOf("donor_mode","peel_travel_fraction","material_long_edge_mm") else setOf("stabilization_seconds")
             MaterialFamily.SILVER -> setOf("half_exposure","response_contrast","reaction_seconds","roughness","texture","metal_reflectance","particle_reflectance",
-                "fixing_seconds","gilding_seconds","gold_capacity")
-            MaterialFamily.PAPER -> sheets+paperSupport+setOf("kind","paper_reflectance","warmth","sensitivity_remaining","wash_seconds")
+                "fixing_seconds","gilding_seconds","gold_capacity","iodized_response")
+            MaterialFamily.PAPER -> sheets+paperSupport+setOf("kind","paper_reflectance","warmth","sensitivity_remaining","wash_seconds","preflash_dose")
             MaterialFamily.WET -> sheets+setOf("support","exposure_delay_s","drying_seconds","particle_reflectance","base_transmission","wash_seconds",
                 "humidity","pour_direction","flow_ridges","edge_pooling")
             MaterialFamily.CYANOTYPE,MaterialFamily.PLATINUM -> sheets+paperSupport+setOf("paper_reflectance","green_sensitivity","actinic_gain","humidity","sensitizer_remaining")+
                 if(family==MaterialFamily.CYANOTYPE) setOf("oxidation_seconds","brush_direction","brush_overlap","pigment_binding")
-                else setOf("platinum_fraction","clearing_seconds","coating_method","paper_sizing")
+                else setOf("platinum_fraction","clearing_seconds","coating_method","paper_sizing","printout_strength")
         }
     }
     /** Addressable pixel count. This is an array bound, not a quality or megapixel cap. */
@@ -85,7 +85,7 @@ object PhoneMaterialKernel {
             for(key in listOf("coverage","contact","arrival_seconds","reagent","escaped_reagent"))field(key)
             field("stain_density",3);field("channel_activity",channels,1f);field("transfer_yield",channels,1f)
             val paper=field("paper_texture");val backing=field("backing_texture",value=.5f)
-            field("developer_available");field("developer_used")
+            field("phone_developer_available_mean");field("phone_developer_used_mean")
             if(family==MaterialFamily.INSTANT) { field("opacifier",value=1f);field("stabilization") }
             for(i in 0 until size) {
                 if(i and 4095==0)checkCancel();paper[i]=reflectance(i).toFloat()
@@ -101,13 +101,19 @@ object PhoneMaterialKernel {
             val rough=field("roughness",value=n(m,"roughness",.12,.02,1.0).toFloat())
             val px=field("polish_x");val py=field("polish_y");val grain=field("microtexture")
             field("damage");field("pit_depth");field("tarnish");field("gold")
+            val iodized = n(m,"iodized_response",1.0,0.0,1.0)
             for(i in 0 until size) {
-                if(i and 4095==0)checkCancel();latent[i]=response(sample(i,2)+.06*sample(i,1)).toFloat()
+                if(i and 4095==0)checkCancel()
+                val blue = sample(i,2) + .06*sample(i,1)
+                val dose = if(iodized == 1.0) blue else iodized*blue + (1-iodized)*(.2126*sample(i,0)+.7152*sample(i,1)+.0722*sample(i,2))
+                latent[i]=response(dose).toFloat()
                 px[i]=(.5+.25*noise(i%w*.01,i/w*.7,seed)).toFloat();py[i]=(.5+.05*noise(i%w*.2,i/w*.03,seed+1)).toFloat()
                 grain[i]=(.5+.5*noise(i%w*.8,i/w*.8,seed+2)).toFloat();rough[i]=(rough[i]+texture*.025*grain[i]).coerceIn(.02,1.0).toFloat()
             }
         } else if(family==MaterialFamily.PAPER) {
             val dose=field("dose",3);image.linearRgb.copyInto(dose)
+            val flash = n(m,"preflash_dose",0.0,0.0,2.0).toFloat()
+            if(flash > 0) for(k in dose.indices) { if(k and 8191==0)checkCancel(); dose[k] += flash }
             val halide=field("halide",3);field("silver",3);field("dye",3);field("removed_silver",3)
             val coating=field("coating");val paper=field("paper");field("residue",3)
             field("paper_moisture",value=PhoneMaterialBath.initialMoisture(family,m).toFloat())
@@ -139,6 +145,7 @@ object PhoneMaterialKernel {
             val cyanPaint=if(cyan) PhoneMaterialBath.cyanPainter(w,h,seed,m) else null
             val noblePaint=if(cyan) null else PhoneMaterialBath.noblePainter(w,h,seed,m)
             val platinum=if(cyan) 0.0 else n(m,"platinum_fraction",.4,0.0,1.0)
+            val printout = if(cyan) 0.0 else n(m,"printout_strength",0.0,0.0,1.0)*n(m,"humidity",.6,0.0,1.0)
             for(i in 0 until size) {
                 if(i and 4095==0)checkCancel()
                 if(cyan) {val coat=cyanPaint!!(i);coating[i]=coat.coating;paper[i]=coat.paper;binding!![i]=coat.binding;fibers[i]=coat.fibers}
@@ -147,6 +154,14 @@ object PhoneMaterialKernel {
                 val capacity=coating[i]*(if(cyan)1 else 2)
                 val active=response((sample(i,2)+sample(i,1)*n(m,"green_sensitivity",.05,0.0,1.0))*n(m,"actinic_gain",1.0,.001,20.0)*humidity)*n(m,"sensitizer_remaining",1.0,0.0,1.0)
                 ferric[i]=(capacity*(1-active)).toFloat();ferrous[i]=(capacity*active).toFloat()
+                if(printout > 0) {
+                    val pt = (f.getValue("platinum_salt").values[i]*active*printout).toFloat()
+                    val pd = (f.getValue("palladium_salt").values[i]*active*printout).toFloat()
+                    f.getValue("platinum").values[i]=pt; f.getValue("platinum_salt").values[i]-=pt
+                    f.getValue("palladium").values[i]=pd; f.getValue("palladium_salt").values[i]-=pd
+                    val spent=2*(pt+pd)
+                    f.getValue("spent_ferric").values[i]=spent; ferrous[i]=(ferrous[i]-spent).coerceAtLeast(0f)
+                }
             }
         }
         quantize(f,arithmetic)
@@ -157,7 +172,7 @@ object PhoneMaterialKernel {
         val f=state.fields();val m=state.parameters;val p=parameters;val family=state.family
         fun a(key: String)=f.getValue(key).values
         fun requireStage(vararg stages: String)=require(state.stage in stages) { "$operation is unavailable at ${state.stage}" }
-        val seconds=n(p,"seconds",when(operation) { "spread","eject","separate","finish","clear_donor"->0.0;"advance"->60.0;else->60.0 },0.0,86400.0)
+        var seconds=if(operation=="stop" && family==MaterialFamily.PAPER) 0.0 else n(p,"seconds",when(operation) { "spread","eject","separate","finish","clear_donor"->0.0;"display_fade"->3600.0;else->60.0 },0.0,86400.0)
         val temperature=n(p,"temperature_c",20.0,-10.0,50.0)
         val thermal=2.0.pow((temperature-20)/10)
         fun rate(tau: Double)=(-expm1(-seconds/tau*thermal*n(p,"activity",1.0,0.0,100.0))).toFloat()
@@ -167,45 +182,97 @@ object PhoneMaterialKernel {
         rejectReducedDefect(p)
         if(family in listOf(MaterialFamily.PEEL,MaterialFamily.INSTANT)) {
             val instant=family==MaterialFamily.INSTANT;val channels=f.getValue("received").shape[2]
-            when(operation) {
+            val progressive = !instant && operation=="separate" && n(m,"peel_travel_fraction",0.0,0.0,1.0)>0
+            when(if(progressive) "peel_front" else operation) {
                 "spread","eject" -> {
                     requireStage("exposed");require(operation==if(instant)"eject" else "spread")
                     val coverage=n(p,"coverage",1.0,0.0,1.0);val contact=n(p,"contact",1.0,0.0,1.0)
                     val capacity=n(m,"developer_capacity",1.25,0.0,10.0)
                     each { i ->
                         a("coverage")[i]=coverage.toFloat();a("contact")[i]=contact.toFloat();a("reagent")[i]=coverage.toFloat()
-                        a("developer_available")[i]=(coverage*capacity).toFloat()
+                        a("phone_developer_available_mean")[i]=(coverage*capacity).toFloat()
                     };stage="contact"
                 }
-                "advance" -> {
+                "advance","peel_front" -> {
                     requireStage("contact")
+                    val peeling = operation=="separate"
+                    val direction = if(peeling) state.history.lastOrNull { it["operation"]=="spread" }?.get("direction") ?: "down" else "down"
+                    val vertical = direction=="down" || direction=="up"
+                    val length = if(vertical) state.height else state.width
+                    if(peeling) {
+                        require(direction in listOf("up","down","left","right"))
+                        val fraction=n(m,"peel_travel_fraction",0.0,0.0,1.0)
+                        val travel=n(m,"material_long_edge_mm",100.0,10.0,1000.0)*length/max(state.width,state.height)
+                        seconds=fraction*travel/n(p,"speed_mm_s",25.0,.1,1000.0)
+                    }
                     val tau=n(m,"reaction_seconds",60.0,.1,86400.0)
                     val stable=n(m,"stabilization_seconds",300.0,.1,86400.0)
                     val activeSeconds=if(instant)min(seconds,max(0.0,stable-state.elapsedSeconds)) else seconds
                     val daylight=n(p,"light_exposure",0.0,0.0,20.0)*n(m,"light_sensitivity",1.0,0.0,2.0)
                     val batch=n(m,"batch_variation",0.0,0.0,1.0)
                     val thermalTransfer=2.0.pow((temperature-20)/10*n(m,"temperature_sensitivity",1.0,0.0,2.0))
+                    val colorRates=DoubleArray(channels) { c ->
+                        val seed=(m["batch_seed"] as? Number)?.toLong() ?: state.seed
+                        (1+batch*.35*noise(c.toDouble(),0.0,seed)).coerceAtLeast(.1)
+                    }
+                    val remaining=a("remaining");val immobile=a("immobile");val donor=a("developed_donor")
+                    val response=a("exposure_response");val received=a("received");val supply=a("phone_developer_available_mean");val used=a("phone_developer_used_mean")
+                    val demand=DoubleArray(channels);val transfer=DoubleArray(channels);val reacted=DoubleArray(channels)
+                    // On integral film the opaque cover clears as (1-t/stable)^2.
+                    // Integrate its transmission over this contact interval.
+                    val startOpacity=(1-state.elapsedSeconds/stable).coerceIn(0.0,1.0)
+                    val endOpacity=(1-(state.elapsedSeconds+activeSeconds)/stable).coerceIn(0.0,1.0)
+                    val transmission=if(instant) 1-(startOpacity*startOpacity+startOpacity*endOpacity+endOpacity*endOpacity)/3 else 1.0
+                    val illuminatedSeconds=activeSeconds*transmission
+                    val lightDose=daylight*.025*illuminatedSeconds
+                    val darkSurvival=exp(-lightDose)
+                    val stainTint=doubleArrayOf(.025,.09,.24)
                     each { i ->
                         val local=a("coverage")[i]*a("contact")[i]*thermalTransfer.toFloat()
-                        var available=a("developer_available")[i].toDouble();val before=available
+                        val contactTime=if(peeling) {
+                            val coord=if(vertical) i/state.width else i%state.width
+                            val along=if(direction=="up" || direction=="left") length-1-coord else coord
+                            seconds*(along+.5)/length
+                        } else activeSeconds
+                        val localLight=if(peeling) daylight*.025*contactTime else lightDose
+                        val survival=if(peeling && localLight>0) exp(-localLight) else darkSurvival
+                        var total=0.0
                         for(c in 0 until channels) {
                             val k=i*channels+c
-                            val color=(1+batch*.35*noise(c.toDouble(),0.0,(m["batch_seed"] as? Number)?.toLong() ?: state.seed)).coerceAtLeast(.1)
-                            val fraction=-expm1(-activeSeconds/tau*local*color)
-                            val donor=min(max(0.0,(a("immobile")[k]-a("developed_donor")[k])*fraction),available*channels)
-                            a("developed_donor")[k]+=donor.toFloat();available=max(0.0,available-donor/channels)
-                            val transfer=min(a("remaining")[k]*fraction,available*channels).coerceAtLeast(0.0).toFloat()
-                            a("remaining")[k]-=transfer;a("received")[k]+=transfer;available=max(0.0,available-transfer/channels)
+                            val dose=contactTime/tau*local*colorRates[c]
+                            val mobile=remaining[k].toDouble()
+                            reacted[c]=-expm1(-dose)
+                            demand[c]=(mobile+max(0f,immobile[k]-donor[k]))*reacted[c]
+                            // Development and incident light compete for the same mobile material.
+                            transfer[c]=if(localLight==0.0) mobile*reacted[c] else
+                                mobile*(dose/(dose+localLight))*(-expm1(-(dose+localLight)))
+                            total+=demand[c]
                         }
-                        a("developer_available")[i]=available.toFloat();a("developer_used")[i]+=(before-available).toFloat()
-                        // Reduced fog/residue acts during reaction, before immutable products.
-                        for(c in 0..2) a("stain_density")[i*3+c]+=(daylight*activeSeconds/300*local*doubleArrayOf(.025,.09,.24)[c]).toFloat()
+                        // A single mean reagent field serves all layers. Allocate it in proportion
+                        // to demand, so channel order cannot turn a neutral exposure into a colour.
+                        val budget=supply[i].toDouble()*channels
+                        val share=if(total>budget) budget/total else 1.0
+                        for(c in 0 until channels) {
+                            val k=i*channels+c
+                            val moved=min(remaining[k].toDouble(),transfer[c]*share)
+                            val left=remaining[k]-moved
+                            val fogged=if(localLight==0.0) 0.0 else
+                                (left-remaining[k]*(1-reacted[c]*share)*survival).coerceIn(0.0,left)
+                            remaining[k]=(left-fogged).toFloat();immobile[k]+=fogged.toFloat()
+                            response[k]=immobile[k];received[k]+=moved.toFloat()
+                            donor[k]+=max(0.0,demand[c]*share-moved).toFloat()
+                        }
+                        val consumed=(min(budget,total)/channels).toFloat()
+                        supply[i]=(supply[i]-consumed).coerceAtLeast(0f);used[i]+=consumed
+                        val litTime=if(peeling) contactTime else illuminatedSeconds
+                        for(c in 0..2) a("stain_density")[i*3+c]+=(daylight*litTime/300*local*stainTint[c]).toFloat()
                         if(instant) {
                             val neutral=((state.elapsedSeconds+seconds)/stable).coerceIn(0.0,1.0).toFloat()
                             a("stabilization")[i]=neutral;a("opacifier")[i]=(1-neutral).pow(2)
                         }
                     }
                     if(instant && state.elapsedSeconds+seconds>=stable)stage="stable"
+                    if(peeling)stage="separated"
                 }
                 "separate" -> {require(!instant);requireStage("contact");stage="separated"}
                 "clear_donor" -> {require(!instant && m["transfer"]=="silver_compound" && m["donor_mode"]=="silver_negative");requireStage("separated");stage="cleared"}
@@ -232,7 +299,11 @@ object PhoneMaterialKernel {
             fun wetAccess()=PhoneMaterialBath.hydrate(a("paper_moisture"),state.width,state.height,seconds,temperature,uptake,rc,bath,checkCancel)
             when(operation) {
                 "develop" -> {
-                    requireStage("exposed","developed");wetAccess();val r=rate(20.0)
+                    requireStage("exposed","developed")
+                    val developer=p["developer"] ?: "material"
+                    require(developer in listOf("material","bw","color")) { "Unknown paper developer capability: $developer" }
+                    val formDye=m["kind"]=="color" && developer!="bw"
+                    wetAccess();val r=rate(20.0)
                     each { i->
                         var developed=0.0
                         for(c in 0..2) {
@@ -240,18 +311,19 @@ object PhoneMaterialKernel {
                             val target=a("coating")[i]*paperResponse(a("dose"),i,c,m)
                             val amount=min(a("halide")[k],max(0f,target-a("silver")[k]))*r
                             a("halide")[k]-=amount;a("silver")[k]+=amount;developed+=amount.toDouble()
-                            if(m["kind"]=="color")a("dye")[k]=(a("dye")[k]+amount).coerceAtMost(a("coating")[i])
+                            if(formDye)a("dye")[k]=(a("dye")[k]+amount).coerceAtMost(a("coating")[i])
                         }
                         val mean=(developed/3).toFloat()
                         for(c in 0..2)a("residue")[i*3+c]+=mean*floatArrayOf(.002f,.004f,.008f)[c]
                     };stage="developed"
                 }
+                "stop" -> {requireStage("developed");stage="stopped"}
                 "fix" -> {
-                    requireStage("exposed","developed","fixed","washed");wetAccess();val r=rate(20.0)
+                    requireStage("exposed","developed","stopped","fixed","washed");wetAccess();val r=rate(20.0)
                     each { i->for(c in 0..2){val k=i*3+c;val h=a("halide")[k]*r;a("halide")[k]-=h;a("removed_silver")[k]+=h} };stage="fixed"
                 }
                 "bleach_fix" -> {
-                    requireStage("developed","fixed","washed");wetAccess()
+                    requireStage("developed","stopped","fixed","washed");wetAccess()
                     val bleach=(-expm1(-(seconds/8)/15*thermal*n(p,"bleach_activity",1.0,0.0,100.0))).toFloat()
                     val fix=(-expm1(-(seconds/8)/15*thermal*n(p,"fix_activity",1.0,0.0,100.0))).toFloat()
                     repeat(8) { each { i->for(c in 0..2) {
@@ -326,8 +398,14 @@ object PhoneMaterialKernel {
                     if(state.stage!="oxidized")stage="washed"
                 }
                 "oxidize" -> {require(cyan);requireStage("washed","oxidized");oxidizePigment(::a,m,seconds,n(p,"oxygen",1.0,0.0,100.0),temperature);stage="oxidized"}
+                "display_fade" -> {
+                    require(cyan); requireStage("washed","oxidized")
+                    val fraction=(-expm1(-seconds*n(p,"illumination",1.0,0.0,100.0)/14400)).toFloat()
+                    each { i -> val faded=a("blue_pigment")[i]*fraction
+                        a("blue_pigment")[i]-=faded; a("reduced_pigment")[i]+=faded }
+                }
                 "develop" -> {require(!cyan);requireStage("exposed","developed");wetAccess();nobleDevelop(::a,m,seconds,temperature,n(p,"activity",1.0,0.0,100.0));stage="developed"}
-                "clear" -> {require(!cyan);requireStage("developed","cleared","washed");nobleClear(::a,m,n(p,"activity",1.0,0.0,100.0),wetAccess(),checkCancel);stage="cleared"}
+                "clear" -> {require(!cyan);requireStage("exposed","developed","cleared","washed");nobleClear(::a,m,n(p,"activity",1.0,0.0,100.0),wetAccess(),checkCancel);stage="cleared"}
                 "dry" -> {
                     requireStage(*(if(cyan)arrayOf("washed","oxidized") else arrayOf("cleared","washed")))
                     val airflow=n(p,"airflow",1.0,0.0,100.0)
@@ -362,7 +440,7 @@ object PhoneMaterialKernel {
             }
             MaterialFamily.INSTANT -> {
                 require(state.stage in listOf("stable","finished"))
-                val fields=f.filterKeys { it !in setOf("developer_available","developer_used","inhibitor") }+
+                val fields=f.filterKeys { it !in setOf("phone_developer_available_mean","phone_developer_used_mean","inhibitor") }+
                     mapOf("paper" to f.getValue("paper_texture"),"density_per_unit" to constant(n(m,"maximum_density",2.0,.001,20.0)))
                 body("integral_print","integral_reflection_v2",2,fields,frame=m["border_style"]?.toString() ?: "pod")
             }

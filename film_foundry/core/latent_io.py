@@ -42,7 +42,7 @@ LATENT_OPTIONAL_ARRAY_KEYS = (
 )
 
 
-def unexposed_latent_like(state: FilmProcessState, *, validate_only=False):
+def unexposed_latent_like(state: FilmProcessState, *, validate_only=False, film_border=None):
     """Create an unexposed slot with the same unprocessed material pools.
 
     A black scene still passes through a photographic toe; an unused slot has
@@ -57,13 +57,34 @@ def unexposed_latent_like(state: FilmProcessState, *, validate_only=False):
     if validate_only: return None
     blank=state.copy()
     blank.exposure_duration_seconds = None
+    blank.lens_filter = None
     blank.developability.fill(0)
     if blank.material_snapshot is not None:
         from film_foundry.model.config import DarkroomConfig
         from film_foundry.core.film_process.time_history import storage_response
-        film=DarkroomConfig.from_dict({'film':blank.material_snapshot.parameters()}).film
-        stored=storage_response(film,blank.halide.shape[-1])
-        if stored is not None:blank.developability[:]=stored[1]
+        parameters = blank.material_snapshot.parameters()
+        config = DarkroomConfig.from_dict({'film':parameters})
+        film = config.formation_film(frozen_mode=(parameters.get("coating_stack") or {}).get("mode","ordered"))
+        from .film_process.integration import _material_layer_count
+        count = _material_layer_count(film, blank)
+        stored=storage_response(film,count)
+        if stored is not None:
+            fog = stored[1]
+            if film.ordered_coatings:
+                from .film_process.coatings import emulsions, record_indices
+                fog = fog[record_indices(emulsions(film), count)]
+            blank.developability[:] = fog
+    if blank.film_border_snapshot:
+        from .formed_film_border import _border_config, border_snapshot
+        from dataclasses import replace
+        frozen = _border_config(blank.film_border_snapshot)
+        border = replace(film_border, transport_axis=frozen.transport_axis) if film_border is not None else frozen
+        blank.film_border_snapshot = border_snapshot(border)
+        if border.enabled and border.formation_mode != "attached":
+            from .native_film_strip import expose_unused_plate
+            if blank.material_snapshot is None:
+                raise ValueError("A native factory plate requires its exposure-time stock")
+            expose_unused_plate(blank, border, film)
     if blank.original_developability is not None:blank.original_developability[:]=blank.developability
     return blank
 
@@ -132,11 +153,26 @@ def latent_medium_metadata(
         "consumed": False,
     }
     payload.update(identity)
+    if state.material_snapshot is not None:
+        stack = state.material_snapshot.film.get("coating_stack")
+        if stack is not None and stack.get("mode", "ordered") == "ordered":
+            payload["coating_ids"] = [row["id"] for row in stack["layers"] if row["kind"] == "emulsion"]
+    if state.incident_frame_seed is not None:
+        payload["incident_frame_seed"] = state.incident_frame_seed
     from film_foundry.core.formed_film_border import validate_border_snapshot
     payload.pop('film_border_snapshot', None)
     if state.film_border_snapshot is not None:
         payload['film_border_snapshot'] = validate_border_snapshot(state.film_border_snapshot)
     from film_foundry.contracts.film_exposure import conditions_record
+    payload.pop('lens_filter', None)
+    payload.pop('film_side', None)
+    payload.pop('rear_optics', None)
+    if state.film_side == 'base':
+        payload['film_side'] = 'base'
+        if state.rear_optics is not None:
+            payload['rear_optics'] = dict(state.rear_optics)
+    if state.lens_filter is not None:
+        payload['lens_filter'] = dict(state.lens_filter)
     exposure = conditions_record(state.exposure_duration_seconds)
     if exposure is not None:
         payload['exposure_conditions'] = exposure
@@ -277,6 +313,15 @@ def load_exposed_latent(
             layer_count = int(metadata.get("layer_count") or 0)
             if layer_count <= 0:
                 raise ValueError(f"{path} layer_count 必须是正整数。")
+            snapshot = (MaterialSnapshot.from_value(metadata[MATERIAL_SNAPSHOT_KEY])
+                        if MATERIAL_SNAPSHOT_KEY in metadata else None)
+            stack = snapshot.film.get("coating_stack") if snapshot is not None else None
+            if stack is not None and stack.get("mode", "ordered") == "ordered":
+                ids = [row["id"] for row in stack["layers"] if row["kind"] == "emulsion"]
+                if metadata.get("coating_ids") != ids or layer_count != len(ids):
+                    raise ValueError("Latent coating identities differ from the frozen material")
+            elif "coating_ids" in metadata:
+                raise ValueError("Physical coating pools require their exposure-time material snapshot")
             pools: dict[str, np.ndarray] = {}
             for key in LATENT_REQUIRED_ARRAY_KEYS:
                 if key not in files:
@@ -294,9 +339,17 @@ def load_exposed_latent(
         raise ValueError(f"无法读取潜影归档；NPZ 可能已截断或损坏：{path}") from exc
 
     from film_foundry.contracts.film_exposure import duration_from_record
+    from .incident_identity import frame_token
+    seed = metadata.get("incident_frame_seed")
+    if seed is None:
+        seed = frame_token(metadata.get(FRAME_IDENTITY_KEY))
     state = FilmProcessState(
+        incident_frame_seed=seed,
         film_border_snapshot=metadata.get('film_border_snapshot'),
         exposure_duration_seconds=duration_from_record(metadata.get('exposure_conditions')),
+        lens_filter=metadata.get('lens_filter'),
+        film_side=metadata.get('film_side', 'emulsion'),
+        rear_optics=metadata.get('rear_optics'),
         halide=pools["halide"],
         developability=pools["developability"],
         metallic_silver=pools["metallic_silver"],
@@ -318,8 +371,7 @@ def load_exposed_latent(
             SpectralMaterialProfile.from_value(metadata["spectral_material_profile"])
             if "spectral_material_profile" in metadata else None
         ),
-        material_snapshot=(MaterialSnapshot.from_value(metadata[MATERIAL_SNAPSHOT_KEY])
-                           if MATERIAL_SNAPSHOT_KEY in metadata else None),
+        material_snapshot=snapshot,
     )
     state.validate()
     if bool(metadata.get("consumed")) and not allow_consumed:

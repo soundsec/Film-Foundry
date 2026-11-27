@@ -204,7 +204,7 @@ class RowSessionTest {
         val record=latent.metadata["capture"] as Map<*, *>
         assertEquals("sensor_raw_dng",record["kind"])
         assertEquals(false,record["isp_processed"])
-        assertEquals(DngRawDecoder.MODEL,record["source_encoding"])
+        assertEquals(DngRawDecoder.BAYER_MODEL,record["source_encoding"])
         val before=Files.readAllBytes(root.resolve(frame.latentPath!!))
         library.seal("raw")
         val session=DevelopSession(library,store,facade)

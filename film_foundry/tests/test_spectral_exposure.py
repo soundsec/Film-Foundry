@@ -11,8 +11,8 @@ import pytest
 from film_foundry.app.workflow import config_from_share_code, encode_recipe_share
 from film_foundry.contracts import data_kernel
 from film_foundry.contracts.config_share import decode_config_share
-from film_foundry.contracts.spectral_exposure import SpectralExposureProfile
-from film_foundry.core.engine import develop_negative, develop_negative_from_latent, expose_image_to_latent, scan_medium_output
+from film_foundry.contracts.spectral_exposure import SpectralExposureProfile, make_historical_exposure_profile
+from film_foundry.core.engine import develop_negative, develop_negative_from_latent, expose_image_to_latent, expose_linear_to_latent, scan_medium_output
 from film_foundry.core.latent_io import latent_identity_from_film, load_exposed_latent, mark_exposed_latent_consumed, save_exposed_latent
 from film_foundry.core.sensitometry import rgb_exposure_to_layer_exposure
 from film_foundry.core.spectral_exposure import compile_spectral_exposure
@@ -150,6 +150,61 @@ def test_single_layer_spectrum_is_used_for_monochrome_material():
     wrong.film.spectral_exposure_profile = config.film.spectral_exposure_profile
     with pytest.raises(ValueError, match='layer count'):
         expose_image_to_latent(_image(), wrong)
+
+
+@pytest.mark.parametrize("basis", ["three", "seven"])
+def test_silver_latent_follows_stock_sensitivity_for_equal_luminance_primaries(basis):
+    from film_foundry.core.color import linear_to_srgb
+    from film_foundry.core.spectral_exposure import map_profile_exposure
+
+    profile = make_historical_exposure_profile("blue_sensitive")
+    if basis == "three":
+        raw = _sample()["profile"]
+        raw["layer_sensitivity"] = [raw["layer_sensitivity"][-1]]
+        raw["layer_gain"] = [raw["layer_gain"][-1]]
+        profile = SpectralExposureProfile.from_value(raw)
+    cfg = DarkroomConfig()
+    cfg.mode, cfg.film.color_process = "bw_negative", "monochrome"
+    cfg.enable_mtf = cfg.enable_halation = False
+    cfg.film.spectral_exposure_profile = profile
+    rgb = np.diag(.06 / np.array([.2126, .7152, .0722], dtype=np.float32))[None, :, :]
+    rgb = np.tile(rgb, (8, 4, 1))
+    dose = map_profile_exposure(rgb, profile)[..., :1]
+    white = map_profile_exposure(np.ones((1, 1, 3), dtype=np.float32), profile)[0, 0, 0]
+    equivalent = np.repeat(dose / white, 3, axis=-1)
+    actual = expose_linear_to_latent(rgb, cfg).developability
+    assert actual.shape == (*rgb.shape[:2], 1)
+    assert np.ptp(actual) > .01
+    np.testing.assert_allclose(actual, expose_linear_to_latent(equivalent, cfg).developability, atol=2e-6)
+    np.testing.assert_allclose(actual, expose_image_to_latent(linear_to_srgb(rgb), cfg).developability, atol=2e-6)
+    legacy_cfg = DarkroomConfig.from_dict({"film": {"color_process": "monochrome"}})
+    legacy_cfg.mode = "bw_negative"
+    legacy_cfg.enable_mtf = legacy_cfg.enable_halation = False
+    legacy = expose_linear_to_latent(rgb, legacy_cfg).developability
+    np.testing.assert_allclose(legacy, np.full_like(legacy, legacy[0, 0, 0]), atol=2e-6)
+
+
+def test_matrix_only_new_silver_stock_exposes_coloured_light_after_share():
+    cfg = DarkroomConfig()
+    cfg.mode, cfg.film.color_process = "bw_negative", "monochrome"
+    cfg.enable_mtf = cfg.enable_halation = False
+    cfg.film.layer_sensitivity_matrix = ((.05, .15, .8),) * 3
+    primaries = np.tile(np.eye(3, dtype=np.float32)[None, :, :] * .25, (8, 4, 1))
+    formed = expose_linear_to_latent(primaries, cfg).developability
+    assert formed[0, 0, 0] < formed[0, 1, 0] < formed[0, 2, 0]
+    restored = config_from_share_code(encode_recipe_share(cfg))
+    np.testing.assert_array_equal(formed, expose_linear_to_latent(primaries, restored).developability)
+
+
+def test_factory_silver_stocks_carry_the_portable_panchromatic_response():
+    presets = Path(__file__).resolve().parents[1] / "presets"
+    profile = make_historical_exposure_profile("panchromatic")
+    for name in ("film/monochrome_fine_negative", "film/monochrome_push",
+                 "film/monochrome_reversal_transparency", "film/monochrome_reversal_graphic",
+                 "creative_silver_noir"):
+        cfg = DarkroomConfig.from_json(presets / (name + ".json"))
+        assert cfg.film.spectral_exposure_profile == profile, name
+        assert config_from_share_code(encode_recipe_share(cfg)).film.spectral_exposure_profile == profile
 
 
 @pytest.mark.parametrize('key,value', [

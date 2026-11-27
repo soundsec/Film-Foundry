@@ -13,6 +13,7 @@ from .gpu_kernels import source
 
 _cuda_kernel = None
 _calls = {'cuda': 0, 'opencl': 0}
+_dye_calls = {'cuda': 0, 'opencl': 0}
 
 
 def eligible(halide):
@@ -25,6 +26,30 @@ def eligible(halide):
 
 def status():
     return dict(_calls)
+
+
+def dye_status():
+    return dict(_dye_calls)
+
+
+def try_reversal_dye(dye, film):
+    """Keep positive density shaping and endpoint chroma retention in one device pass."""
+    from . import layer_compute
+    if not layer_compute.eligible(dye, 'FILM_FOUNDRY_DEVELOPMENT_GPU'):
+        return None
+    latitude = float(np.clip(film.positive_latitude_compression, 0., 1.))
+    toe = float(np.clip(film.positive_shadow_toe_width, .02, .80))
+    shoulder = float(np.clip(film.positive_highlight_shoulder_width, .02, .80))
+    highlight = float(np.clip(film.positive_highlight_chroma_retention, 0., 1.))
+    shadow = float(np.clip(film.positive_shadow_chroma_retention, 0., 1.))
+    table = np.array([
+        max(float(film.positive_density_contrast), .01), float(film.positive_density_bias)*4.,
+        1.-latitude, latitude, float(np.clip(film.positive_midtone_density, 0., 1.))*.20,
+        1.-toe, toe, float(np.clip(film.positive_shadow_toe, 0., 1.))*toe*.45,
+        shoulder, float(np.clip(film.positive_highlight_shoulder, 0., 1.))*shoulder*.55,
+        1.-highlight, highlight, 1.-shadow, shadow, max(float(film.positive_dye_saturation), 0.),
+    ], dtype=np.float32)
+    return layer_compute.run(dye, table, 3, 'reversal_dye', _dye_calls)
 
 
 def _local_array(value, shape):

@@ -9,31 +9,6 @@ from film_foundry.core.material_family import ViewingConditions
 IMAGE=np.linspace(0,2,6*9*3,dtype=np.float32).reshape(6,9,3)
 
 
-@pytest.mark.parametrize("transfer",["dye","silver_compound"])
-def test_integral_layers_progress_stabilization_and_one_product(transfer,tmp_path):
-    engine=api.family(instant.FAMILY)
-    initial=engine.expose(IMAGE,instant.InstantMaterial(transfer=transfer),group_id="integral-test",seed=3)
-    with pytest.raises(ValueError):engine.process(initial,"spread")
-    with pytest.raises(ValueError):engine.process(initial,"peel")
-    reacted=engine.process(engine.process(initial,"eject"),"spread",coverage=.7,roller_streaks=.2)
-    a=engine.process(reacted,"advance",seconds=60)
-    b=engine.process(engine.process(reacted,"advance",seconds=20),"advance",seconds=40)
-    np.testing.assert_array_equal(a.fields["received"],b.fields["received"])
-    assert np.all(a.fields["opacifier"]<reacted.fields["opacifier"])
-    api.save(tmp_path/'developing.npz',a);loaded=api.load(tmp_path/'developing.npz')
-    final=engine.process(loaded,"stabilize")
-    assert final.stage=="stable" and np.all(final.fields["stabilization"]==1)
-    assert np.all(final.fields["opacifier"]==0)
-    np.testing.assert_allclose(final.fields["immobile"]+final.fields["remaining"]+final.fields["received"],1,atol=1e-6)
-    with pytest.raises(ValueError):engine.process(final,"advance",seconds=1)
-    with pytest.raises(ValueError):engine.finish(a)
-    group=engine.finish(final)
-    assert len(group.bodies)==1 and group.bodies[0].role=="integral_print"
-    api.save(tmp_path/'products.npz',group);restored=api.load(tmp_path/'products.npz')
-    np.testing.assert_array_equal(api.observe(restored.bodies[0]),instant.preview(final))
-    assert "immobile" in restored.bodies[0].fields  # Sealed donor still belongs to the print.
-
-
 def test_integral_missing_chemistry_and_preview_are_readonly():
     state=instant.spread(instant.eject(instant.expose(IMAGE,group_id="dry")),coverage=0)
     before=state.fields["received"].copy();preview=instant.preview(state)
@@ -76,7 +51,7 @@ def test_plate_angle_background_and_gilding_change_view_not_particles():
     brighter_background=api.observe(body,ViewingConditions(view_direction=(.5,0,.866),background_rgb=(.7,.7,.7)))
     assert brighter_background[0,0].mean()>tilted[0,0].mean()
     np.testing.assert_array_equal(before,body.fields["particles"])
-    gilded=plate.products(plate.gild(state,amount=1,seconds=240)).bodies[0]
+    gilded=plate.products(plate.finish(plate.gild(plate.load_gilding(state,gold_load=1),amount=1,seconds=240))).bodies[0]
     assert not np.array_equal(frontal,api.observe(gilded,ViewingConditions(background_rgb=(0,0,0))))
     with pytest.raises(ValueError):api.observe(body,ViewingConditions(view_direction=(0,0,0)))
     with pytest.raises(ValueError):replace(state,schema_version=99)

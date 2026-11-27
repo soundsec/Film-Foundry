@@ -61,15 +61,17 @@ internal class RowWorkflowExecutor(private val kernel: ReducedKernel) {
         when (request.command) {
             Command.EXPOSE -> {
                 require(request.output.path.endsWith(DataKernel.LATENT_SUFFIX)) { "expose output must be latent NPZ" }
-                val source = request.rgbRows ?: request.linearRgb?.let { volume -> object : RgbRows {
+                val input = request.rgbRows ?: request.linearRgb?.let { volume -> object : RgbRows {
                     override val width = volume.width
                     override val height = volume.height
                     override fun readRows(start: Int, count: Int) = RgbVolume(width, count, linearRgb =
                         volume.linearRgb.copyOfRange(start * width * 3, (start + count) * width * 3))
                 } } ?: throw WorkflowException("invalid_request", "expose requires linear RGB rows")
+                val strip=NativeFilmStrip.from(engine,recipe,input.width,input.height,request.captureRecord)
+                val source=strip?.source(input) ?: input
                 require(source.width > 0 && source.height > 0)
                 progress("exposing")
-                val prepared = timed("setup") { engine.prepareExposure(recipe, source.width, source.height) }
+                val prepared = timed("setup") { engine.prepareExposure(strip?.exposureRecipe(recipe,input.width,input.height) ?: recipe, source.width, source.height) }
                 control.checkCancel()
                 val output=RowArchiveSpool(io.scratchRoot, source.height, source.width, control::checkCancel)
                 var handedOff=false
@@ -86,7 +88,8 @@ internal class RowWorkflowExecutor(private val kernel: ReducedKernel) {
                     for (start in 0 until source.height step step(source.width,source.height)) {
                         control.checkCancel()
                         val count = minOf(step(source.width,source.height), source.height - start)
-                        val latent = stampCapture(timed("material_compute") { bound.exposeRows(start,count) }, request.captureRecord)
+                        val exposed = timed("material_compute") { bound.exposeRows(start,count) }
+                        val latent = stampCapture(strip?.freeze(exposed,start) ?: exposed, request.captureRecord)
                         timed("archive_spool") { output.append(codec.latentEntries(LatentArchive(latent.arrays, latent.metadata)), count) }
                     }
                   }
@@ -104,7 +107,7 @@ internal class RowWorkflowExecutor(private val kernel: ReducedKernel) {
                     progress("developing")
                     val (prepared,sourceMetadata,materialRecipe)=timed("setup") { input.latentRows(0,minOf(step(input.width,input.height),input.height)).let { first ->
                         verifyDevelopmentSource(first.metadata,request.developmentRecord)
-                        val materialRecipe=MaterialSnapshot.resolve(recipe,first.metadata)
+                        val materialRecipe=NativeFilmStrip.developmentRecipe(MaterialSnapshot.resolve(recipe,first.metadata),first.metadata)
                         Triple(engine.prepareDevelopment(materialRecipe,LatentState(first.arrays,first.metadata),input.height),first.metadata,materialRecipe)
                     } }
                     val rowAborted=java.util.concurrent.atomic.AtomicBoolean(false)
@@ -118,8 +121,9 @@ internal class RowWorkflowExecutor(private val kernel: ReducedKernel) {
                             return LatentState(block.arrays,block.metadata).also { checkActive() }
                         }
                     }
-                    val border=timed("border_prepare") { FormedFilmBorder.prepare(kernel,materialRecipe,input.width,input.height) }
-                    val output=RowArchiveSpool(io.scratchRoot,border?.layout?.height ?: input.height,input.width,control::checkCancel)
+                    val native=NativeFilmStrip.from(kernel,materialRecipe,input.width,input.height,formed=true)
+                    val border=if(native!=null) null else timed("border_prepare") { FormedFilmBorder.prepare(kernel,materialRecipe,input.width,input.height,sourceMetadata[DataKernel.CAPTURE_OBJECT_KEY] as? Map<*,*>) }
+                    val output=RowArchiveSpool(io.scratchRoot,border?.layout?.outputHeight ?: input.height,border?.layout?.outputWidth ?: input.width,control::checkCancel)
                     var handedOff=false
                     try {
                       fun append(optical: OpticalMaster,count: Int) {
@@ -134,14 +138,17 @@ internal class RowWorkflowExecutor(private val kernel: ReducedKernel) {
                         val firstCount=minOf(rows,input.height)
                         val first=timed("material_compute") { bound.developRows(0,firstCount) }
                         fun strip(start: Int) {
-                            if(border==null) return
+                            if(border==null || border.layout.vertical) return
                             for(offset in 0 until border.layout.rebate step step(input.width,input.height)) {
                                 control.checkCancel();val count=minOf(step(input.width,input.height),border.layout.rebate-offset)
                                 append(timed("border_compute") { border.strip(start+offset,count,first) },count)
                             }
                         }
+                        fun withEdges(optical: OpticalMaster,start: Int,count: Int): OpticalMaster =
+                            native?.finish(optical,start) ?: if(border?.layout?.vertical==true) border.strip(start,count,optical)
+                                else border?.stamp(optical) ?: optical
                         strip(0)
-                        append(if(border==null) first else timed("border_compute") { border.stamp(first) },firstCount)
+                        append(withEdges(first,0,firstCount),firstCount)
                         timed("row_pipeline_wall") { OrderedRowWorkers.run(firstCount until input.height step rows,workers,rowAborted,source::checkActive,{ start ->
                             val count=minOf(rows,input.height-start)
                             val begin=System.nanoTime();val optical=bound.developRows(start,count)
@@ -151,7 +158,7 @@ internal class RowWorkflowExecutor(private val kernel: ReducedKernel) {
                             val count = minOf(rows, input.height - start)
                             val (optical,nanos)=measured
                             control.onTiming?.invoke(command,"material_compute",nanos)
-                            append(if(border==null) optical else timed("border_compute") { border.stamp(optical) },count)
+                            append(withEdges(optical,start,count),count)
                         }
                         }
                         strip((border?.layout?.rebate ?: 0)+input.height)

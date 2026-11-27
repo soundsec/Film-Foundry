@@ -12,6 +12,10 @@ from film_foundry.tests.test_unified_workspace import panel
 def test_imprint_colour_and_ev_are_exposure_and_preserve_legacy_defaults():
     image=np.zeros((80,160,3),np.float32)
     cfg=FilmBorderConfig(imprint_style='optical_amber',imprint_text='FF',imprint_font='seven_segment')
+    assert cfg.imprint_exposure_ev==1.25
+    old=DarkroomConfig.from_dict({'film_border':{'imprint_style':'optical_amber'}})
+    assert old.film_border.imprint_exposure_ev==0
+    cfg=replace(cfg,imprint_exposure_ev=0)
     original,mask=apply_edge_imprint_to_linear(image,cfg)
     np.testing.assert_array_equal(original,mask[...,None]*(np.array([1.,.55,.12],np.float32)*4.5))
     red=replace(cfg,imprint_light_color_rgb=(1.,0.,0.))
@@ -63,5 +67,19 @@ def test_desktop_applies_and_resets_each_lamp_independently(panel):
     imprint.reject()
     panel.control_resets.reset_key('imprint.placement')
     cfg=panel._config().film_border
-    assert cfg.imprint_light_color_rgb is None and cfg.imprint_exposure_ev==0
+    assert cfg.imprint_light_color_rgb is None and cfg.imprint_exposure_ev==1.25
     assert cfg.factory_light_color_rgb==(1.,.02,.01)
+
+
+@pytest.mark.parametrize('face', ['seven_segment_narrow', 'seven_segment_open'])
+def test_new_seven_segment_separates_all_emitters_at_the_same_lamp_dose(face):
+    import cv2
+    from film_foundry.core.imprint_glyphs import render_display_text
+    from film_foundry.core.film_border import imprint_exposure_rgb
+    older = FilmBorderConfig(imprint_style='optical_amber', imprint_font='seven_segment')
+    current = replace(older, imprint_font=face)
+    np.testing.assert_array_equal(imprint_exposure_rgb(older), imprint_exposure_rgb(current))
+    for digit, count in enumerate((6,2,5,5,4,5,6,3,7,6)):
+        mask = render_display_text(str(digit), current.imprint_font, 75, 70)
+        components, _ = cv2.connectedComponents((mask > 127).astype(np.uint8))
+        assert components - 1 == count

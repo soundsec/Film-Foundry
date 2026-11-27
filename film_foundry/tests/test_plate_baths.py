@@ -75,14 +75,14 @@ def test_archive_resume_route_recipe_and_legacy_replay(kind,tmp_path):
     for op in session.module.EXPOSURE_STEPS:session.process(op,seed=17,**({'material_version':3} if kind=='plate' else {}))
     session.process('develop',{'seconds':35})
     if kind=='plate':session.process('fix',{'seconds':1})
-    path=tmp_path/'pause.npz';api.save(path,session.state)
+    path=tmp_path/'pause.npz';api.save(path,session.state,precision='full')
     restored=api.load(path)
     operation='fix';parameters={'seconds':120}
     result=run_material_route(restored,stop='state',operations=[{'operation':operation,**parameters}]).value
     session.process(operation,parameters);same(result,session.state)
     session.process('gild' if kind=='plate' else 'wash')
     replay=MaterialLabSession(kind);replay.image=image();replay.replay_recipe(session.recipe());same(session.state,replay.state)
-    path=tmp_path/'group.npz';api.save(path,session.group);group=api.load(path)
+    path=tmp_path/'group.npz';api.save(path,session.group,precision='full');group=api.load(path)
     np.testing.assert_array_equal(api.observe(group.bodies[0]),api.observe(session.group.bodies[0]))
     legacy=MaterialLabSession(kind);legacy.image=image()
     for op in legacy.module.EXPOSURE_STEPS:legacy.process(op,seed=17,material_version=2)

@@ -18,8 +18,18 @@ class ImprintDialog(QtWidgets.QDialog):
     def __init__(self,config,parent=None):
         super().__init__(parent);self.config=deepcopy(config);self.setWindowTitle(text('画面打印设置','Picture imprint settings'));self.resize(560,480)
         box=QtWidgets.QVBoxLayout(self);form=QtWidgets.QFormLayout();box.addLayout(form)
+        self.method=QtWidgets.QComboBox()
+        for key,zh,en in [('none','关闭打印','Off'),('laser_dot','激光点阵','Laser dots'),('optical_amber','光学投字','Optical projection'),('lab_edge','实验室印字','Lab printer')]:
+            self.method.addItem(text(zh,en),key)
+        self.method.setCurrentIndex(self.method.findData(config.imprint_style))
+        form.addRow(text('打印方式','Print method'),self.method)
+        self.original=QtWidgets.QPushButton(text('使用原版激光点阵','Use original laser dots'))
+        self.original.clicked.connect(self.original_laser)
+        form.addRow(self.original)
         self.font=QtWidgets.QComboBox()
-        for key,zh,en in [('seven_segment','七段数码 · 字母点阵','Seven segment · dot matrix letters'),('dot_matrix','点阵显示','Dot matrix'),('legacy','原字形','Legacy')]:self.font.addItem(text(zh,en),key)
+        for key,zh,en in [('seven_segment_narrow','七段数码管 · 微缝','Seven segment · narrow gap'),('seven_segment_open','七段数码管 · 宽缝','Seven segment · wide gap'),('dot_matrix','点阵显示','Dot matrix'),('legacy','原机背字形','Original date-back face')]:self.font.addItem(text(zh,en),key)
+        if config.imprint_font=='seven_segment':
+            self.font.addItem(text('七段数码管 · 旧字模','Seven segment · original plate'),'seven_segment')
         self.font.setCurrentIndex(max(0,self.font.findData(config.imprint_font)));form.addRow(text('字形','Typeface'),self.font)
         self.scale=QtWidgets.QDoubleSpinBox();self.scale.setRange(.25,3);self.scale.setSingleStep(.05);self.scale.setValue(config.imprint_scale);form.addRow(text('字号比例','Type size'),self.scale)
         from film_foundry.ui.exposure_color import ExposureColor
@@ -42,7 +52,7 @@ class ImprintDialog(QtWidgets.QDialog):
         buttons=QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok|QtWidgets.QDialogButtonBox.StandardButton.Cancel|QtWidgets.QDialogButtonBox.StandardButton.Reset);box.addWidget(buttons)
         buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject)
         buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Reset).clicked.connect(self.reset)
-        self.font.currentIndexChanged.connect(self.refresh);self.free.toggled.connect(self.refresh)
+        self.method.currentIndexChanged.connect(self.refresh);self.font.currentIndexChanged.connect(self.refresh);self.free.toggled.connect(self.refresh)
         self.light_color.changed.connect(self.refresh)
         for control in (self.scale,self.x,self.y,self.exposure):control.valueChanged.connect(self.refresh)
         from film_foundry.ui.control_reset import form_reset_buttons
@@ -50,7 +60,7 @@ class ImprintDialog(QtWidgets.QDialog):
         self.refresh()
 
     def value(self):
-        result=deepcopy(self.config);result.imprint_font=self.font.currentData();result.imprint_scale=self.scale.value()
+        result=deepcopy(self.config);result.imprint_style=self.method.currentData();result.imprint_font=self.font.currentData();result.imprint_scale=self.scale.value()
         result.imprint_position_xy=(self.x.value()/100,self.y.value()/100) if self.free.isChecked() else None
         result.imprint_light_color_rgb=self.light_color.value();result.imprint_exposure_ev=self.exposure.value()
         return result
@@ -58,7 +68,13 @@ class ImprintDialog(QtWidgets.QDialog):
     def move(self,x,y):
         self.free.setChecked(True);self.x.setValue(x*100);self.y.setValue(y*100)
 
+    def original_laser(self):
+        self.method.setCurrentIndex(self.method.findData('laser_dot'))
+        self.font.setCurrentIndex(self.font.findData('legacy'))
+        self.light_color.set_value(None)
+
     def reset(self):
+        self.method.setCurrentIndex(self.method.findData(self.config.imprint_style))
         self.font.setCurrentIndex(self.font.findData(self.config.imprint_font));self.scale.setValue(self.config.imprint_scale)
         position=self.config.imprint_position_xy or (.045,.014 if self.config.imprint_side=='top' else .986)
         self.x.setValue(position[0]*100);self.y.setValue(position[1]*100);self.free.setChecked(self.config.imprint_position_xy is not None)
@@ -70,7 +86,15 @@ class ImprintDialog(QtWidgets.QDialog):
         from film_foundry.core.color import linear_to_srgb
         config=self.value()
         if not (config.imprint_text or config.imprint_time):config.imprint_text='2026.11.10'
-        if config.imprint_style=='none':config.imprint_style='optical_amber'
+        if config.imprint_style=='none':
+            pixels=np.full((240,480,3),38,dtype=np.uint8)
+            image=QtGui.QImage(pixels.data,480,240,pixels.strides[0],QtGui.QImage.Format.Format_RGB888).copy()
+            self.preview.setPixmap(QtGui.QPixmap.fromImage(image))
+            return
+        lamp=deepcopy(config);lamp.imprint_light_color_rgb=None;lamp.imprint_exposure_ev=0
+        color=imprint_exposure_rgb(lamp)
+        self.light_color.default=tuple(color/color.max())
+        self.light_color.refresh()
         mask=_render_imprint_mask((240,480),config)
         pixels=np.ascontiguousarray(np.clip(linear_to_srgb(.02+mask[...,None]*imprint_exposure_rgb(config)*.16)*255,0,255),dtype=np.uint8)
         image=QtGui.QImage(pixels.data,480,240,pixels.strides[0],QtGui.QImage.Format.Format_RGB888).copy();self.preview.setPixmap(QtGui.QPixmap.fromImage(image))

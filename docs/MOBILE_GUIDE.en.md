@@ -4,150 +4,131 @@
 
 [Installation](#android-test-version) · [Camera](#camera-controls) · [Development](#baths-and-recipes) · [Scanning](#viewing-and-scanning) · [Library](#rolls-and-library) · [Export](#saving-and-export)
 
+> **Version note**: This guide reflects the current Android development source. Several UI and touch refinements (such as the resizable scan drawer, four color themes, and swipeable process categories) are newer than the published 0.1.0 test APK. See the [development snapshot](DEVELOPMENT_SNAPSHOT.en.md) for details.
+
 ## Android test version
 
-The current **Android 0.1.0 test version** requires Android 8.0 or later. APK filenames end in `arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86` or `universal`; each installs independently, and the latter contains all four architectures. Device testing currently focuses on **ARM64 phones**; other architectures have not been device-tested. There is no iOS version. [Source and build instructions](../android/README.md)
+The current **Android 0.1.0 test version** requires **Android 8.0 or later**. There is no iOS version. APK filenames end in `arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`, or `universal` (containing all four ABIs); each package installs independently. Device testing currently focuses on **ARM64 phones**. [Source and build instructions](../android/README.md)
 
-Camera permission is used for capture and live transmission. Background processing uses a foreground service and notifications; older Android versions may require storage permission for system-gallery export. Private rolls and film are separate from system-gallery files. System auto-backup is disabled, so export resources you need before uninstalling.
-
-JPEG is the standard capture format. Minimum RAW support primarily covers uncompressed 8/16-bit Bayer DNG; Ultra HDR requires Android 14+, a compatible sRGB base and a real gain map. Available formats depend on the device. Compressed DNG and wide-gamut P3 are not fully supported; a 16-bit scan is still not HDR output.
+- **Permissions & backups**: Camera permission is used for capture and live transmission viewing. Background processing uses a foreground service and notifications; older Android versions may request storage permission for system-gallery export. App-private rolls and film are excluded from Android auto-backup, so export important resources before uninstalling or switching devices.
+- **Supported capture formats**:
+  - **JPEG**: Standard capture path, linearized via the inverse sRGB transfer function.
+  - **RAW (DNG)**: Supports uncompressed 8/16-bit Bayer DNG and interleaved three-channel LinearRaw DNG (Bayer is demosaiced by active-area phase; LinearRaw reads three channels directly), calibrated into linear working RGB.
+  - **Ultra HDR**: Requires Android 14+, a compatible sRGB base image, and a real gain map; availability depends on the device. Compressed DNG and wide-gamut P3 are not fully supported, and 16-bit scanned outputs remain SDR images.
 
 ## From roll to photograph
 
-1. **Load**: choose stock, 135/half-frame/120 format, capacity and a roll name on Camera. Set camera effects and load the roll. The first level shows stock, format and capacity; More loading settings holds naming, pairings, capture precision and rewind, with a collapsed summary.
-2. **Shoot**: use the landscape finder, tap to focus and meter, pinch to zoom and adjust EV. Leave an unfinished roll and resume later.
-3. **Seal**: seal from the camera menu, then open the roll in Rolls.
-4. **Develop**: choose a process or open Free processing to arrange baths.
-5. **View and scan**: open a developed frame, view it on the light table or scan it. Choose a style, brightness, color and curves, then tap Scan and save.
+1. **Load**: Choose stock, format (135 / half-frame / 120), and capacity on Camera, then load the roll (naming, pairings, capture precision, and rewind options live under *More loading settings*).
+2. **Shoot**: Use the landscape viewfinder to tap-to-focus/meter, pinch-to-zoom, and adjust EV. You can leave an unfinished roll at any time and resume later.
+3. **Seal**: Seal the roll from the camera menu to move it to Rolls for development.
+4. **Develop**: Open the roll in Rolls, pick a process preset, or arrange custom baths in **Free processing**.
+5. **View and scan**: Open a developed frame on the light table or in the scanner, refine style, light, color, and curves, then save to Library.
 
 ## Camera controls
 
 | Control | Use |
 | --- | --- |
-| Manual advance | The shutter locks after capture; Advance moves to the next frame |
-| Multiple exposure | Multi re-cocks the current frame for another exposure |
-| Auto advance | Enable in camera settings to advance after saving; a capture-page shortcut remains available |
-| EV and zoom | Hold briefly, then slide vertically on the side rail or horizontally on the bottom rail; double-tap to reset |
-| Panoramic gate | Adds unexposed bands above and below a 135 frame; switch before advancing, with each exposure retaining its own state |
-| Lenses and flash | Choose the lenses, zoom and flash options offered by the device |
+| Manual advance | The shutter locks after each shot; tap **Advance** to move to the next frame |
+| Multiple exposure | Tap **Multi** to re-cock the shutter on the current frame |
+| Auto advance | Enable in camera settings to advance automatically after saving (a quick toggle stays on the capture screen) |
+| EV and zoom | Hold briefly on the control, then slide vertically on the side rail or horizontally on the bottom rail; double-tap to reset |
+| 135 panoramic gate | Adds unexposed top/bottom bands on 135 frames; toggle before advancing, with each exposure retaining its own state |
+| Lenses and flash | Switch among lenses, zoom levels, and flash modes supported by your device |
+| Capture format | Tap JPEG / RAW / HDR on the bottom viewfinder row to set the format for the next exposure once the camera is ready |
 
-On your first landscape viewfinder visit, a gesture guide appears for about three seconds: hold side EV/shutter and slide vertically, or hold bottom zoom and slide horizontally; double-tap to reset. Advance moves to the next frame; Multi keeps the current frame. Tap anywhere to close the guide without taking a shot or changing a setting. The **?** above the finder reopens it until you tap or go back. Accessibility settings may extend the first display; touch exploration disables automatic dismissal.
+### Home layout & roll loading
 
-Cards use one or two columns according to available width and system font size. Scroll vertically to read longer content. Touching pauses automatic dismissal; dragging keeps the guide open, while a tap closes it. The guide retains ownership of the entire touch sequence.
+- The Camera home screen separates **Loaded roll**, **Camera & capture settings**, and **Next-roll defaults**. The loaded roll displays its frozen stock, format, capacity, and progress. **ISO & shutter** controls subsequent sensor exposures without altering the film material. Next-roll defaults (grain, ageing, MTF softness, halation, sprockets, and factory edge lettering) freeze into a roll only when loaded.
+- The roll-loading dialog summarizes grain, ageing, and film-edge settings; **Adjust grain / ageing / film edges…** updates that summary without losing your chosen stock, format, or length.
+- Tap **?** in the landscape finder at any time to reopen the interactive control guide highlighting each available button in place.
 
-The 2026-11-16 source UI separates **Loaded roll**, **Camera & capture settings**, and **Next-roll defaults**. The current roll shows its frozen material, format, capacity and exposure progress. Grain, aging, softness, halation and edge defaults apply only to newly loaded rolls. **ISO & shutter** controls subsequent sensor exposures, retaining the existing lock and force-unlock behavior without changing the film material. Older APKs do not include this UI update.
+### Camera effects & text imprinting
 
-The loading dialog shows grain level/size, ageing and edge settings. **Adjust grain / ageing / film edges…** opens next-roll defaults, then refreshes the summary without losing the selected stock, format or length. Loading freezes these settings into the new roll.
-
-Choose body leaks and gate dirt in camera settings. Next-roll defaults contain ageing, sprockets and factory edge lettering. Text imprinting can be adjusted while shooting. Sprockets and edge lettering sit outside the image; 120 uses a border without holes.
-
-Text imprinting accepts up to **24 uppercase/lowercase English letters, digits, spaces and ASCII punctuation**. Full-width ASCII is converted automatically; CJK and emoji are unsupported. Blank text disables printing. Date-only text keeps the original numeric glyphs; letters or other punctuation select a 5×7 dot font for the whole string. Brightness ranges from 0–200%: 100% retains the original exposure strength and 0% adds no exposure. Choose a corner, then adjust the horizontal and vertical sliders for custom placement. During landscape capture, the sample stays on the left; Content and Placement panels switch on the right. Saving affects future exposures only.
-
-Choose grain, MTF softness and halation before loading. Natural retains the stock's own strength; other levels reduce or increase it. Grain Off disables both dye and silver grain. These settings apply to new rolls; loaded rolls and existing developed film keep their original settings. New rolls use fine layer texture and coarser dye clouds, with partly shared patterns across the color layers. Baths still affect grain strength, scale and clumping.
+- **Camera effects**: Organized under **Light leaks / Gate dirt / Imprint** tabs with a fixed sample preview and active-effects summary. Combine up to 8 independent light-leak components (each with shape, direction, and strength; setting strength to zero preserves placement). Dust, debris, hair, insects, and imprinting can be combined freely. Saving applies only to future exposures.
+- **Text imprinting**: Accepts up to **24 uppercase/lowercase English letters, digits, spaces, and ASCII punctuation** (full-width ASCII is normalized; CJK and emoji are unsupported; blank disables imprinting). Date-only strings use classic numeric glyphs; adding letters or other punctuation switches the string to a 5×7 dot-matrix font. Brightness spans 0–200% (100% baseline), with four corner presets plus horizontal/vertical sliders.
+- **Grain, MTF, and halation**: Choose strength before loading (*Natural* keeps stock defaults; *Grain Off* disables both dye and silver grain). New rolls generate fine layer texture plus coarser partially correlated dye clouds, still modulated by bath conditions.
 
 ## Baths and recipes
 
-In the development source, scroll the category strip in **Choose a process**, or swipe across the recipe list to switch categories. Scroll vertically to browse recipes within a category. Tap a row to apply that recipe.
+### Preparation & recipe selection
 
-Automatic development uses a selected preset. **Free processing** lets you arrange baths and adjust temperature, duration, concentration, agitation time and strength. Try reversal, cross processing, silver retention and bath accidents.
+- Development opens on **Prepare**, summarizing loaded stock, resolved process, expected film polarity, and step order before you tap **Start** (unfinished tasks are automatically detected for resume).
+- Under **Choose a process**, scroll the category strip or swipe horizontally across the recipe list to switch among Recommended, Processes, Bath styles, and My recipes; tap a row to apply.
+- Top tabs jump directly to **Bath conditions**, **Processing incidents**, **Additional base bleaching**, and **Scan & save**. Prepare, Free processing, and individual bath editors all show a live **synthetic process chart** reflecting your draft settings.
+- Color stocks processed in B&W baths are tagged as silver images with their native base retained. When pairing a dye-free B&W stock with a full color process, the app warns that silver bleaching can clear the image and offers a one-tap switch to color-negative with retained silver.
 
-Processing opens in Prepare: choose a recipe, review the loaded material, resolved process, expected film and execution order, then start. Recipe categories are Recommended, Processes, Bath styles and My recipes. Free processing remains a primary entry. Bath conditions, Processing incidents, Additional base bleaching and Scan & save open as child pages from preparation. Back returns to preparation first. The header shows whether this run saves film alone or also creates Library photos; one Start button stays at the bottom. Resume unfinished work through More, or let Start identify an existing task first.
+### Free processing & processing incidents
 
-Preparation summarizes bath overrides and enabled incidents. Completion shows retained film/photo counts and entries to view, scan or export the batch.
-
-Free processing displays the current process's base bath sequence immediately. Select a bath horizontally to inspect or edit it. Browsing, canceling or accepting an unchanged bath keeps the original process; a real bath edit creates a custom sequence. Enable Custom bath sequence to add, remove or reorder baths, or replace the draft with a template. Base baths and additional processing settings together form the full development.
-
-Bath details show inherited developer, fixer, duration, temperature and concentration alongside local overrides. Unfinished input is marked for validation. Shared chemistry and conditions is available near the top of the sequence page; secondary shared settings remain below.
-
-The workbench starts with the sequence. Open shared chemistry and conditions, shared agitation, shared reactions, or Adjacency & DIR from that page; system Back returns to the sequence first. Select a bath, then open its chemistry, conditions, agitation or reactions. Each bath inherits shared conditions or overrides them. Shared bath duration applies to baths without a local duration; it is not the total process time. Drag a slider or tap its value for precise input. Done in a bath updates the workbench draft; Cancel discards that bath's current edit. Apply to this development returns the outer draft to preparation. Leaving with pending changes offers Apply & return, Discard, or Keep editing. Incomplete or invalid input also counts as a pending edit; a failed apply keeps the workbench open and shows the reason. Standalone recipe editors retain Apply draft. Automatic program order and expected results come from the actual process resolver.
-
-Phone agitation recording uses the gyroscope; manual values are also available. Each development creates a separate batch, so one roll can be processed with several recipes.
-
-Scan & save controls whether development also scans photos into the app Library. Turn it off to retain developed film for scanning later. Invalid scan settings skip automatic scanning for that run; development still produces retained negatives. Correct the settings and scan from those negatives later.
-
-Base bleaching shows the active process setting; manually turning it off explicitly disables it. Use process base bleaching restores the preset. Scan defaults follow the final film: negatives use base correction and inversion; neutral clear positives use neither; positives with a strong colored base use base correction without inversion. The system sets both switches from the final film. Override either manually, or tap Restore automatic matching. Selecting another frame starts with automatic matching; switching or resetting a style on the same frame keeps both switches. Old interpretation flags stored in a style are not applied as style parameters. Scan base correction does not bleach or alter the film.
-
-Color stocks processed in black-and-white baths are tagged as silver images; their base and any retained halide remain. Cross-process polarity follows the ordered bath response.
-
-Stock names distinguish color/B&W and negative/reversal. Process names describe the baths; Standard matches the loaded film automatically. The development page shows stock, process and expected result. With the current B&W stocks that lack dye-forming layers, a complete color process can bleach away the silver image. A notice offers a shortcut to color-negative processing with retained silver. Experimental choices remain available.
-
-Save material, bath and scan configurations separately in Settings. Copy or import **FFC2 recipe share codes**. Loaded rolls and existing tasks retain their saved configurations.
-
-Camera effects use Light leaks / Gate dirt / Imprint tabs with a fixed sample preview and a summary of configured effects. Combine up to eight leak components, each with its own shape, direction and strength. Overall strength controls the group; setting a component to zero keeps its position while disabling it. Dust, debris, hair, insects and imprint can coexist. Switching tools keeps the draft; Save applies to future exposures, while Cancel discards this edit.
-
-Processing incidents and Additional base bleaching are separate branches; resetting one keeps the other. Uneven development, chemical stains and reticulation each offer Inherit, Off or Set, and can be combined. Inherit all keeps effects arising from the recipe and bath conditions; Clean process disables these three incidents while retaining grain and other material settings. Incident adjustments have up to 24 in-session undo/redo steps, with a continuous slider gesture treated as one step. History does not modify completed development or base bleaching.
+- **Free processing**: Starts with the base bath sequence and provides top tabs for **Shared chemistry / Agitation / Reactions / Adjacency & DIR**. Select any bath to view inherited conditions or override them locally (*Shared bath duration* applies to baths without a local duration, not the total process time). **Done** inside a bath updates the workbench draft; **Apply to this development** commits the draft back to Prepare, with a confirmation prompt if you leave with pending edits.
+- **Gyroscope agitation**: Record physical phone agitation with the gyroscope or enter manual values. Each development creates an independent batch so one roll can be processed multiple times.
+- **Incidents & base bleaching**: Managed separately. Uneven development, chemical stains, and reticulation each support **Inherit / Off / Set**, with 24-step in-session undo/redo (continuous slider drags count as one step). *Clean process* disables only those three incidents while keeping grain and material settings.
+- **Recipes & FFC2**: Save material, bath, and scan definitions independently under Settings, and share or import **FFC2 recipe codes**. Loaded rolls and existing tasks keep their frozen recipes.
 
 ## Viewing and scanning
 
-Development completion and batch pages guide you to scan one frame or the batch. Scanning reads the film without changing it and saves photos in the app Library. Export photos, or use the existing automatic export option, to place them in the system gallery. Deleting a roll removes its captures and latents, preventing further development; existing film, saved photos and exports remain. Deleting film prevents rescanning it while retaining the original roll exposures and saved photos.
-
 | Mode | View |
 | --- | --- |
-| Light table | Preserves film polarity; Light controls brightness and temperature |
-| Scene transmission | Overlays transparent film on the live camera, with zoom, drag and reset |
-| Positive projection | Interprets the film as a positive image |
-| Scan | Selects a finish and adjusts brightness, color and tone/RGB curves before saving |
+| Light table | Preserves the film's actual polarity; tap **Light** for brightness and color temperature |
+| Scene transmission | Overlays transparent film onto the live camera feed with zoom, drag, and reset |
+| Positive projection | Interprets the film directly as a positive image |
+| Scan | Adjusts style, base correction/inversion, light, color, and curves before saving to Library |
 
-Use Adjust scan settings in a development batch to scan one frame or the batch. A saved photo can also lead back to its source negative for rescanning.
+> **Read-only guarantee**: Viewing and scanning only observe the developed film and never alter it. Development completion and batch screens provide direct shortcuts to scan a single frame or the entire batch.
 
-Lighting adjustments reuse the same film transmission while preserving device response, clipping and color processing. The first film read still takes time. Slow updates show a waiting indicator; fast ones do not flash a spinner.
+### Scan drawer, tools, and touch controls
 
-Returning from the background keeps a completed preview and its save settings. Pending previews resume if automatic refresh is enabled; otherwise, tap Refresh before saving.
+- **Preview-first drawer**: Scanning opens with a large preview. Tap or swipe up the **Scan controls** bar to expand tools, and drag its handle to any preferred height (at least 1/5 of the workspace always stays open for the photo).
+- **Tool order**: **Film (base correction / inversion) → Light (exposure / temperature) → Tone (gain / contrast) → Normalize → Color → Curves → Output → More**. Swipe horizontally across the tool body to switch tabs, or vertically to scroll.
+- **Base correction & inversion**: Initial switches match the developed film's actual polarity and colored base (both on for negatives, both off for neutral positives, base correction only for strongly masked positives). Override manually at any time or tap **Restore automatic matching**; switching styles on the same frame keeps your switches. Under **Film**, you can also pin the frame's **Process sample** chart across tools.
+- **Precision touch**: Tap or drag sliders to jump directly; hold until **Fine** appears to drag in fine increments (wide-range controls step by one minimal unit). Tap numeric buttons for exact entry; double-tap Gain or a ruler to restore its inherited value, or double-tap an HSL ruler to zero that channel.
+- **Light EV & normalization**: The current phone scanner calibrates base and tonal endpoints at neutral light exposure before applying Light EV (with inversion on, lower EV brightens; with inversion off, higher EV brightens), while Tone Gain always brightens in the same direction. Default negative scans apply a `sigmoid` shoulder before normalization so lowering normalization strength does not mix unbounded readings back in.
+- **Color HSL & curves**: In **Color**, swipe the hue strip to edit 8-band HSL directly under the preview. In **Curves**, tap the luma/R/G/B dots to switch channels, double-tap to add points, drag to adjust, or tap coordinates for numeric input. Editing style parameters appends `· Custom` to the style label (hold to inspect modified controls).
 
-Save and batch scan on the scan page use the settings from the current successful preview. After editing or refreshing, wait for the new preview before saving. Hold the scan photo to compare with the first successful preview from this visit; release to return to the current effect. Comparison changes no settings and does not recompute the scan.
+### Sessions, undo history, and histogram
 
-Scanning opens with a large photo. Swipe up on the Scan controls bar or tap it to open the drawer. Swipe down or tap again to collapse it. Your tool and edits are retained. Curves gets a taller drawer. Choose a style at the top of Film. The toolbar order is Film (base correction/inversion), Light (exposure/temperature), Tone (gain/contrast), Normalize, Color, Curves, Output and More. Style is the parameter starting point, not a later processing stage. Selecting or resetting a style keeps independent base correction, inversion and output settings. The new phone scanner calibrates base and tonal ranges at neutral light exposure, then applies Light EV. With inversion on, lower EV brightens the scan; with inversion off, higher EV brightens it. Temperature remains part of transmission capture, while Gain always brightens in the same direction. Saved-photo editing and frozen tasks retain their recorded implementation; new scans opened from film use the new one. Swipe across the tool body to change pages or vertically to scroll. Drag a ruler horizontally from its current value and move your finger upwards until Fine appears. On wide ranges such as agitation time, one fine tick changes the smallest available unit. Double-tap Gain to restore its inherited value or an HSL ruler to zero just that channel of the selected colour. Where a numeric button is shown, tap it for exact input or double-tap the ruler to restore the inherited value. In Color, scroll the colour strip and adjust HSL under the photo. Enable automatic refresh to see changes as you edit. Normalize groups Strength, Black and White controls for matching tonal endpoints; its effect can be small when the image already fits the target range. Scanning hides the brand header and global navigation. The top toolbar includes Back, the frame name, histogram, rotation, Undo/Redo and Save. Output contains Refresh, Scan batch and the system-gallery option; batch execution still confirms first. More contains saved configurations and device definitions. The Recipes page groups material, bath and scanner presets; storage and cache controls are under Processing.
+- **Transmission reuse & comparison**: Lighting edits reuse the prepared unilluminated transmission of the same frame, and returning from the background preserves completed previews and save receipts. Hold the preview image to compare against the initial preview and histogram from this visit; release to return.
+- **Top bar & sessions**: The top toolbar provides Back, rotation, corner histogram toggle, Undo/Redo, and Save (up to 8 parameter-only sessions × 24 undo steps in memory). From a saved photo's menu, **Continue editing this photo** restores its frozen parameters and original scanner implementation, whereas **Scan from source film** opens a fresh film session.
+- **Saving & gallery export**: Tapping **Save** writes to the app Library and keeps the editor open so you can view, keep tweaking, or jump to the next frame in the batch (identical parameter sets prompt reuse without overwriting earlier versions). Batch scanning and simultaneous system-gallery export live under **Output**.
 
-Continue editing this photo restores the photo's frozen settings and recorded scanner implementation. Scan from source film opens a separate film session. Missing sources or unreadable settings are reported instead of substituting the current draft. Up to eight parameter-only sessions are retained in memory, each with 24 undo steps. After restarting, start again from a saved photo's settings.
+### Compute & GPU assistance
 
-A slider/curve gesture or group reset is one undo step. The style panel allows repeated auditions, with the main preview and thumbnails of this film. Done accepts the audition; Cancel restores the opening state and preserves redo. Style and stock selectors include favorites and recent choices. Stock thumbnails are synthetic standard-process examples; the detailed pairing preview remains available. Thumbnails never become film or saved scan input.
-
-Save writes a single photo to the app Library and keeps the editor open. View the result, keep editing, or continue to the next frame when available in this batch. Identical existing versions are identified and reused; earlier versions remain. Enable export to the system gallery under Output; writing starts after any required permission is granted.
-
-The histogram button in the top toolbar toggles a corner overlay. Color contains Saturation; Tone contains independent Contrast without rewriting curves. New default negative scans use a sigmoid shoulder before normalization so lower normalization does not mix unbounded readings back in. Saved photo settings and custom recipes are not rewritten. The curve graph also shows the selected channel distribution. Statistics describe the entire displayed sRGB preview after adjustments, rather than RAW, curve input or full-resolution film data. Pending edits mark the histogram as needing refresh; holding the scan photo shows the initial preview and its histogram. Release to return to the current edit.
-
-Edit curves below the preview. Black/white, red, green and blue dots select the channel. Double tap to add a point, drag to adjust, or tap coordinates for precise input. Output shows negative and expected saved-photo dimensions. The selector shows the preset name, adding Custom when gain, color, curves or other style parameters differ. Hold it for the affected controls. Base correction and inversion switches do not mark the style as custom.
-
-Processing → Compute & acceleration offers **GPU assistance (automatic selection)**. It defaults on for new preferences, preserves existing choices and applies to the next job. Eligible operations include input linearization, density-to-transmission, spectral integration and combined scan output. Selection includes transfer time, with CPU fallback on qualification or execution failure. Global statistics, development and previews remain on CPU. JPEG uses full reference decoding with subsequent memory-based processing blocks. Spectral mode retains all wavelengths. The hardware self-test uses synthetic data, does not write to Library or change the acceleration switch, and reports block timings rather than whole-photo development time. Recent execution records show the actual backend.
-
-Latent and optical archives use fast lossless compression. Pixel and material data stay unchanged; files may be slightly larger. Recent execution records show totals for the executed portion of the latest job: setup, spatial preparation, material computation, scratch writing, and compression/commit. Computation includes row reads; these are not single-shot shutter timings.
+- Enable or disable **GPU assistance (automatic selection)** under **Settings → Processing → Compute & acceleration** (enabled by default for new setups; takes effect on the next job). Eligible linearization, transmission, spectral integration, lightweight continuous-bath development, and combined scan output steps run on OpenGL ES 3.1 when qualification and transfer-inclusive timing pass, falling back to CPU on failure.
+- Latent and optical archives use fast lossless compression. **Recent execution records** summarize cumulative stage timings and actual backends (the hardware self-test measures synthetic blocks only and is not a whole-photo timing guarantee).
 
 ## Rolls and Library
 
-The four bottom pages are Camera, Rolls, Library and Settings. Rolls groups development batches by roll. Library offers photo/negative grids, swipe browsing and zoom. While zoomed in, pan to either horizontal edge and keep swiping to change photos. Hold an item to enter batch selection. Detailed photo decoding follows the available memory budget and retains native dimensions when they fit.
+The four bottom tabs are **Camera / Rolls / Library / Settings**:
 
-The layout button cycles through three columns, five columns and a list. Grids prioritize image size; the list shows details. Filter & sort supports creation time/file size/roll name, ascending or descending order, a selected roll, favorites and rating comparisons (>, <, ≥, ≤; 0 means unrated), plus pages or continuous scrolling. The viewer's five stars and heart control rating and favorite independently. Hold a development batch on its roll page to manage it. Thumbnails transition to detailed images while retaining the available preview during loading.
-
-| Resource | Management | Reuse |
+| Resource layer | Management | Reuse |
 | --- | --- | --- |
-| Exposures | Whole rolls | Develop again |
-| Developed film | Individual or batch | View and rescan |
-| Scanned photos | Individual or batch | Browse and export |
+| Exposure rolls (originals & latents) | Whole-roll | Develop repeatedly with different recipes |
+| Developed film | Individual or batch | View, rescan, or export optical NPZ |
+| Scanned photos | Individual or batch | Browse, rate/favorite, export, and trace source |
 
-The three layers are stored independently. Deleting one keeps the others; missing sources are shown when following a result upstream.
-
-Negative previews use averaging to reduce sampling aliasing. Zooming loads detail from optical rows in the background within the memory budget; browsing remains available. Optical material stays unchanged. Rendered light-table and projection views have a separate disk cache for reopening. Changed lighting produces a new view. The first uncached view of large film still needs the full material read. Clear display caches under Processing without removing film or photos.
-
-Use **↺** beside a parameter to restore its preset or inherited value. A scan group reset affects that group while keeping the style and other adjustments. Preset curves restores the style's tone and RGB curves; the existing channel reset still makes that channel linear. Whole-draft resets in material/scanner definitions and Free processing return to the opening draft without changing saved materials or tasks. The light-table lamp resets to 0 EV / 5500 K. The camera retains its existing double-tap resets.
+- **Independent layers**: Deleting one layer never deletes the other two (deleting a roll removes captures/latents while keeping film and photos; deleting film removes rescanning while keeping the roll and photos).
+- **Views, filtering, and display cache**: Cycle Library layouts among 3-column grid, 5-column grid, and detailed list; sort by creation time, file size, or roll name; filter by roll, favorites, and rating comparisons; choose paged or continuous scrolling (pan past a zoomed photo's horizontal edge to advance). Zooming into developed film loads high-resolution optical rows asynchronously within memory limits, and rendered light-table/projection views use a separate disk cache clearable under **Processing → Display cache**.
+- **Reset buttons (↺)**: Tap **↺** beside any parameter to restore its preset/inherited value; group resets affect only that group; *Preset curves* restores style curves while channel **↺** resets to linear; light-table lamp resets to `0 EV / 5500 K`.
 
 ## Saving and export
 
-Save is available at the top of the scan page. Output holds format, quality, size, system-gallery export and batch scanning, using the current successful preview settings. Review execution details before development or batch execution. Development needs automatic scanning enabled to export finished photos; development alone retains film for scanning later.
+### Formats & precision boundaries
 
-JPEG is 8-bit lossy with Low/Medium/High quality (40/70/100); PNG supports 8/16-bit, and TIFF is 16-bit lossless. Automatic scanning uses the output choices in Scan & save. Export requires a format and destination: the system gallery accepts JPEG/PNG, while TIFF goes to a folder. Existing unrotated JPEGs are copied unchanged; conversion or rotation re-encodes, capped at the original JPEG's recorded quality. Export cannot restore higher precision from an existing lower-precision image; rescan the film instead.
+- **JPEG**: 8-bit lossy (Low / Medium / High = 40 / 70 / 100); exports to system gallery or folder (unrotated JPEGs copy directly).
+- **PNG**: 8-bit or 16-bit lossless; supports system gallery and folder export.
+- **TIFF**: 16-bit lossless; folder export (SAF) only.
+- Re-exporting an existing lower-precision image cannot recover higher precision; rescan the source film instead.
 
-| Resource | Image export | Processing material |
+| Resource | Image export | Reusable material export |
 | --- | --- | --- |
-| Saved scan | Compatible JPEG, PNG or TIFF based on source format/precision; TIFF uses file export | Follow its source and rescan to select a different precision |
-| Developed film | Light-table view preserving polarity or positive projection; JPEG/PNG/TIFF, with TIFF saved to files | Optical NPZ for continued desktop viewing and scanning |
-| Exposure roll | Retained camera JPEG / DNG originals to a folder | All latent NPZ files from a sealed roll for desktop development |
+| Scanned photo | Compatible JPEG, PNG, or TIFF | Follow Source back to the film and rescan |
+| Developed film | Light-table view (preserving polarity) or positive projection (JPEG / PNG / TIFF) | Optical NPZ for continued desktop viewing & scanning |
+| Exposure roll | Retained camera JPEG / DNG originals to a folder | Whole-roll latent NPZ files for desktop development |
 
-Library tiles and the viewer show dimensions, type and time. Photos identify their source film polarity; rolls identify their stock type, with planned dimensions marked Planned. Open ••• → Information for saved photo/film recipes and records. Roll details also offer Information for the loaded material, capture and default processing settings. Developed film uses its actual recorded polarity. File time is labeled when an older film has no creation timestamp; missing facts are marked unrecorded, never inferred from a roll name or current settings.
+Mobile exposes into effective color or silver records. On desktop, develop an exported roll using those saved records. To try a different emulsion stack, export the original JPEG or DNG and start a new desktop exposure. [Desktop layer controls](DESKTOP_GUIDE.en.md#coatings)
 
-The viewer's **Source** button shows the source roll, frame, development batch and scan record, with links to available resources. Frame numbers identify exposure positions on a roll, rather than the order of pictures in Library. Development batches and scans have fixed short identifiers; deleting other results does not renumber them. Full identifiers are available under **Information → Resource IDs**.
+### Metadata, provenance, and appearance
 
-Source history distinguishes available resources, removed or unrecorded entries, and missing files. Missing sources do not prevent viewing or exporting a saved photo, and another result from the same frame is never substituted. New photos retain the source film's actual material and development settings. Older photos with neither a source nor a saved record show “not recorded.”
-
-Hold to select items in Library or Rolls, then Export selected. Negative images are rendered from complete optical resources, not small previews. Materials and camera originals export as files. Latents not formed yet are prepared during export and may take time. App resources remain intact. Export files you need before uninstalling or changing phones.
-
-Settings offers Chinese / English and Black & amber, Ivory, Slate and Silver themes. In the development source, Camera places Load or Continue directly below the roll status. Expand **Loading and unloading animations** to change the skip options. Tap **?** for help with the current task. The guide keeps its topic strip in view. Swipe across the article to change topics, scroll vertically to read, or tap a topic directly. Back returns to your work. In the landscape finder, **?** shows gestures in place.
+- **Information & frozen recipes**: Tiles and viewer show dimensions, polarity/stock type, and timestamps. Open **••• → Information** to inspect frozen recipes and records (missing fields show *not recorded* or *File time* rather than guessing).
+- **Source provenance**: Tap **Source** in the viewer to inspect and jump to the source roll, roll frame position (`Frame 01`), development batch, and scan record using stable short IDs that never renumber when other items are deleted (full IDs appear under **Information → Resource IDs**).
+- **Batch export**: Long-press items in Library or Rolls and tap **Export selected**. Negative exports always render from full optical data rather than small previews.
+- Under **Settings → Appearance & language**, choose System, Chinese, English, or **Import language pack…** to install a community JSON file. The same page offers four themes (*Black & amber*, *Ivory*, *Slate*, *Silver*). Tap **?** for the current page’s offline guide. [Creating and installing language packs](../android/TRANSLATING.md)

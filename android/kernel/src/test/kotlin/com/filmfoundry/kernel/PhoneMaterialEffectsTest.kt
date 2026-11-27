@@ -34,10 +34,21 @@ class PhoneMaterialEffectsTest {
         assertEquals("phone_reduced_v0",((expected.metadata["film_process_model"] as Map<*,*>)["execution_implementation"] as Map<*,*>)["profile_id"])
     }
 
-    @Test fun incidentsAreRollFixedAndGrainIsFrameSpecificAndFrozenInOptical() {
+    @Test fun sharedBathAndFrameLocalDefectsReplayAndStayFrozenInOptical() {
         val clean1=recipe(0.0,1);val clean2=recipe(0.0,2)
         val a=kernel.develop(source(clean1),clean1);val b=kernel.develop(source(clean2),clean2)
-        assertArrayEquals(a.opticalDensityRgb.values,b.opticalDensityRgb.values,0f)
+        assertFalse(a.opticalDensityRgb.values.contentEquals(b.opticalDensityRgb.values))
+        assertArrayEquals(a.opticalDensityRgb.values,kernel.develop(source(clean1),clean1).opticalDensityRgb.values,0f)
+        for (scope in listOf("shared", "legacy")) {
+            fun develop(frame: Int): FloatArray {
+                val base = recipe(0.0,frame)
+                val configured = if (scope == "legacy") base +
+                    (PhoneMaterialPhenomena.INCIDENT_SCOPE to PhoneMaterialPhenomena.ROLL_INCIDENTS)
+                else base + ("develop" to mapOf("uneven_development" to .6))
+                return kernel.develop(source(configured),configured).opticalDensityRgb.values
+            }
+            assertArrayEquals(develop(1),develop(2),0f)
+        }
         val first=recipe(.04,1);val second=recipe(.04,2)
         val optical=kernel.develop(source(first),first)
         val other=kernel.develop(source(second),second)

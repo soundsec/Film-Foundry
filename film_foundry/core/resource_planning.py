@@ -158,6 +158,7 @@ def estimate_pipeline_memory(
     retain_development_stages: bool = False,
     comfort_zone_megapixels: float = 30.0,
     decoder_reduced: bool = False,
+    film_border=None,
 ) -> PipelineMemoryEstimate:
     """Estimate memory before decoding a full-frame source.
 
@@ -173,6 +174,12 @@ def estimate_pipeline_memory(
     work_width, work_height = dimensions_for_long_edge(
         source_width, source_height, long_edge
     )
+    if film_border is not None and film_border.enabled and film_border.formation_mode=="native":
+        from .film_border import vertical_transport
+        if vertical_transport(film_border,work_width,work_height):
+            work_width += 2*max(1,round(work_width*film_border.rebate_height_ratio))
+        else:
+            work_height += 2*max(1,round(work_height*film_border.rebate_height_ratio))
     source_unit = source_width * source_height * _RGB_FLOAT32_BYTES_PER_PIXEL
     work_unit = work_width * work_height * _RGB_FLOAT32_BYTES_PER_PIXEL
 

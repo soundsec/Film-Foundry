@@ -92,7 +92,7 @@ def _program_with_events(recipe, *, mode, material_process, layer_count, coupled
     from film_foundry.core.film_process.formation_history import attach_responses
     program=attach_responses(program,recipe)
     raw=recipe.process_events
-    if raw is not None and raw['model'] in ('film_process_events_v10','film_process_events_v11','film_process_events_v12','film_process_events_v13','film_process_events_v14','film_process_events_v15'):
+    if raw is not None and raw['model'] in ('film_process_events_v10','film_process_events_v11','film_process_events_v12','film_process_events_v13','film_process_events_v14','film_process_events_v15','film_process_events_v16'):
         from film_foundry.contracts.process_events import validate_process_events
         from film_foundry.core.film_process.ordered_events import inject_events
         return inject_events(program,validate_process_events(raw)['events'])

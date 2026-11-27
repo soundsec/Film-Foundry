@@ -24,6 +24,7 @@ class ScanComparison(private val shell: MobileShell,private val surface: FrameLa
     private var downY=0f
     private val hold=Runnable { if(surface.isShown) show(true) }
     private var bitmap: Bitmap?=null
+    private var baselineAttempted=false
     private var angle=0
     private var source: String?=null
     private var currentHistogram: DisplayHistogram?=null
@@ -32,10 +33,12 @@ class ScanComparison(private val shell: MobileShell,private val surface: FrameLa
     init {
         baselineImage.addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_ -> orientOutputView(baselineImage,angle) }
         surface.addView(baseline,FrameLayout.LayoutParams(-1,-1))
-        surface.contentDescription=shell.copy("扫描预览，长按对照初始预览","Scan preview, hold to compare with the initial preview")
+        surface.contentDescription=shell.copy("扫描预览","Scan preview")
         surface.setOnLongClickListener {
             if(bitmap==null) false else { show(baseline.visibility!=View.VISIBLE);true }
         }
+        surface.setOnClickListener { if(bitmap!=null) show(baseline.visibility!=View.VISIBLE) }
+        surface.isClickable=false;surface.isLongClickable=false
         surface.setOnTouchListener { _,event ->
             if(bitmap==null) return@setOnTouchListener false
             when(event.actionMasked) {
@@ -55,8 +58,12 @@ class ScanComparison(private val shell: MobileShell,private val surface: FrameLa
     }
     fun bind(key: String) { if(source!=key) { clear();source=key } }
     fun offer(image: Bitmap,rotationDegrees: Int=0) {
-        if(bitmap!=null || source==null || image.isRecycled) return
+        if(baselineAttempted || source==null || image.isRecycled) return
+        baselineAttempted=true
+        if(image.width.toLong()*image.height*4 > MAX_BASELINE_BYTES) return
         bitmap=runCatching { image.copy(Bitmap.Config.ARGB_8888,false) }.getOrNull() ?: return
+        surface.isFocusable=true;surface.isClickable=true;surface.isLongClickable=true
+        surface.contentDescription=shell.copy("扫描预览，长按对照初始预览","Scan preview, hold to compare with the initial preview")
         angle=rotationDegrees;baselineImage.setImageBitmap(bitmap);orientOutputView(baselineImage,angle)
     }
     /** Called only after the matching preview bitmap and request receipt have been accepted. */
@@ -77,10 +84,19 @@ class ScanComparison(private val shell: MobileShell,private val surface: FrameLa
         surface.removeCallbacks(hold)
         if(baseline.visibility==View.VISIBLE) show(false)
     }
+    fun trim() {
+        release()
+        baselineImage.setImageDrawable(null);bitmap?.recycle();bitmap=null
+        baselineHistogram=null
+        baselineAttempted=true
+        surface.isClickable=false;surface.isLongClickable=false;surface.isFocusable=false
+        surface.contentDescription=shell.copy("扫描预览","Scan preview")
+    }
     fun clear() {
-        surface.removeCallbacks(hold)
-        currentHistogram=null;baselineHistogram=null
-        show(false);baselineImage.setImageDrawable(null);bitmap?.recycle();bitmap=null
+        currentHistogram=null
+        trim()
+        baselineAttempted=false
         source=null
     }
+    private companion object { const val MAX_BASELINE_BYTES = 960L * 960 * 4 }
 }

@@ -146,9 +146,22 @@ def first_developer_response(recipe, program):
 
 def retain_product(state, product, fraction):
     if state.formation_history is None: return
+    from film_foundry.core.execution_topology import reference_execution_enabled
+    # Uniform clearing baths supply a scalar or a short per-layer vector.
+    # Avoid broadcasting it over four full moment fields. Local contact maps
+    # keep their usual multiply, without an extra frame-wide inspection.
+    clear = False
+    if not reference_execution_enabled() and np.size(fraction) <= 3:
+        if np.all(np.asarray(fraction) == 1.0):
+            return
+        clear = bool(np.all(np.asarray(fraction) == 0.0))
     for name in NAMES:
         value = state.formation_history.get(f'{product}_{name}')
-        if value is not None: value *= fraction
+        if value is not None:
+            if clear:
+                value.fill(0.0)
+            else:
+                value *= fraction
 
 
 def history_totals(state):

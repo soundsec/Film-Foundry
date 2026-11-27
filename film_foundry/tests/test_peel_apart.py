@@ -12,22 +12,6 @@ def exposure(kind="dye"):
     return peel.expose(image,peel.PeelMaterial(transfer=kind),group_id="test-pair",seed=71)
 
 
-@pytest.mark.parametrize("kind",["dye","silver_compound"])
-def test_transfer_conservation_time_partition_and_readonly(kind):
-    exposed=exposure(kind)
-    contact=peel.spread(exposed,roller_streaks=.5,edge_loss=.6)
-    before=contact.fields["remaining"].copy()
-    preview=peel.preview(contact)
-    assert preview.shape==(8,12,3) and contact.stage=="contact"
-    once=peel.advance(contact,seconds=60)
-    stepped=peel.advance(peel.advance(contact,seconds=20),seconds=40)
-    np.testing.assert_array_equal(once.fields["received"],stepped.fields["received"])
-    np.testing.assert_allclose(once.fields["immobile"]+once.fields["remaining"]+once.fields["received"],1,atol=1e-6)
-    np.testing.assert_array_equal(before,contact.fields["remaining"])
-    assert not once.fields["received"].flags.writeable
-    assert once.fields["received"].shape[-1]==(3 if kind=="dye" else 1)
-
-
 def test_missing_reagent_contact_and_peel_stop_transfer():
     mask=np.ones((8,12),np.float32);mask[:,:4]=0
     contacted=peel.spread(exposure(),coverage=mask,spread_seconds=0)

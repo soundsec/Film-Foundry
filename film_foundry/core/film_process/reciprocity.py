@@ -34,8 +34,14 @@ def exposure_record(film, duration_seconds, layers):
     if record is None:
         return None
     efficiency = layer_efficiency(film.reciprocity_response, duration_seconds, layers)
+    factors = [1.] * layers if efficiency is None else efficiency.tolist()
+    if film.ordered_coatings:
+        from .coatings import emulsions, record_indices
+        rows = emulsions(film)
+        factors = [factors[i] for i in record_indices(rows, layers)]
+        record['coating_ids'] = [r['id'] for r in rows]
     return {**record, 'reciprocity_response': validate_response(film.reciprocity_response),
-            'layer_efficiency': [1.] * layers if efficiency is None else efficiency.tolist(),
+            'layer_efficiency': factors,
             'applied': efficiency is not None,
             'scope': 'single_uniform_window_all_pre_latent_dose',
             'stage': 'before_latent_curve', 'observation': 'readonly_final_medium'}

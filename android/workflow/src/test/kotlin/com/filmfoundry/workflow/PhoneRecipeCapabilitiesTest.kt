@@ -9,21 +9,25 @@ class PhoneRecipeCapabilitiesTest {
         val r=mapOf("film" to mapOf("dir_material_response_matrix" to List(3) { List(3) { .15 } }),
             "develop" to mapOf("development_adjacency_strength" to .3))
         val before=RecipeShareCodec.encode(r)
-        val fast=PhoneRecipeCapabilities.inspect(r,PhoneRecipeCapabilities.Stage.DEVELOP,PhoneFormationProfile.LIGHTWEIGHT)
+        val fast=PhoneRecipeCapabilities.inspect(r,PhoneRecipeCapabilities.Stage.DEVELOP,PhoneFormationProfile.STOCK_LIGHTWEIGHT)
         assertEquals(setOf("film.dir_material_response_matrix","develop.development_adjacency_strength"),
             fast.warnings.filter { it.status==PhoneRecipeCapabilities.Status.OMITTED }.map { it.path }.toSet())
+        val current=PhoneRecipeCapabilities.inspect(r,PhoneRecipeCapabilities.Stage.DEVELOP,PhoneFormationProfile.LIGHTWEIGHT)
+        assertTrue(current.entries.filter { it.path in fast.warnings.map { warning -> warning.path } }.all { it.status==PhoneRecipeCapabilities.Status.REDUCED })
         assertFalse(PhoneRecipeCapabilities.inspect(r,PhoneRecipeCapabilities.Stage.DEVELOP).entries.any { it.status==PhoneRecipeCapabilities.Status.OMITTED })
         assertTrue(PhoneRecipeCapabilities.inspect(r,PhoneRecipeCapabilities.Stage.SCAN,PhoneFormationProfile.LIGHTWEIGHT).warnings.isEmpty())
         assertEquals(before,RecipeShareCodec.encode(r))
     }
     @Test fun newDesktopStateModelsArePreservedAndReportedOnlyForRelevantStages() {
-        val recipe=mapOf("exposure" to mapOf("duration_seconds" to 12.5),
+        val recipe=mapOf("exposure" to mapOf("duration_seconds" to 12.5,
+            "lens_filter" to mapOf("model" to "visible_rgb_lens_filter_v1","key" to "yellow","compensate" to true)),
             "film" to mapOf("time_response" to mapOf("model" to "film_time_response_v2"),"carbon_backing" to mapOf("model" to "carbon_backing_v2")),
             "develop" to mapOf("process_events" to mapOf("model" to "film_process_events_v15"),
                 "formation_history_model" to "bath_products_local_v2","latent_wait" to mapOf("duration_seconds" to 900)))
         val before=RecipeShareCodec.encode(recipe)
         val capture=PhoneRecipeCapabilities.inspect(recipe,PhoneRecipeCapabilities.Stage.CAPTURE)
         assertTrue(capture.warnings.any { it.path=="exposure.duration_seconds" && it.status==PhoneRecipeCapabilities.Status.PRESERVED })
+        assertTrue(capture.warnings.any { it.path=="exposure.lens_filter" && it.status==PhoneRecipeCapabilities.Status.PRESERVED })
         val develop=PhoneRecipeCapabilities.inspect(recipe,PhoneRecipeCapabilities.Stage.DEVELOP)
         for(key in listOf("process_events","formation_history_model","latent_wait"))
             assertTrue(develop.warnings.any { it.path=="develop.$key" && it.status==PhoneRecipeCapabilities.Status.PRESERVED })

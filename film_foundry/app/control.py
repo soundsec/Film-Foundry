@@ -13,6 +13,16 @@ from typing import Callable
 from film_foundry.contracts.data_kernel import WORKFLOW_PROGRESS_STAGES
 
 
+_FILE_STAGES = {
+    'full': ('loading', 'developing', 'scanning', 'saving'),
+    'develop': ('loading', 'developing', 'saving'),
+    'develop_latent': ('loading', 'developing', 'saving'),
+    'expose': ('loading', 'exposing', 'saving'),
+    'reexpose': ('loading', 'exposing', 'saving'),
+    'scan': ('loading', 'scanning', 'saving'),
+}
+
+
 class WorkflowCancelled(Exception):
     """Cooperative cancel. Mapped to WorkflowError(code='cancelled')."""
 
@@ -22,6 +32,20 @@ class WorkflowProgress:
     command: str
     stage: str
     fraction: float | None = None
+
+    @property
+    def step_position(self) -> str:
+        """Stage position for a single-file export. Fractions belong to that stage."""
+        stages = _FILE_STAGES.get(self.command, ())
+        if self.stage in stages:
+            return f'{stages.index(self.stage) + 1}/{len(stages)}'
+        return ''
+
+    def terminal_line(self) -> str:
+        fields = [f'[{self.command}:{self.stage}]', self.step_position]
+        if self.fraction is not None:
+            fields.append(f'{self.fraction:.0%}')
+        return ' '.join(filter(None, fields))
 
 
 class CancelFlag:
@@ -52,6 +76,18 @@ class WorkflowControl:
     def check_cancel(self) -> None:
         if self._cancel_requested is not None and bool(self._cancel_requested()):
             raise WorkflowCancelled("workflow cancelled")
+
+    def before_export(self) -> WorkflowControl:
+        """Forward rendering progress; the enclosing file writer reports completion."""
+        def forward(progress):
+            if self._on_progress is not None and progress.stage != 'completed':
+                self._on_progress(progress)
+        return WorkflowControl(cancel_requested=self._cancel_requested, on_progress=forward)
+
+    def output_saved(self, command: str) -> None:
+        """A cancellation arriving during the final write applies to the next item."""
+        if self._on_progress is not None:
+            self._on_progress(WorkflowProgress(command, 'completed'))
 
     def report(
         self,

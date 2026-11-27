@@ -89,7 +89,9 @@ def test_invalid_process_steps_and_agitation_duration_fail_before_execution():
 def test_default_kinetics_and_built_in_program_are_unchanged_when_new_fields_absent():
     base = DevelopRecipeConfig()
     assert build_effective_development(base) == build_effective_development(dataclasses.replace(base, agitation_time_s=None))
-    a = program_from_develop_recipe(base)
+    # An unversioned recipe keeps the pre-local-bath history model.
+    from film_foundry.contracts.formation_history import LEGACY
+    a = program_from_develop_recipe(dataclasses.replace(base, formation_history_model=LEGACY))
     b = program_from_develop_recipe(DarkroomConfig.from_dict({"develop": {}}).develop)
     assert a == b
 

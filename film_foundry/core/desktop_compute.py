@@ -33,21 +33,44 @@ _rotary_calls=0
 
 
 
+def device_state():
+    """Cached backend and device or fallback reason. None means not probed yet."""
+    requested = os.environ.get('FILM_FOUNDRY_COMPUTE', 'cpu').lower()
+    selected = _auto_backend if requested == 'auto' else requested
+    if selected == 'cuda':
+        if _failure:
+            return 'cpu', _failure
+        return ('cuda', _cuda_device) if _cuda_device else (None, None)
+    module = sys.modules.get('film_foundry.core.opencl_compute')
+    if selected == 'opencl':
+        name, failure = module.device_state() if module else (None, None)
+        if failure:
+            return 'cpu', failure
+        return ('opencl', name) if name else (None, None)
+    if selected is None:
+        return None, None
+    if requested == 'auto' and module:
+        return 'cpu', module.device_state()[1] or _failure
+    return 'cpu', None
+
+
 def status():
     with _lock:
-        requested=os.environ.get('FILM_FOUNDRY_COMPUTE','cpu').lower()
-        selected=_auto_backend if requested=='auto' else requested
         opencl=_opencl_status()
         development=sys.modules.get('film_foundry.core.development_compute')
+        exposure=sys.modules.get('film_foundry.core.exposure_compute')
         grain=sys.modules.get('film_foundry.core.grain_compute')
         transfer=sys.modules.get('film_foundry.core.transfer_compute')
         observation=sys.modules.get('film_foundry.core.observation_compute')
-        active=('cuda' if selected=='cuda' and _runtime is not None and _failure is None else
-                'opencl' if selected=='opencl' and opencl is not None and opencl['initialized'] and opencl['failure'] is None else 'cpu')
+        active = device_state()[0] or 'cpu'
         return dict(requested=os.environ.get('FILM_FOUNDRY_COMPUTE','cpu'),
                     initialized=_runtime is not None, failure=_failure, calls=_calls,blur_calls=_blur_calls,
                     spectral_calls=_spectral_calls, paper_calls=_paper_calls, rotary_calls=_rotary_calls, edge_contact_calls=_edge_calls, noise_calls=_noise_calls, auto_backend=_auto_backend,
                     development_calls=development.status() if development is not None else {'cuda':0,'opencl':0},
+                    reversal_dye_calls=development.dye_status() if development is not None else {'cuda':0,'opencl':0},
+                    exposure_calls=exposure.status() if exposure is not None else {'cuda':0,'opencl':0},
+                    sheet_response_calls=exposure.sheet_status() if exposure is not None else {'cuda':0,'opencl':0},
+                    latent_curve_calls=exposure.curve_status() if exposure is not None else {'cuda':0,'opencl':0},
                     transfer_calls=transfer.status() if transfer is not None else {'cuda':0,'opencl':0},
                     observation_calls=observation.status() if observation is not None else {},
                     resident_grain_calls=grain.status() if grain is not None else 0,

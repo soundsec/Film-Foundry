@@ -60,6 +60,12 @@ def preview_medium(medium, long_edge):
     if gate is not None and resized is not None and resized.shape[0]>=3 and resized.shape[:2]!=medium.frame_shape[:2]:
         metadata=values['metadata']
         record=metadata.get(FORMED_FILM_REBATE_KEY,metadata.get('developed_medium',{}).get(FORMED_FILM_REBATE_KEY))
-        height,width=resized.shape[:2];rows=max(1,min((height-1)//2,round(gate[0]*height/medium.frame_shape[0])))
-        record.update(rebate_rows=rows,image_height=height-2*rows,image_rect=[0,rows,width,height-2*rows])
+        vertical = record.get("transport_axis")=="vertical"
+        height, width = resized.shape[:2]
+        across = width if vertical else height
+        original = medium.frame_shape[1 if vertical else 0]
+        rows = max(1,min((across-1)//2,round(record['rebate_rows']*across/original)))
+        inner = across-2*rows
+        record.update(rebate_rows=rows,image_height=inner,
+                      image_rect=[rows,0,inner,height] if vertical else [0,rows,width,inner])
     return replace(medium, **values)

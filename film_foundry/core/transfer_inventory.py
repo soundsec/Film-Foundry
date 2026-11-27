@@ -163,7 +163,7 @@ def _interval(f, dt, rate, light, alkali, acid_rate, yield_fraction, stain, neut
     if np.any(stain): f['stain_density'] += transferred.mean(axis=-1)[..., None]*stain
 
 
-def advance(state, seconds):
+def advance(state, seconds, *, local_seconds=None, light_protection=None):
     if not math.isfinite(seconds) or not 0 <= seconds <= 31536000:
         raise ValueError('Finite transfer increments must be within one year')
     if seconds == 0: return state
@@ -174,7 +174,8 @@ def advance(state, seconds):
     channels = state.fields['remaining'].shape[-1]
     yields = (1-warm*np.array([.28,.07,.015])-cold*np.array([.015,.06,.27]) if channels==3 else 1-.15*(warm+cold))
     stain = warm*np.array([0,.08,.13])+cold*np.array([.05,.005,0])
-    illumination = (1-settings.get('light_protection',1.))*settings.get('ambient_light',1.)*m.light_sensitivity*.025
+    protection = settings.get('light_protection', 1.) if light_protection is None else light_protection
+    illumination = (1-protection)*settings.get('ambient_light',1.)*m.light_sensitivity*.025
     from . import transfer_compute
     changed = transfer_compute.CHANGED
     rate_parameters=(thermal,m.reaction_seconds,m.inhibitor_sensitivity,illumination,yields,
@@ -184,10 +185,13 @@ def advance(state, seconds):
     def rows(start, stop):
         f = {key: np.array(state.fields[key][start:stop], np.float64, copy=True) for key in changed}
         original = {key: value[start:stop] for key,value in state.fields.items()}
-        rate,light,after_light,before,timer_rate,acid_rate,yield_fraction=transfer_compute.prepare_rates(original,*rate_parameters)
+        duration = seconds if local_seconds is None else local_seconds[start:stop]
+        rate,light,after_light,before,timer_rate,acid_rate,yield_fraction=transfer_compute.prepare_rates(
+            original, thermal, m.reaction_seconds, m.inhibitor_sensitivity, illumination, yields,
+            state.elapsed_seconds, duration, m.neutralizer_capacity, m.neutralization_seconds)
         if illumination and np.any(before):
             _interval(f,before,np.zeros_like(rate),light,f['alkali_remaining'],np.zeros_like(before),yield_fraction,0.)
-        duration = seconds-before
+        duration = duration-before
         light = after_light
         clock = f['neutralization_clock']
         # Three analytic intervals: before acid access, linear acid release,
@@ -207,7 +211,7 @@ def advance(state, seconds):
         f['neutralization_clock'] = np.minimum(clock+(left)*timer_rate,m.neutralization_delay_seconds+m.neutralization_seconds)
         for key in changed: fields[key][start:stop] = f[key]
     from film_foundry.core.material_parallel import run_rows
-    gpu_fields=transfer_compute.try_advance(state.fields,rate_parameters,m.neutralization_delay_seconds,
+    gpu_fields=None if local_seconds is not None else transfer_compute.try_advance(state.fields,rate_parameters,m.neutralization_delay_seconds,
         m.neutralization_seconds,m.neutralizer_capacity>0,_NODES,_WEIGHTS,stain)
     if gpu_fields is None:
         for key in changed:fields[key]=np.empty_like(state.fields[key])
@@ -215,7 +219,8 @@ def advance(state, seconds):
     else:fields.update(gpu_fields)
     fields['exposure_response'] = fields['immobile']
     snapshot = defects.record_event(state.process_json,'advance',seconds=seconds,temperature_c=temperature,
-        light_protection=settings.get('light_protection',1.),ambient_light=settings.get('ambient_light',1.))
+        light_protection=protection,ambient_light=settings.get('ambient_light',1.), **(
+            {'timing': 'peel_front'} if local_seconds is not None else {}))
     try:
         return replace(state,elapsed_seconds=state.elapsed_seconds+seconds,fields=fields,process_json=snapshot)
     except ValueError as exc:

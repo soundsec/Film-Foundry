@@ -194,6 +194,12 @@ def _blur_grain_field(field, sigma):
 def _blur_local_grain(field,sigma,radius_response,prepared=None):
     if radius_response is None:
         _blur_grain_field(field,sigma);return
+    if prepared is not None and not prepared.weights:
+        # A uniform bath samples just one radius. Its input is private and
+        # has no other radius consumer. Keep the same first normalization.
+        _blur_grain_field(field, sigma * prepared.anchors[0])
+        _normalize_unit_field(field)
+        return
     from film_foundry.core.film_process.local_grain import blend_radius_fields
     def sample(radius):
         value=field.copy();_blur_grain_field(value,sigma*radius)
@@ -229,6 +235,7 @@ def _blurred_multilayer_field(
     out: np.ndarray | None = None,
     radius_response=None,
     radius_plans=None,
+    workers=2,
 ) -> np.ndarray:
     blur_sigma = radius_to_sigma(float(scale), (*work_shape, 3))
     if not reference_execution_enabled():
@@ -266,28 +273,36 @@ def _blurred_multilayer_field(
             )
     shared_mix = float(np.clip(shared_mix, 0.0, 1.0))
     layer_mix = float(np.sqrt(max(1.0 - shared_mix * shared_mix, 0.0)))
-    if radius_response is None and not reference_execution_enabled() and 1048576 <= shared.size <= 4194304:
-        # Pipeline the unchanged serial RNG stream with one convolution worker.
-        # The worker never touches RNG; independent buffers bound live memory to
-        # three scalar layers, and each worker writes a disjoint output channel.
-        from concurrent.futures import ThreadPoolExecutor
-        def finish_layer(channel, layer, shared_shift, layer_shift):
-            shifted=_subpixel_shift(shared,dx=float(shared_shift[0]),dy=float(shared_shift[1]))
+    if (workers > 1 and not reference_execution_enabled() and 262144 <= shared.size <= 4194304
+            and (radius_response is None or (radius_plans is not None and all(not plan.weights for plan in radius_plans)))
+            and cv2.getNumThreads() > 1):
+        from .material_parallel import ordered_results
+
+        def channel_inputs():
+            # The producer owns the RNG. Draw in the same order as the serial
+            # loop even when filtering completes out of order.
+            for channel in range(3):
+                shared_shift = rng.uniform(-max_shift, max_shift, 2)
+                layer = standard_normal_float32(rng, work_shape)
+                layer_shift = rng.uniform(-max_shift, max_shift, 2)
+                yield channel, layer, shared_shift, layer_shift
+
+        def finish_layer(inputs):
+            channel, layer, shared_shift, layer_shift = inputs
+            shifted = _subpixel_shift(shared, dx=float(shared_shift[0]), dy=float(shared_shift[1]))
             shifted *= shared_mix
-            mixed_channel=mixed_channels[...,channel]
-            np.copyto(mixed_channel,shifted)
-            _blur_grain_field(layer,blur_sigma)
-            _subpixel_shift(_normalize_unit_field(layer),dx=float(layer_shift[0]),dy=float(layer_shift[1]),out=shifted)
+            mixed_channel = mixed_channels[..., channel]
+            np.copyto(mixed_channel, shifted)
+            _blur_local_grain(layer, blur_sigma,
+                              None if radius_response is None else radius_response[..., channel],
+                              None if radius_plans is None else radius_plans[channel + 1])
+            _subpixel_shift(_normalize_unit_field(layer), dx=float(layer_shift[0]), dy=float(layer_shift[1]), out=shifted)
             shifted *= layer_mix
             mixed_channel += shifted
-        with ThreadPoolExecutor(max_workers=1,thread_name_prefix='film-grain') as worker:
-            pending=[]
-            for channel in range(3):
-                shared_shift=rng.uniform(-max_shift,max_shift,2)
-                layer=standard_normal_float32(rng,work_shape)
-                layer_shift=rng.uniform(-max_shift,max_shift,2)
-                pending.append(worker.submit(finish_layer,channel,layer,shared_shift,layer_shift))
-            for future in pending:future.result()
+
+        with ordered_results(channel_inputs(), finish_layer, workers=2) as (_, completed):
+            for _ in completed:
+                pass
         return _normalize_unit_field(mixed_channels)
     shifted = np.empty(work_shape, dtype=np.float32)
     layer: np.ndarray | None = None
@@ -491,6 +506,7 @@ def apply_density_grain(
     spatial_scale_factor: float = 1.0,
     development_override=None,
     local_response=None,
+    workers: int = 2,
 ) -> np.ndarray:
     """在密度域加入颗粒扰动，sigma_D 与 sqrt(D) 绑定。
 
@@ -557,6 +573,11 @@ def apply_density_grain(
         response=local_response.at_shape(work_shape)
         def layers(value):
             value=value[...,None] if value.ndim==2 else value
+            if not reference_execution_enabled() and value.min() == value.max():
+                # One uniform bath often leaves identical moments throughout
+                # the frame. Retain all three channels for the shared-radius
+                # mean, but broadcast the one pixel for subsequent weighting.
+                return np.broadcast_to(value[:1, :1, :1], (1, 1, 3))
             return np.broadcast_to(value,(*work_shape,3))
         local_gain=layers(response.grain_factor)/max(grain_factor,1e-12)
         radius_response=layers(response.grain_radius_factor)/max(grain_radius_factor,1e-12)
@@ -671,6 +692,7 @@ def apply_density_grain(
                 out=reusable_field,
                 radius_response=radius_response,
                 radius_plans=radius_plans,
+                workers=workers,
             )
             field *= local_weight(scale_index,weight)
             if unit_noise is None:
@@ -750,6 +772,7 @@ def apply_density_grain(
                     out=reusable_field,
                     radius_response=radius_response,
                     radius_plans=radius_plans,
+                    workers=workers,
                 )
                 field *= local_weight(scale_index,weight)
                 if shadow_noise is None:

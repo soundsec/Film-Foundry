@@ -173,6 +173,8 @@ class RollSession:
             self.data['process_policy']='conditions_v1'
             self.data['phase']='developing';self.save()
         config=DarkroomConfig.from_dict(self.data['config'])
+        from film_foundry.app.incident_batch import restore_incident_scope
+        restore_incident_scope(config, self.data['config'])
         root=Path(self.data['output']);root.mkdir(parents=True,exist_ok=True)
         template=next(f for f in self.data['roll']['frames'] if f['state']=='latent')
         for frame in self.data['roll']['frames']:
@@ -193,7 +195,15 @@ class RollSession:
             if frame['state']=='empty':
                 from film_foundry.core.latent_io import unexposed_latent_like
                 state,metadata=load_exposed_latent(self.path.parent/template['file'])
-                blank=unexposed_latent_like(state);del state
+                border = None
+                if state.film_border_snapshot:
+                    from film_foundry.app.frame_batch import numbered_border
+                    from film_foundry.core.formed_film_border import _border_config
+                    border = numbered_border(_border_config(state.film_border_snapshot), frame['frame_index'], actual_slot=True)
+                blank = unexposed_latent_like(state, film_border=border)
+                del state
+                from film_foundry.core.incident_identity import frame_token
+                blank.incident_frame_seed=frame_token(identity)
                 save_exposed_latent(source,blank,identity={'frame_identity':identity,'unexposed_slot':True})
                 del blank
             result=run_request(WorkflowRequest('develop_latent',source,root/f'frame-{int(key):03d}',config,frame_identity=identity,control=control))

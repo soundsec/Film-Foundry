@@ -28,14 +28,48 @@ class PhoneExperimentalMaterialsTest {
         })
         return s
     }
+    private fun sharedCatalog() = requireNotNull(javaClass.getResourceAsStream("/material_state_fields.json"))
+        .bufferedReader().use { RecipeJson.objectMap(it.readText()) }
+
+    @Test fun exposedStateFieldsMatchTheSharedVocabulary() {
+        val catalog = sharedCatalog()
+        val latent = catalog.getValue("film_latent") as Map<*,*>
+        assertEquals(latent["required"],DataKernel.LATENT_REQUIRED_ARRAYS)
+        assertEquals(latent["optional"],DataKernel.LATENT_OPTIONAL_ARRAYS)
+        val film = PhoneReducedKernel().expose(rgb,emptyMap())
+        for (key in latent["scalars"] as List<*>) assertTrue(film.metadata[key] is Number, key.toString())
+        val families = catalog.getValue("material_families") as Map<*,*>
+        assertEquals(MaterialFamily.entries.map { it.id }.toSet(),families.keys)
+        for (family in MaterialFamily.entries) {
+            val spec = families[family.id] as Map<*,*>
+            val transfers = family == MaterialFamily.PEEL || family == MaterialFamily.INSTANT
+            for (layers in if (transfers) listOf(1,3) else listOf(3)) {
+                val params = if (transfers) mapOf("transfer" to if (layers == 1) "silver_compound" else "dye") else emptyMap()
+                val state = PhoneMaterialKernel.expose(family,rgb,params,groupId="contract",seed=1)
+                val expected = mutableMapOf<String,List<Int>>()
+                for ((group,tail) in mapOf("scalar" to emptyList(), "rgb" to listOf(3), "layers" to listOf(layers))) {
+                    for (name in spec[group] as? List<*> ?: emptyList<Any>())
+                        expected[name as String] = listOf(rgb.height,rgb.width) + tail
+                }
+                if (transfers) {
+                    expected["phone_developer_used_mean"] = listOf(rgb.height,rgb.width)
+                    expected["phone_developer_available_mean"] = listOf(rgb.height,rgb.width)
+                }
+                assertEquals(expected,state.fields().mapValues { it.value.shape.toList() },family.id)
+            }
+        }
+    }
+
     @Test fun sevenFamiliesFormIndependentProductsRoundTripAndObserveReadOnly() {
+        val specs = sharedCatalog().getValue("material_families") as Map<*,*>
         val precisionErrors=linkedMapOf<String,Float>()
         for(family in MaterialFamily.entries) {
             val s=formed(family);val products=PhoneMaterialKernel.finish(s)
             val provenance=RecipeJson.objectMap(products.provenanceJson)
             assertEquals(PhoneMaterialKernel.MODEL,(provenance["process"] as Map<*,*>)["model"])
             assertEquals(PhoneMaterialKernel.ARITHMETIC_HALF,(provenance["execution_implementation"] as Map<*,*>)["precision"])
-            assertEquals(when(family){MaterialFamily.PAPER,MaterialFamily.WET->2;MaterialFamily.CYANOTYPE,MaterialFamily.PLATINUM->3;else->2},products.bodies[0].schemaVersion)
+            val version = ((specs[family.id] as Map<*,*>)["schema_version"] as Number).toInt()
+            assertTrue(products.bodies.all { it.schemaVersion == version })
             assertEquals(if(family==MaterialFamily.PEEL)2 else 1,products.bodies.size)
             val output=ByteArrayOutputStream();MaterialProductArchive.write(products,output)
             val loaded=MaterialProductArchive.read(ByteArrayInputStream(output.toByteArray()))
@@ -67,11 +101,42 @@ class PhoneExperimentalMaterialsTest {
         }
         assertTrue(precisionErrors.values.all {it<.0002f},"Appearance errors: $precisionErrors")
     }
+    @Test fun explicitPaperDeveloperAndLimitedTransferPreserveTheImageCarrier() {
+        val base=PhoneMaterialKernel.expose(MaterialFamily.PAPER,rgb,mapOf("kind" to "color"),groupId="paper")
+        fun develop(type: String)=PhoneMaterialKernel.process(base,"develop",mapOf("developer" to type))
+        val bw=develop("bw");val color=develop("color")
+        assertArrayEquals(color.fields().getValue("silver").values,bw.fields().getValue("silver").values,0f)
+        assertTrue(color.fields().getValue("dye").values.any { it>0 })
+        assertTrue(bw.fields().getValue("dye").values.all { it==0f })
+        val stopped=PhoneMaterialKernel.process(bw,"stop")
+        assertEquals(bw.elapsedSeconds,stopped.elapsedSeconds)
+        assertThrows(IllegalArgumentException::class.java) { PhoneMaterialKernel.process(stopped,"develop") }
+        val cleared=PhoneMaterialKernel.process(stopped,"bleach_fix",mapOf("seconds" to 1200))
+        assertTrue(cleared.fields().getValue("silver").values.all { it<1e-6f })
+        assertTrue(cleared.fields().getValue("dye").values.all { it==0f })
+        for(family in listOf(MaterialFamily.PEEL, MaterialFamily.INSTANT)) {
+            val neutral=RgbVolume(1,1,linearRgb=FloatArray(3) { .18f })
+            val sheet=PhoneMaterialKernel.expose(family,neutral,mapOf("developer_capacity" to .12,"transfer" to "dye"),groupId="sheet")
+            val contact=PhoneMaterialKernel.process(sheet,if(family==MaterialFamily.PEEL) "spread" else "eject")
+            fun react(light: Double)=PhoneMaterialKernel.process(contact,"advance",mapOf("seconds" to 60,"light_exposure" to light)).fields()
+            val dark=react(0.0);val light=react(1.0)
+            for(state in listOf(dark,light)) {
+                val received=state.getValue("received").values
+                for(c in 0..2) {
+                    assertEquals(received[0],received[c],0f)
+                    assertEquals(1f,received[c]+state.getValue("remaining").values[c]+state.getValue("immobile").values[c],1e-6f)
+                    assertEquals(.12f,received[c]+state.getValue("developed_donor").values[c],1e-6f)
+                }
+            }
+            assertTrue(light.getValue("received").values[0]<dark.getValue("received").values[0])
+        }
+    }
+
     @Test fun finiteTransferNegativeDeclarationAndStageGuards() {
         val m=mapOf("transfer" to "silver_compound","donor_mode" to "silver_negative","developer_capacity" to .2)
         val s=formed(MaterialFamily.PEEL,m,PhoneMaterialKernel.ARITHMETIC_FULL);val f=s.fields()
         for(i in f.getValue("received").values.indices)assertEquals(1f,f.getValue("received").values[i]+f.getValue("remaining").values[i]+f.getValue("immobile").values[i],1e-6f)
-        for(i in f.getValue("developer_used").values.indices)assertEquals(.2f,f.getValue("developer_used").values[i]+f.getValue("developer_available").values[i],1e-6f)
+        for(i in f.getValue("phone_developer_used_mean").values.indices)assertEquals(.2f,f.getValue("phone_developer_used_mean").values[i]+f.getValue("phone_developer_available_mean").values[i],1e-6f)
         assertFalse(PhoneMaterialKernel.finish(s).bodies[1].usableNegative)
         val cleared=PhoneMaterialKernel.process(s,"clear_donor");val negative=PhoneMaterialKernel.finish(cleared).bodies[1]
         assertTrue(negative.usableNegative);assertTrue(PhoneMaterialObserve.observe(negative).linearRgb.all {it in 0f..1f})

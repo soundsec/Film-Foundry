@@ -58,6 +58,10 @@ object PhoneMaterialDefaults {
         if(captureSettings[com.filmfoundry.interchange.PhoneMaterialPhenomena.ROLL_SETTING]==com.filmfoundry.interchange.PhoneMaterialPhenomena.CURRENT)
             base=base+(com.filmfoundry.interchange.PhoneMaterialPhenomena.EXPOSURE_OPTION to com.filmfoundry.interchange.PhoneMaterialPhenomena.CURRENT)
         base=base+captureSettings.filterKeys { it=="film_border" }
+        captureSettings["film_side"]?.let { side ->
+            require(side == "base" || side == "emulsion")
+            if (side == "base") base=base+("exposure" to captureSettings.filterKeys { it=="film_side" || it=="rear_optics" })
+        }
         com.filmfoundry.interchange.PhoneFormationProfile.validate(captureSettings[com.filmfoundry.interchange.PhoneFormationProfile.ROLL_SETTING])?.let {
             base=base+(com.filmfoundry.interchange.PhoneFormationProfile.OPTION to it)
         }

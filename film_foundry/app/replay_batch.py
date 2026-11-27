@@ -70,6 +70,8 @@ def load_resume_plan(path) -> ResumePlan:
     if not isinstance(payload.get("config"), dict):
         raise ValueError("The batch record has no recipe")
     config = DarkroomConfig.from_dict(payload["config"])
+    from film_foundry.app.incident_batch import restore_incident_scope
+    restore_incident_scope(config, payload["config"])
     paths = payload.get("paths", {})
     root = run.get("developed_medium") if command == "develop" else None
     output_root = Path(root or run["actual_output"])
@@ -152,15 +154,17 @@ def run_resume_batch(plan: ResumePlan, *, control=None,on_result=None) -> Resume
                 records.append(record)
                 reused += 1
                 continue
-            identity = frame_identity_for_item(payload, index, len(plan.items)) if plan.command in {"expose", "develop", "develop_latent"} else None
+            identity = frame_identity_for_item(payload, index, len(plan.items)) if plan.command in {"full", "expose", "develop", "develop_latent"} else None
             request_output = (plan.output_root if plan.command in {"develop", "develop_latent"}
                               and payload.get("run",{}).get("selection_layout") != "numbered" else destination)
             item_config=plan.config
-            if plan.command in {'full','develop','expose'} and payload.get('run',{}).get('selection_layout')=='numbered':
+            if plan.command in {'full','develop','expose'} and (payload.get('run',{}).get('selection_layout')=='numbered'
+                    or 'strip_layout' in payload['config'].get('film_border',{})):
                 from film_foundry.app.workspace_jobs import numbered_photo_config
-                item_config=numbered_photo_config(plan.config,index+1,payload["frame_exposure_offsets"].get(str(item.input_path.resolve()),0.))
+                item_config=numbered_photo_config(plan.config,index+1,payload.get("frame_exposure_offsets",{}).get(str(item.input_path.resolve()),0.))
+            render_control = control.before_export() if plan.command == 'scan' and control else control
             result = run_request(WorkflowRequest(plan.command, item.input_path, request_output,
-                item_config, scaled_override=plan.scaled, frame_identity=identity, control=control,
+                item_config, scaled_override=plan.scaled, frame_identity=identity, control=render_control,
                 path_seed_offset=offset_for(item.input_path, payload.get('path_seed_offsets'))))
             destination = result.output_path or destination
             if plan.command == "scan":
@@ -170,9 +174,11 @@ def run_resume_batch(plan: ResumePlan, *, control=None,on_result=None) -> Resume
                     scan_source=result.source_kind, scan_source_path=source,
                     output_path=destination, config=plan.config, scanned=scanned) if plan.config.save_sidecar else None
                 if control is not None:
-                    control.check_cancel()
+                    control.report('scan', 'saving')
                 save_image_bundle(scanned.output_srgb, destination, plan.config.output,
                     sidecar, protected_paths=(item.input_path, source))
+                if control is not None:
+                    control.output_saved('scan')
             if on_result:
                 from film_foundry.app.workspace_jobs import workflow_result_record
                 on_result(workflow_result_record(item.input_path,result,output_path=destination))

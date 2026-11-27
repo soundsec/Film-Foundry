@@ -4,12 +4,15 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /** Native-sample DNG ingest, never an embedded preview. Initial explicit model:
- * uncompressed 8/16-bit rectangular Bayer, bilinear demosaic, calibration set 1.
+ * uncompressed unsigned 8/16-bit Bayer or interleaved three-channel LinearRaw, calibration set 1.
  * Unsupported required corrections/compression fail before exposure.
  */
 object DngRawDecoder {
     const val MODEL = "dng_bilinear_matrix1_linear_srgb_v1"
     const val ORIENTED_MODEL = "dng_bilinear_matrix1_exif_linear_srgb_v2"
+
+    const val LINEAR_MODEL = "dng_linearraw_matrix1_linear_srgb_v1"
+    const val BAYER_MODEL = "dng_bilinear_active_blackplane_matrix1_linear_srgb_v3"
 
     fun decode(source: DngCapture): WorkingExposure {
         val image = open(source)
@@ -19,7 +22,7 @@ object DngRawDecoder {
             image.readRows(start,rows).copyInto(rgb,start*image.width*3)
         }
         return WorkingExposure(image.width,image.height,rgb,CaptureRecord(
-            CaptureKind.SENSOR_RAW_DNG,false,sourceEncoding=MODEL,bitDepth=image.bitDepth,
+            CaptureKind.SENSOR_RAW_DNG,false,sourceEncoding=image.model,bitDepth=image.bitDepth,
             sceneReferredClaim=false))
     }
 
@@ -35,6 +38,8 @@ object DngRawDecoder {
     interface RawLinearRows: AutoCloseable {
         val width: Int
         val height: Int
+        fun selectLegacyBayer(legacy: Boolean)
+        val model: String
         val bitDepth: Int
         val rotation: Int
         val exifOrientation: Int get()=1
@@ -127,8 +132,8 @@ object DngRawDecoder {
             val directories=directories()
             val root=directories.firstOrNull() ?: throw CaptureRejected("DNG has no IFD.")
             if (root[50706] == null) throw CaptureRejected("TIFF file has no DNG version.")
-            val candidates=directories.filter { integers(it[262])?.singleOrNull() == 32803 && (integers(it[254])?.singleOrNull() ?: 0) == 0 }
-            if (candidates.size != 1) throw CaptureNotReady("DNG needs one full-resolution Bayer raw IFD; previews are not used.")
+            val candidates=directories.filter { integers(it[262])?.singleOrNull() in setOf(32803, 34892) && (integers(it[254])?.singleOrNull() ?: 0) == 0 }
+            if (candidates.size != 1) throw CaptureNotReady("DNG needs one full-resolution CFA or LinearRaw IFD; previews are not used.")
             val raw=candidates.single()
             return root to raw
         }
@@ -161,19 +166,32 @@ object DngRawDecoder {
             }
             if (nums(50718)?.let { it.size != 2 || it.any { value -> value != 1.0 } } == true)
                 throw CaptureNotReady("Non-unit DNG DefaultScale requires explicit resampling.")
-            val fullWidth=scalar(256); val fullHeight=scalar(257); val bits=scalar(258)
-            if (fullWidth < 2 || fullHeight < 2 || fullWidth.toLong()*fullHeight > 100_000_000)
+            val fullWidth=scalar(256); val fullHeight=scalar(257)
+            val linearRaw = scalar(262) == 34892
+            val channels = if (linearRaw) 3 else 1
+            if (fullWidth < 1 || fullHeight < 1 || fullWidth.toLong()*fullHeight > 100_000_000)
                 throw CaptureRejected("DNG dimensions are invalid or exceed ingest capacity.")
-            if (scalar(259,1) != 1 || bits !in listOf(8,16) || scalar(277,1) != 1 || scalar(339,1) != 1 || scalar(284,1) != 1)
-                throw CaptureNotReady("$MODEL requires uncompressed unsigned 8/16-bit single-plane DNG.")
-            if (scalar(50711,1) != 1 || !((ints(33421) ?: intArrayOf()).contentEquals(intArrayOf(2,2))))
-                throw CaptureNotReady("DNG requires a rectangular 2x2 Bayer CFA.")
-            val planes=ints(50710) ?: intArrayOf(0,1,2)
-            val pattern=(ints(33422) ?: throw CaptureRejected("DNG missing CFA pattern.")).map {
-                planes.getOrNull(it) ?: throw CaptureRejected("DNG CFA plane index is invalid.")
+            if (scalar(259,1) != 1 || scalar(277,1) != channels || scalar(284,1) != 1 ||
+                scalar(317,1) != 1 || scalar(266,1) != 1)
+                throw CaptureNotReady("DNG needs uncompressed contiguous CFA or three-channel LinearRaw samples.")
+            val depths = ints(258) ?: throw CaptureRejected("Missing DNG BitsPerSample.")
+            val formats = ints(339)
+            val bits = depths.firstOrNull() ?: throw CaptureRejected("Empty DNG BitsPerSample.")
+            if (depths.size != channels || depths.any { it != bits } || bits !in listOf(8,16) ||
+                formats != null && (formats.size != channels || formats.any { it != 1 }))
+                throw CaptureNotReady("DNG needs unsigned samples of the same 8- or 16-bit depth.")
+            val pattern = if (linearRaw) emptyList() else {
+                if (scalar(50711,1) != 1 || ints(33421)?.contentEquals(intArrayOf(2,2)) != true)
+                    throw CaptureNotReady("DNG requires a rectangular 2x2 Bayer CFA.")
+                val planes = ints(50710) ?: intArrayOf(0,1,2)
+                val cfa = (ints(33422) ?: throw CaptureRejected("DNG missing CFA pattern.")).map {
+                    planes.getOrNull(it) ?: throw CaptureRejected("DNG CFA plane index is invalid.")
+                }
+                if (cfa.size != 4 || cfa.sorted() != listOf(0,1,1,2) ||
+                    (cfa[0] == 1) != (cfa[3] == 1))
+                    throw CaptureNotReady("DNG CFA is not RGB Bayer.")
+                cfa
             }
-            if (pattern.size != 4 || pattern.count { it == 0 } != 1 || pattern.count { it == 1 } != 2 || pattern.count { it == 2 } != 1)
-                throw CaptureNotReady("DNG CFA is not RGB Bayer.")
             // Required opcodes cannot silently be skipped. Optional corrections
             // are omitted by this explicit ingest model, never by a quality knob.
             for (key in listOf(51008,51009,51022)) {
@@ -191,7 +209,7 @@ object DngRawDecoder {
                 }
             }
             val active=ints(50829) ?: intArrayOf(0,0,fullHeight,fullWidth)
-            if (active.size != 4 || active[0] < 0 || active[1] < 0 || active[2] > fullHeight || active[3] > fullWidth || active[2]-active[0] < 2 || active[3]-active[1] < 2)
+            if (active.size != 4 || active[0] < 0 || active[1] < 0 || active[2] > fullHeight || active[3] > fullWidth || active[2]-active[0] < (if (linearRaw) 1 else 2) || active[3]-active[1] < (if (linearRaw) 1 else 2))
                 throw CaptureRejected("DNG ActiveArea is invalid.")
             val origin=ints(50719) ?: intArrayOf(0,0)
             val size=ints(50720) ?: intArrayOf(active[3]-active[1],active[2]-active[0])
@@ -202,15 +220,35 @@ object DngRawDecoder {
             val cropLeft=active[1]+origin[0]; val cropTop=active[0]+origin[1]
             val blackDim=ints(50713) ?: intArrayOf(1,1)
             if (blackDim.size != 2 || blackDim.any { it !in 1..8 }) throw CaptureRejected("DNG black pattern is invalid.")
-            val black=nums(50714) ?: DoubleArray(blackDim[0]*blackDim[1])
-            if (black.size != blackDim[0]*blackDim[1]) throw CaptureRejected("DNG black level shape is invalid.")
+            val black=nums(50714) ?: DoubleArray(blackDim[0]*blackDim[1]*channels)
+            if (black.size != blackDim[0]*blackDim[1]*channels) throw CaptureRejected("DNG black level shape is invalid.")
             val deltaH=nums(50715); val deltaV=nums(50716)
             if (deltaH != null && deltaH.size != active[3]-active[1] || deltaV != null && deltaV.size != active[2]-active[0])
                 throw CaptureRejected("DNG black delta shape is invalid.")
-            val whiteValues=nums(50717)
-            if (whiteValues != null && whiteValues.size != 1) throw CaptureRejected("DNG white level must have one value.")
-            val white=whiteValues?.single() ?: ((1 shl bits)-1).toDouble()
-            if (white <= 0) throw CaptureRejected("DNG white level is invalid.")
+            val white = nums(50717) ?: DoubleArray(channels) { ((1 shl bits)-1).toDouble() }
+            if (white.size != channels || white.any { it <= 0 })
+                throw CaptureRejected("DNG WhiteLevel must be positive for each sample.")
+            // The maximum black for each sample plane sets its scale. H and V deltas
+            // are separable within each repeat phase, so no image-sized scan is needed.
+            fun phaseMax(deltas: DoubleArray?, period: Int, length: Int): DoubleArray {
+                val maxima = DoubleArray(minOf(period,length))
+                if (deltas != null) {
+                    maxima.fill(Double.NEGATIVE_INFINITY)
+                    for (i in deltas.indices) maxima[i % period] = maxOf(maxima[i % period],deltas[i])
+                }
+                return maxima
+            }
+            val maxH = phaseMax(deltaH,blackDim[1],active[3]-active[1])
+            val maxV = phaseMax(deltaV,blackDim[0],active[2]-active[0])
+            val span = DoubleArray(channels) { c ->
+                var maxBlack = Double.NEGATIVE_INFINITY
+                for (y in maxV.indices) for (x in maxH.indices) {
+                    val level = black[(y*blackDim[1]+x)*channels+c] + maxH[x] + maxV[y]
+                    maxBlack = maxOf(maxBlack,level)
+                }
+                white[c]-maxBlack
+            }
+            var legacyBayer = false
             val linearization=nums(50712)
             val offsets=ints(273); val byteCounts=ints(279)
             val tileOffsets=ints(324); val tileBytes=ints(325)
@@ -228,22 +266,31 @@ object DngRawDecoder {
             val matrix=rawToSrgb(nums(50721),nums(50964),nums(50723),nums(50727),nums(50728))
             val exif=orientation(root,raw)
 
-            fun sensor(x: Int,y: Int): Double {
+            fun sensor(x: Int,y: Int,c: Int): Double {
                 val block=(y/tileH)*across+x/tileW
-                val index=((y%tileH).toLong()*tileW+x%tileW)*(bits/8)
+                val index=(((y%tileH).toLong()*tileW+x%tileW)*channels+c)*(bits/8)
                 if (index+bits/8 > storedBytes[block]) throw CaptureRejected("DNG raw block is truncated.")
                 val pos=check(storedOffsets[block].toLong()+index,(bits/8).toLong())
                 val dn=if (bits == 16) u16(pos) else bytes[pos].toInt() and 255
                 val value=linearization?.getOrNull(dn) ?: if (linearization == null) dn.toDouble() else throw CaptureRejected("DNG linearization table is short.")
                 val ax=x-active[1]; val ay=y-active[0]
-                val zero=black[(ay%blackDim[0])*blackDim[1]+ax%blackDim[1]]+(deltaH?.get(ax) ?: 0.0)+(deltaV?.get(ay) ?: 0.0)
-                if (white <= zero) throw CaptureRejected("DNG black level reaches white level.")
-                return maxOf(value-zero,0.0)/(white-zero)
+                val zero=black[((ay%blackDim[0])*blackDim[1]+ax%blackDim[1])*channels+c]+(deltaH?.get(ax) ?: 0.0)+(deltaV?.get(ay) ?: 0.0)
+                if (white[c] <= zero) throw CaptureRejected("DNG black level reaches white level.")
+                if (legacyBayer) return maxOf(value-zero,0.0)/(white[c]-zero)
+                if (span[c] <= 0) throw CaptureRejected("DNG black range reaches white level.")
+                return ((value-zero)/span[c]).coerceIn(0.0,1.0)
             }
-            fun channel(x: Int,y: Int)=pattern[(y and 1)*2+(x and 1)]
+            fun channel(x: Int,y: Int) = if (legacyBayer) pattern[(y and 1)*2+(x and 1)]
+                else pattern[((y-active[0]) and 1)*2+((x-active[1]) and 1)]
             return object : RawLinearRows {
                 override fun close()=bytes.close()
                 override val width=size[0]; override val height=size[1]; override val bitDepth=bits; override val rotation=0
+                override fun selectLegacyBayer(legacy: Boolean) { legacyBayer = legacy && !linearRaw }
+                override val model get() = when {
+                    linearRaw -> LINEAR_MODEL
+                    legacyBayer -> MODEL
+                    else -> BAYER_MODEL
+                }
                 override val exifOrientation=exif
                 override fun readRows(start: Int,count: Int): FloatArray {
                     return readWindowRows(0,start,width,count)
@@ -253,6 +300,21 @@ object DngRawDecoder {
                     require(left>=0 && windowWidth>0 && left.toLong()+windowWidth<=width)
                     val output=FloatArray(Math.multiplyExact(Math.multiplyExact(windowWidth,count),3))
                     val camera=DoubleArray(3)
+                    fun writeWorkingRgb(offset: Int) {
+                        for (c in 0..2) {
+                            val value=matrix[c*3]*camera[0]+matrix[c*3+1]*camera[1]+matrix[c*3+2]*camera[2]
+                            if (!value.isFinite() || kotlin.math.abs(value) > Float.MAX_VALUE)
+                                throw CaptureRejected("DNG color transform overflows.")
+                            output[offset+c]=value.toFloat()
+                        }
+                    }
+                    if (linearRaw) {
+                        for (row in 0 until count) for (col in 0 until windowWidth) {
+                            for (c in 0..2) camera[c]=sensor(cropLeft+left+col,cropTop+start+row,c)
+                            writeWorkingRgb((row*windowWidth+col)*3)
+                        }
+                        return output
+                    }
                     // One read of each Bayer sample the bilinear neighborhood can touch. The formula below is unchanged.
                     val cacheTop=(cropTop+start-1).coerceAtLeast(active[0])
                     val cacheBottom=(cropTop+start+count).coerceAtMost(active[2]-1)
@@ -261,7 +323,7 @@ object DngRawDecoder {
                     if (cacheBottom < cacheTop || cacheRight < cacheLeft) throw CaptureRejected("DNG Bayer neighborhood has no sample.")
                     val spanX=cacheRight-cacheLeft+1
                     val samples=DoubleArray(Math.multiplyExact(spanX,cacheBottom-cacheTop+1))
-                    for (sy in cacheTop..cacheBottom) for (sx in cacheLeft..cacheRight) samples[(sy-cacheTop)*spanX+(sx-cacheLeft)]=sensor(sx,sy)
+                    for (sy in cacheTop..cacheBottom) for (sx in cacheLeft..cacheRight) samples[(sy-cacheTop)*spanX+(sx-cacheLeft)]=sensor(sx,sy,0)
                     fun sample(x: Int,y: Int)=samples[(y-cacheTop)*spanX+(x-cacheLeft)]
                     for (row in 0 until count) for (col in 0 until windowWidth) {
                         val x=cropLeft+left+col; val y=cropTop+start+row
@@ -277,11 +339,7 @@ object DngRawDecoder {
                                 camera[c]=sum/n
                             }
                         }
-                        for (c in 0..2) {
-                            val value=matrix[c*3]*camera[0]+matrix[c*3+1]*camera[1]+matrix[c*3+2]*camera[2]
-                            if (!value.isFinite() || kotlin.math.abs(value) > Float.MAX_VALUE) throw CaptureRejected("DNG color transform overflows.")
-                            output[(row*windowWidth+col)*3+c]=value.toFloat()
-                        }
+                        writeWorkingRgb((row*windowWidth+col)*3)
                     }
                     return output
                 }

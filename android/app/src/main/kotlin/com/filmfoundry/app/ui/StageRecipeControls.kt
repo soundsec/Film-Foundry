@@ -59,6 +59,37 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
     private var processes=emptyList<NamedProcessRecipe>()
     private var userScanners=emptyList<NamedRecipe>()
     private var visibleScanners=builtins.scanners
+    internal var samplePanel: SamplePanel?=null
+    private var developmentSample: ProcessSampleView?=null
+    internal var scanSample: ProcessSampleView?=null
+    private lateinit var filmTools: LinearLayout
+    internal fun sampleRequest(formation: Map<String,Any?>, film: Map<String,Any?>, capture: Map<String,Any?>,
+        scanner: Map<String,Any?>, reference: Map<String,Any?>?, editingScan: Boolean): CameraEffectsPreview.Request {
+        val source=current()+formation+("film" to film)
+        val observed=observation(source,scanner,reference,includeOutput=false,editor=editingScan)
+        // A saved scan can own a complete baseline recipe. Only its observation belongs here.
+        val recipe=source+("scanner" to section(observed,"scanner"))+("look" to section(observed,"look"))
+        return CameraEffectsPreview.Request(film,capture,recipe,240)
+    }
+    internal fun installSamples(factory: SamplePanel, scanSource: SampleRecipe) {
+        samplePanel=factory
+        val draft: SampleRecipe={ development(current()) + ("film" to processMaterial.ifEmpty { section(current(),"film") }) }
+        developmentSample=factory(draft).apply {
+            isFocusable=true
+            contentDescription=copy("展开工艺样张","Expand process sample")
+            setOnClickListener { runCatching { onPreviewRecipe(draft()) }.onFailure { Toast.makeText(context,it.message,Toast.LENGTH_LONG).show() } }
+        }
+        processCard.addView(developmentSample,1)
+        val chart=factory(scanSource)
+        chart.visibility=android.view.View.GONE
+        shell.mountScanSample(chart)
+        shell.action(filmTools,"工艺样张","Process sample") { chart.visibility=if(chart.visibility==android.view.View.VISIBLE) android.view.View.GONE else android.view.View.VISIBLE }
+        fun close() { chart.visibility=android.view.View.GONE }
+        chart.isFocusable=true
+        chart.contentDescription=copy("工艺样张，点按收起","Process sample, tap to close")
+        chart.setOnClickListener { close() }
+        scanSample=chart
+    }
     var onPreviewRecipe: (Map<String,Any?>)->Unit={}
     var onStyleSamples: (List<Pair<String,Map<String,Any?>>>,(String,android.graphics.Bitmap?)->Unit)->(()->Unit)={ _,_->({}) }
     var onStyleReference: ()->Map<String,Any?>?={ null }
@@ -258,16 +289,18 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
         val develop=shell.card(MobileShell.Page.DEVELOP,"冲洗工艺","Processing")
         develop.addView(processCapability)
         fun developSection()=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;develop.addView(this) }
-        val route=developSection();val processDetails=developSection();val incidentPanel=developSection();val bleachPanel=developSection();val after=developSection()
+        val route=developSection();val common=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL };val processDetails=developSection();val incidentPanel=developSection();val bleachPanel=developSection();val after=developSection()
         developmentExtras=after
-        shell.action(route,"处理方式与加速…","Processing & acceleration…") { if(!scanBusy) onOpenComputeSettings() }
+        shell.action(after,"处理方式与加速…","Processing & acceleration…") { if(!scanBusy) onOpenComputeSettings() }
         shell.note(route,"冲洗方案","Process recipe")
         shell.styleButton(processChoice);route.addView(processChoice,LinearLayout.LayoutParams(-1,-2))
         processChoice.setOnClickListener {
             val official=PhoneProcessPresets.entries.associateBy { it.id }
-            val entries=listOf(ProcessChoiceDialog.Entry(0,currentProcessLabel(),0))+processes.mapIndexed { i,item ->
+            val routes = PhoneProcessPresets.routesForRoll(processMaterial, processFormationProfile)
+            val entries=listOf(ProcessChoiceDialog.Entry(0,currentProcessLabel(),0))+processes.mapIndexedNotNull { i,item ->
+                if (item.id == routes.matchingStandardId && item.id != selectedProcessKey) return@mapIndexedNotNull null
                 val builtin=official[item.id]
-                val group=when { builtin==null->3;item.recipe["developer_type"]!=null->2;item.recipe["program_key"] !in listOf(null,"auto")->1;else->0 }
+                val group=when { builtin==null->3; item.id in routes.noImageIds->4; item.recipe["developer_type"]!=null->2;item.recipe["program_key"] !in listOf(null,"auto")->1;else->0 }
                 ProcessChoiceDialog.Entry(i+1,item.label,group)
             }
             val selected=processes.indexOfFirst { it.id==selectedProcessKey }+1
@@ -275,6 +308,7 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
                 selectProcess(processes.getOrNull(index-1)?.id ?: "current")
             }
         }
+        route.addView(common)
         processSummary.setPadding(0,shell.dp(8),0,shell.dp(8));route.addView(processSummary)
         processSequence.textSize=12f;processSequence.maxLines=3;processSequence.ellipsize=android.text.TextUtils.TruncateAt.END;route.addView(processSequence);processAdjustments.textSize=12f;route.addView(processAdjustments)
         route.addView(processOutcome)
@@ -284,16 +318,11 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
             processes.firstOrNull { it.id==alternativeId }?.let { selectProcess(it.id) }
         }.apply { visibility=android.view.View.GONE }
         fun openWorkbench() {
-            runCatching { ProcessProgramEditor(activity,shell).apply { onPreviewRecipe=this@StageRecipeControls.onPreviewRecipe;applyToDevelopment=true }.open(section(development(current()),"develop"),processMaterial.ifEmpty { section(current(),"film") }) { value ->
+            runCatching { ProcessProgramEditor(activity,shell).apply { samplePanel=this@StageRecipeControls.samplePanel;onPreviewRecipe=this@StageRecipeControls.onPreviewRecipe;applyToDevelopment=true }.open(section(development(current()),"develop"),processMaterial.ifEmpty { section(current(),"film") },processFormationProfile) { value ->
                 clearProcessOverrides();processOverlay=value;updateProcessSummary();save()
             } }.onFailure { Toast.makeText(activity,it.message,Toast.LENGTH_LONG).show() }
         }
         shell.shortcut(route,"自由冲洗台","Free processing","查看药浴顺序，逐浴调配或组合新流程","Review the sequence, adjust baths or compose a new process",::openWorkbench)
-        shell.shortcut(route,"药浴条件","Bath conditions","共用时长与药液适配；单浴条件可继续深入","Shared duration and chemistry; continue into an individual bath") { selectDevelopment(1) }
-        shell.shortcut(route,"冲洗事故","Processing incidents","显影不匀、药液污染与乳剂网裂，可组合","Combine uneven development, stains and reticulation") { selectDevelopment(2) }
-        shell.shortcut(route,"追加片基漂白","Additional base bleaching","处理材料中的可漂白色罩","Treat the material's bleachable mask") { selectDevelopment(3) }
-        shell.shortcut(route,"扫描与保存详情","Scan & save details","查看自动扫描说明与本卷照片","Review automatic scanning and this roll's photos") { selectDevelopment(4) }
-        shell.action(route,"工艺样张","Process sample") { runCatching { onPreviewRecipe(observation(development(current()),emptyMap())) }.onFailure { Toast.makeText(activity,it.message,Toast.LENGTH_LONG).show() } }
         shell.shortcut(processDetails,"逐浴调配","Adjust individual baths","温度、时间、浓度、摇晃与反应比例","Temperature, duration, concentration, agitation and reaction fractions",::openWorkbench)
         shell.note(processDetails,"下面的时长是所有未单独设定药浴的共用值。单浴设置在自由冲洗台中覆盖。","The duration below is shared by baths without their own setting. Override an individual bath in Free processing.")
         maskBleach.text=copy("追加片基漂白（实验）","Add base-mask bleaching (experimental)")
@@ -315,7 +344,7 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
         shell.resetSection(bleachPanel,copy("片基漂白","Base bleaching")) { maskBleachOverride=false;maskStrength.progress=100;updateProcessSummary();save() }
         time.hint=copy("显影时间（分钟，默认 8）","Development time (minutes, default 8)")
         time.inputType=InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-        time.setText(prefs.getString("time",""));timeTouch=TouchParameterControl(activity,shell,processDetails,time,copy("共用药浴时长 · 分钟","Shared bath duration · minutes"),.1..120.0,.1,
+        time.setText(prefs.getString("time",""));timeTouch=TouchParameterControl(activity,shell,common,time,copy("共用药浴时长 · 分钟","Shared bath duration · minutes"),.1..120.0,.1,
             onReset={ time.error=null;time.setText("");updateProcessSummary();save() })
         time.addTextChangedListener(object: android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?,start: Int,count: Int,after: Int)=Unit
@@ -327,7 +356,7 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
         chemistryOverride.text=copy("额外指定常规／交叉药液","Override native / cross chemistry")
         val chemistryPanel=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL }
         processDetails.addView(chemistryGroup)
-        shell.explanation(chemistryGroup,"自动工艺的药液适配","Chemistry for automatic processing") { it.addView(chemistryPanel) }
+        chemistryGroup.addView(chemistryPanel)
         chemistryOverride.isChecked=prefs.getBoolean("chemistry_override",cross.isChecked);chemistryPanel.addView(chemistryOverride);chemistryPanel.addView(cross)
         shell.resetSection(processDetails,copy("沿用工艺条件","Process conditions")) {
             time.error=null;time.setText("");chemistryOverride.isChecked=false;updateProcessSummary();save()
@@ -335,7 +364,8 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
         shell.resetSection(route,copy("冲洗配置","Process settings")) {
             selectProcess("current")
         }
-        cross.isEnabled=chemistryOverride.isChecked;chemistryOverride.setOnCheckedChangeListener { _,checked->cross.isEnabled=checked }
+        cross.isEnabled=chemistryOverride.isChecked;chemistryOverride.setOnCheckedChangeListener { _,checked->cross.isEnabled=checked;updateProcessSummary() }
+        cross.setOnCheckedChangeListener { _,_->updateProcessSummary() }
         shell.action(route,"更多操作…","More…") {
             android.app.AlertDialog.Builder(activity).setTitle(copy("冲洗操作","Processing actions"))
                 .setItems(arrayOf(copy("药液与冲洗预设管理","Manage bath and process recipes"),copy("继续未完成冲洗","Resume unfinished development"),copy("冲洗操作指南","Processing guide"))) { _,i ->
@@ -344,16 +374,17 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
         }
         val developPanels=listOf(route,processDetails,incidentPanel,bleachPanel,after)
         val developTitles=listOf("冲洗准备" to "Prepare development","药浴条件" to "Bath conditions","冲洗事故" to "Processing incidents","追加片基漂白" to "Additional base bleaching","扫描与保存" to "Scan & save")
-        val up=shell.action(shell.developSteps,"‹ 冲洗准备","‹ Preparation") { backDevelopment() }
-        val breadcrumb=TextView(activity).apply { setPadding(shell.dp(8),0,shell.dp(8),0);textSize=14f }
-        shell.developSteps.gravity=android.view.Gravity.CENTER_VERTICAL;shell.developSteps.addView(breadcrumb)
+        val developTabs=developTitles.mapIndexed { index,(zh,en) ->
+            shell.editorTab(shell.developSteps,zh,en) { selectDevelopment(index) }
+        }
         fun selectDevelop(index: Int) {
             developmentSection=index
             developPanels.forEachIndexed { i,panel->panel.visibility=if(i==index) android.view.View.VISIBLE else android.view.View.GONE }
             val title=copy(developTitles[index].first,developTitles[index].second)
             (develop.getChildAt(0) as TextView).text=title
-            up.visibility=if(index==0) android.view.View.GONE else android.view.View.VISIBLE
-            breadcrumb.text=if(index==0) copy("选择方案，按需深入调整","Choose a recipe, then refine as needed") else "› $title"
+            developTabs.forEachIndexed { i,tab -> tab.isSelected=i==index }
+            val tab=developTabs[index]
+            tab.post { tab.requestRectangleOnScreen(android.graphics.Rect(0,0,tab.width,tab.height),true) }
             shell.scrollToTop(MobileShell.Page.DEVELOP)
         }
         selectDevelopment=::selectDevelop;selectDevelop(0)
@@ -369,6 +400,7 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
         fun toolPanel()=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;scan.addView(this) }
         val exposure=toolPanel();val colors=toolPanel();val curves=toolPanel()
         val light=toolPanel();val base=toolPanel();val levels=toolPanel();val scanDetails=toolPanel();val advanced=toolPanel()
+        filmTools=base
         scanOutput=scanDetails
         scanExtras=advanced
         fun resetScan(keys: Set<String>,lightness: Boolean=false,polarity: Boolean=false)=scanEdit {
@@ -692,6 +724,7 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
         return base + ("develop" to RecipeDrafts.process(incidents.applyTo(develop)))
     }
     private fun updateProcessSummary() {
+        developmentSample?.refresh()
         val prepared=runCatching { section(development(current()),"develop") }
         val values=prepared.getOrDefault(processOverlay)
         incidentControls?.bind(values)
@@ -701,7 +734,7 @@ class StageRecipeControls(private val activity: ComponentActivity,private val sh
         maskCaption.text=copy("片基漂白：${if(bleaching>0) maskStrength.progress else 0}%","Base-mask bleaching: ${if(bleaching>0) maskStrength.progress else 0}%")
         timeTouch?.refresh((values["time_min"] as? Number)?.toDouble() ?: 8.0)
         val material=processMaterial.ifEmpty { section(current(),"film") }
-        val outcome=if(material.isEmpty() || prepared.isFailure) null else runCatching { RecipeDrafts.inspectProcess(material,values) }.getOrNull()
+        val outcome=if(material.isEmpty() || prepared.isFailure) null else runCatching { RecipeDrafts.inspectProcess(material,values,processFormationProfile) }.getOrNull()
         val count=(values["process_steps"] as? List<*>)?.size
         val automatic=count==null && values["program_key"] in listOf(null,"auto")
         chemistryOverride.visibility=if(automatic) android.view.View.VISIBLE else android.view.View.GONE

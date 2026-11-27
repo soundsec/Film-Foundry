@@ -5,6 +5,10 @@ The items below distinguish algorithm sources from design references and
 separately installed dependencies. This document is not a binary dependency
 inventory or a statement that every provenance question has been resolved.
 
+## Edge lettering
+
+The proportional film-edge face uses uppercase Latin and numeral bitmaps rasterized from Roboto Light 1.100141. Font data copyright Google 2012. The desktop and Android renderers read the same atlas. [Upstream Roboto](https://github.com/googlefonts/roboto) · [Apache 2.0 license and modification notice](third_party_licenses/ROBOTO_APACHE_2_0.txt).
+
 ## Algorithms
 
 - **Tanner Helland — Kelvin-to-RGB approximation.** The coefficients and
@@ -108,7 +112,8 @@ dependencies, not part of this runtime list.
 
 ## Current source input codecs (not yet rebuilt into a release)
 
-- DNG decoding: [rawpy](https://github.com/letmaik/rawpy), MIT; its LibRaw dependency is LGPL-2.1/CDDL-1.0 dual licensed. The wheel retains the original license terms.
+- Desktop DNG container identification uses Christoph Gohlke’s tifffile (BSD-3-Clause). [Upstream](https://github.com/cgohlke/tifffile) · [License](third_party_licenses/input-codecs/TIFFFILE_LICENSE.txt)
+- The desktop calls Maik Riechert’s rawpy (MIT) to unpack DNG and run LibRaw’s camera-aware linear conversion, including demosaicing where needed. The LibRaw project offers LGPL-2.1 or CDDL-1.0 licensing. [rawpy](https://github.com/letmaik/rawpy) · [LibRaw](https://www.libraw.org/) · [rawpy notice](third_party_licenses/input-codecs/RAWPY_LICENSE.txt) · [LibRaw license](third_party_licenses/input-codecs/LIBRAW_LICENSE.txt)
 - Ultra HDR JPEG: [imagecodecs](https://github.com/cgohlke/imagecodecs), BSD-3-Clause, using [libultrahdr](https://github.com/google/libultrahdr), Apache-2.0/MIT. No gain-map formula is copied into the formation pipeline.
 - Original notices are retained in `third_party_licenses/input-codecs/`. These describe source-runtime dependencies; regenerate the actual packaged inventory before distributing a new executable.
 

@@ -1,7 +1,8 @@
 """Small global preferences dialog; workspace defaults apply to new work only."""
 from pathlib import Path
+import os
 from film_foundry.app.desktop_settings import load_settings, save_settings
-from film_foundry.ui.qt import QtWidgets, QtGui
+from film_foundry.ui.qt import QtCore, QtWidgets, QtGui
 from film_foundry.ui.curve_editor import text
 
 
@@ -98,6 +99,8 @@ class DesktopSettingsDialog(QtWidgets.QDialog):
             refresh_swatches()
         self.theme.currentIndexChanged.connect(apply_theme_choice)
         self.language=QtWidgets.QComboBox()
+        from film_foundry.ui.language_packs import refresh_packs, shared_directory
+        refresh_packs()
         for key in available_languages():self.language.addItem(language_label(key),key)
         self.language.setCurrentIndex(self.language.findData(current_language()))
         self.language.setEnabled(change_language is not None)
@@ -113,6 +116,14 @@ class DesktopSettingsDialog(QtWidgets.QDialog):
         row=QtWidgets.QHBoxLayout();layout.addLayout(row)
         self.export_language_button=QtWidgets.QPushButton(text('导出翻译模板…','Export translation template…'));row.addWidget(self.export_language_button)
         self.import_language_button=QtWidgets.QPushButton(text('导入语言包…','Import language pack…'));row.addWidget(self.import_language_button)
+        folder=QtWidgets.QPushButton(text('打开语言目录','Open languages folder'));row.addWidget(folder)
+        def open_folder():
+            from film_foundry.ui.qt import QtGui
+            directory=shared_directory()
+            try:directory.mkdir(parents=True,exist_ok=True)
+            except OSError as exc:self.appearance_status.setText(str(exc));return
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(directory)))
+        folder.clicked.connect(open_folder)
         def export_language():
             from film_foundry.ui.language_packs import export_template
             path,_=QtWidgets.QFileDialog.getSaveFileName(self,text('导出翻译模板','Export translation template'),'translation.json','JSON (*.json)')
@@ -200,13 +211,79 @@ class DesktopSettingsDialog(QtWidgets.QDialog):
         about = QtWidgets.QPushButton(text('版本、许可与致谢…','Version, licenses & credits…'));layout.addWidget(about)
         from film_foundry.ui.about import show_about
         about.clicked.connect(lambda:show_about(self));layout.addStretch()
+        self.add_compute_tab()
         self.status = QtWidgets.QLabel();self.status.setWordWrap(True);root.addWidget(self.status)
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Save|QtWidgets.QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Save).setText(text('保存工作区与默认值并关闭','Save workspace & defaults and close'))
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Save).setText(text('保存并关闭','Save and close'))
         buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Cancel).setText(text('关闭','Close'))
-        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Cancel).setToolTip(text('关闭窗口；不保存未提交的工作区、默认值或快捷键编辑。已应用的快捷键、外观、直方图与布局操作保留。',
-            'Close without saving unsubmitted workspace, defaults or shortcut edits. Applied shortcuts, appearance, histogram and layout actions remain.'))
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Cancel).setToolTip(text('放弃待保存的工作区、默认值、计算或快捷键编辑。',
+            'Discard pending workspace, defaults, compute and shortcut edits.'))
         buttons.accepted.connect(self.apply);buttons.rejected.connect(self.reject);root.addWidget(buttons)
+
+    def add_compute_tab(self):
+        from film_foundry.core.desktop_compute import device_state
+        from film_foundry.core.material_parallel import resolve_thread_count
+
+        self.compute_page = QtWidgets.QWidget()
+        self.tabs.addTab(self.compute_page, text('计算', 'Compute'))
+        layout = QtWidgets.QVBoxLayout(self.compute_page)
+        next_launch = QtWidgets.QGroupBox(text('下次启动', 'Next launch'))
+        layout.addWidget(next_launch)
+        form = QtWidgets.QFormLayout(next_launch)
+        self.compute_backend = QtWidgets.QComboBox()
+        for key, zh, en in (('auto', '自动选择', 'Automatic'), ('cpu', '仅 CPU', 'CPU only'),
+                            ('cuda', 'CUDA', 'CUDA'), ('opencl', 'OpenCL', 'OpenCL')):
+            self.compute_backend.addItem(text(zh, en), key)
+        self.compute_backend.setCurrentIndex(self.compute_backend.findData(self.values['compute_backend']))
+        form.addRow(text('硬件加速', 'Hardware acceleration'), self.compute_backend)
+
+        def hint(message):
+            note = QtWidgets.QLabel(message)
+            note.setWordWrap(True)
+            note.setObjectName('sectionNote')
+            form.addRow('', note)
+
+        hint(text('自动选择依次尝试 CUDA、OpenCL 和 CPU。设备计算失败时由 CPU 接手。',
+                  'Automatic tries CUDA, OpenCL and CPU in order. A failed GPU step runs on the CPU.'))
+        self.compute_threads = QtWidgets.QSpinBox()
+        self.compute_threads.setRange(0, max(1, os.cpu_count() or 1))
+        self.compute_threads.setSpecialValueText(text('自动', 'Automatic'))
+        self.compute_threads.setValue(self.values['compute_threads'])
+        form.addRow(text('CPU 线程上限', 'CPU thread limit'), self.compute_threads)
+        hint(text('自动模式在本机最多使用 {n} 个工作线程。设为 1 可串行执行材料分块和 OpenCV 运算。',
+                  'Automatic allows up to {n} workers here. Set 1 to run material tiles and OpenCV serially.')
+             .format(n=resolve_thread_count(0)))
+
+        current = QtWidgets.QGroupBox(text('本次运行', 'This session'))
+        layout.addWidget(current)
+        self.device_label = QtWidgets.QLabel()
+        self.device_label.setWordWrap(True)
+        QtWidgets.QFormLayout(current).addRow(text('计算设备', 'Compute device'), self.device_label)
+        layout.addStretch()
+
+        def refresh_device():
+            backend, detail = device_state()
+            if backend is None:
+                label = text('等待首次设备计算', 'Waiting for first GPU task')
+            elif backend == 'cpu' and detail:
+                label = text('已回退到 CPU', 'Using CPU fallback') + ' · ' + detail.splitlines()[0]
+            else:
+                name = 'OpenCL' if backend == 'opencl' else backend.upper()
+                label = ' · '.join(filter(None, (name, detail)))
+            if self.device_label.text() != label:
+                self.device_label.setText(label)
+                self.device_label.setToolTip(detail or '')
+
+        timer = QtCore.QTimer(self.compute_page)
+        timer.setInterval(1500)
+        timer.timeout.connect(refresh_device)
+        def tab_changed(index):
+            if self.tabs.widget(index) is self.compute_page:
+                refresh_device()
+                timer.start()
+            else:
+                timer.stop()
+        self.tabs.currentChanged.connect(tab_changed)
 
     def choose_workspace(self):
         value = QtWidgets.QFileDialog.getExistingDirectory(self,text('工作区目录','Workspace folder'),self.workspace.text())
@@ -224,7 +301,8 @@ class DesktopSettingsDialog(QtWidgets.QDialog):
             value=load_settings()  # Preserve work history added while this dialog was open.
             value.update(workspace=str(path),source_folders=[self.folders.item(i).text() for i in range(self.folders.count())],
                 fast_mode=self.fast.isChecked(),quality=self.quality.currentData(),expert=self.mode.currentData()!='normal',expert_mode=self.mode.currentData() if self.mode.currentData()!='normal' else self.values['expert_mode'],
-                resize=self.resize_enabled.isChecked(),long_edge=self.edge.value(),leave_policy=self.policy.currentData())
+                resize=self.resize_enabled.isChecked(),long_edge=self.edge.value(),leave_policy=self.policy.currentData(),
+                compute_backend=self.compute_backend.currentData(), compute_threads=self.compute_threads.value())
             save_settings(value)
         except (ValueError,OSError) as exc:self.status.setText(str(exc));return
         self.accept()

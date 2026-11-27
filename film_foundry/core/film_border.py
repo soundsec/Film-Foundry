@@ -6,7 +6,7 @@ remain a separate observation-canvas option.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from pathlib import Path
 
@@ -19,7 +19,8 @@ from film_foundry.contracts.edge_marks import normalize_edge_pattern
 
 
 FILM_BORDER_PIPELINE_STATUS = "formed_rebate_reference_v1"
-FILM_BORDER_FORMAT_KEYS = ("135", "120", "110", "half_frame")
+ROLL_120_FORMATS = ("120", "6x4.5", "6x6", "6x7", "6x9")
+FILM_BORDER_FORMAT_KEYS = ("135", "110", "half_frame", *ROLL_120_FORMATS)
 FILM_BORDER_SPROCKET_ROWS = ("none", "top", "bottom", "both")
 FILM_BORDER_IMPRINT_STYLES = ("none", "laser_dot", "optical_amber", "lab_edge")
 FILM_BORDER_IMPRINT_SIDES = ("top", "bottom")
@@ -27,7 +28,7 @@ FILM_BORDER_IMPRINT_SIDES = ("top", "bottom")
 _DEFAULT_SPROCKET_COUNTS = {
     "135": 8,
     "half_frame": 4,
-    "110": 6,
+    "110": 1,
     "120": 0,
 }
 _EDGE_IMPRINT_EXPOSURE = {
@@ -95,7 +96,33 @@ class FilmBorderLayout:
     factory_edges: tuple[FactoryEdgeSpec, ...] = ()
 
 
+def vertical_transport(config, width, height):
+    """In half frame the 18 mm edge follows transport; on full frame it is 36 mm."""
+    if config.transport_axis == "short_edge":
+        return width > height
+    if config.transport_axis != "format":
+        return config.transport_axis == "vertical"
+    return width > height if config.format_key in {"half_frame","6x4.5"} else height > width
+
+
+def clockwise_window(rect):
+    x0, y0, x1, y1 = rect
+    return (1-y1, x0, 1-y0, x1)
+
+
 def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
+    if config.formation_mode not in {"attached", "native", "sprocket_panorama"}:
+        raise ValueError("Unknown film border formation mode")
+    if config.factory_repeat not in {"stock_frame","per_gate"}:
+        raise ValueError("Unknown factory plate repeat")
+    if config.transport_axis not in {"format", "horizontal", "vertical", "short_edge"}:
+        raise ValueError("Unknown film transport axis")
+    if config.formation_mode == "sprocket_panorama" and config.format_key != "135":
+        raise ValueError("Exposure through the perforations requires full-frame 135 stock in a wide gate")
+    if config.lettering_size not in {"legacy", "format_mm"}:
+        raise ValueError("Unknown factory lettering size model")
+    if config.strip_layout not in {"frame_layout_v1", "registered_strip_v2"}:
+        raise ValueError("Unrecognized perforation model")
     format_key = str(config.format_key).strip().lower()
     if format_key not in FILM_BORDER_FORMAT_KEYS:
         raise ValueError(
@@ -131,9 +158,15 @@ def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
             raise ValueError("film_border.sprocket_count must be an integer or None.") from exc
         if sprocket_count < 0:
             raise ValueError("film_border.sprocket_count must be non-negative.")
-    if config.factory_mark_type not in {"hard", "laser"}:
-        raise ValueError("film_border.factory_mark_type must be hard or laser.")
+    from film_foundry.contracts.edge_composition import normalize_composition
+    composition = normalize_composition(config.factory_composition)
+    if composition is not None and config.strip_layout != "registered_strip_v2":
+        raise ValueError("A custom edge plate requires registered_strip_v2")
+    if config.factory_mark_type not in {"ink", "hard", "laser", "laser_etched"}:
+        raise ValueError("film_border.factory_mark_type must be ink, hard, laser, or laser_etched.")
     spread = float(config.factory_mark_spread)
+    if not 0 <= config.rebate_glow <= 1:
+        raise ValueError("film_border.rebate_glow must be between 0 and 1")
     if config.factory_layout not in {'legacy','text_code','combined','text_only','code_text','cinema','compact','roll_markings'}:
         raise ValueError('Unknown factory lettering layout')
     if config.factory_barcode not in {'legacy','code128c','none','blocks','staggered_blocks','paired_blocks'}:
@@ -142,7 +175,7 @@ def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
         raise ValueError('Factory barcode seed must be an integer within 0–2147483647')
     if not math.isfinite(config.loading_offset) or not -.5<=config.loading_offset<=.5:
         raise ValueError('Loading offset must be within -0.5 to 0.5 frames')
-    if config.advance_marker_style not in {'legacy','arrow','double_arrow','chevron','triangle','outline_triangle','none'}:
+    if config.advance_marker_style not in {'legacy','arrow','double_arrow','chevron','triangle','outline_triangle','outline_pentagon','none'}:
         raise ValueError('Unknown advance marker style')
     positions={}
     for name in ('factory_offset_top','factory_offset_bottom','advance_marker_offset'):
@@ -153,7 +186,7 @@ def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
     if not math.isfinite(config.factory_exposure_ev) or not -4<=config.factory_exposure_ev<=4:
         raise ValueError('Factory exposure must be within -4 to +4 EV')
     light_colors={}
-    for name in ('factory_light_color_rgb','imprint_light_color_rgb'):
+    for name in ('factory_light_color_rgb','imprint_light_color_rgb','factory_ink_transmission_rgb'):
         value=getattr(config,name)
         if value is None and name=='imprint_light_color_rgb':
             light_colors[name]=None
@@ -171,10 +204,11 @@ def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
         raise ValueError('Factory exposure variation must be within 0–1')
     if config.advance_direction not in {'left','right'}:
         raise ValueError('Advance direction must be left or right')
-    for value,limit,name in ((config.factory_batch,4095,'factory_batch'),(config.frame_number,9999,'frame_number')):
+    for value,limit,name in ((config.factory_batch,4095,'factory_batch'),(config.frame_number,9999,'frame_number'),
+                             (config.strip_frame_index,9999,'strip_frame_index')):
         if value is not None and (isinstance(value,bool) or int(value)!=value or not 0<=value<=limit):
             raise ValueError('Invalid film_border.'+name)
-    if config.imprint_font not in {'legacy','seven_segment','dot_matrix'}:
+    if config.imprint_font not in {'legacy','seven_segment','seven_segment_open','seven_segment_narrow','dot_matrix'}:
         raise ValueError('Unknown imprint font')
     position=config.imprint_position_xy
     if position is not None:
@@ -188,16 +222,19 @@ def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
     return FilmBorderConfig(
         enabled=bool(config.enabled),
         format_key=format_key,
-        sprocket_rows=sprocket_rows,
+        strip_layout=config.strip_layout, factory_repeat=config.factory_repeat, transport_axis=config.transport_axis, formation_mode=config.formation_mode, lettering_size=config.lettering_size,
+        sprocket_rows=("bottom" if config.strip_layout == "registered_strip_v2" and format_key == "110" and sprocket_count is None and sprocket_rows == "both" else sprocket_rows),
         rebate_height_ratio=rebate,
         sprocket_count=sprocket_count,
         factory_marks=bool(config.factory_marks),
         stock_label=str(config.stock_label),
         factory_layout=config.factory_layout,
+        factory_composition=composition,
         factory_batch=int(config.factory_batch),
         factory_barcode=config.factory_barcode,
         factory_barcode_seed=config.factory_barcode_seed,
         loading_offset=float(config.loading_offset),
+        strip_frame_index=None if config.strip_frame_index is None else int(config.strip_frame_index),
         advance_marker_style=config.advance_marker_style,
         **positions,
         factory_exposure_ev=float(config.factory_exposure_ev),
@@ -212,6 +249,7 @@ def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
         factory_flip_bottom=bool(config.factory_flip_bottom),
         factory_mark_type=config.factory_mark_type,
         factory_mark_spread=spread,
+        rebate_glow=float(config.rebate_glow),
         imprint_style=imprint_style,
         imprint_side=imprint_side,
         imprint_text=str(config.imprint_text or ""),
@@ -225,7 +263,7 @@ def validate_film_border_config(config: FilmBorderConfig) -> FilmBorderConfig:
 
 def resolve_film_border_layout(
     config: FilmBorderConfig,
-    image_shape: tuple[int, ...],
+    image_shape: tuple[int, ...], *, formed_shape=False, strip_coordinates=False,
 ) -> FilmBorderLayout | None:
     """Return rebate/sprocket/imprint geometry for a formed image gate.
 
@@ -242,13 +280,29 @@ def resolve_film_border_layout(
     if height <= 0 or width <= 0:
         raise ValueError("film border layout requires a positive image size.")
 
-    rebate = max(1, int(round(height * float(validated.rebate_height_ratio))))
-    canvas_h = height + rebate * 2
+    vertical = vertical_transport(validated, width, height)
+    if vertical:
+        width, height = height, width
+    ratio = validated.rebate_height_ratio
+    panorama = validated.formation_mode == "sprocket_panorama"
+    if formed_shape or panorama:
+        if height < 3:
+            raise ValueError("A film strip needs at least three pixel rows")
+        canvas_h = height
+        rebate = min((height-1)//2, max(1, round(height*ratio/(1+2*ratio))))
+        height -= rebate*2
+    else:
+        rebate = max(1, round(height*ratio))
+        canvas_h = height + rebate*2
+    if panorama:
+        count = validated.sprocket_count
+        validated = replace(validated, format_key="135", sprocket_count=count if count is not None else
+                            max(1, round(width*35.0/(canvas_h*4.75))))
     canvas_w = width
     image_rect = (0, rebate, width, height)
     holes = _sprocket_holes(validated, canvas_w, canvas_h, rebate)
     imprint = _imprint_spec(validated, canvas_w, canvas_h, rebate)
-    return FilmBorderLayout(
+    layout = FilmBorderLayout(
         format_key=validated.format_key,
         canvas_size=(canvas_w, canvas_h),
         image_rect=image_rect,
@@ -258,11 +312,29 @@ def resolve_film_border_layout(
         factory_edges=_factory_edges(validated, canvas_w, canvas_h, rebate),
     )
 
+    if vertical and not strip_coordinates:
+        if imprint is not None:
+            x,y=imprint.origin_xy
+            imprint=replace(imprint,origin_xy=(1-y,x))
+        return replace(layout, imprint=imprint, canvas_size=(canvas_h, canvas_w), image_rect=(rebate,0,height,width),
+                       sprocket_holes=tuple(replace(h, normalized_rect=clockwise_window(h.normalized_rect)) for h in holes),
+                       factory_edges=tuple(replace(e, normalized_rect=clockwise_window(e.normalized_rect)) for e in layout.factory_edges))
+    return layout
+
 
 def _factory_edges(config, width, height, rebate):
     if not config.factory_marks:
         return ()
-    inner, outer = (0.12, 0.84) if config.format_key == "120" else (0.72, 0.96)
+    inner, outer = (0.12, 0.84) if config.format_key in ROLL_120_FORMATS else (0.72, 0.96)
+    if config.lettering_size == "format_mm":
+        # Nominal 1.25 mm of type on the stock, centred in the factory lane.
+        gate_mm = 56. if config.format_key in ROLL_120_FORMATS else {"135":24., "half_frame":24., "120":56., "110":13.}[config.format_key]
+        pixels_per_mm = height/35. if config.formation_mode == "sprocket_panorama" else (height-2*rebate)/gate_mm
+        centre = (inner+outer)/2
+        span = min(2*min(centre, 1-centre), (1.25*pixels_per_mm)/rebate)
+        if config.format_key not in ROLL_120_FORMATS:
+            span = min(span, 2*(centre-.63))
+        inner, outer = centre-span/2, centre+span/2
     top = config.factory_pattern_top
     bottom = top if config.factory_pattern_linked else config.factory_pattern_bottom
     return (
@@ -278,15 +350,23 @@ def _sprocket_holes(
     rebate: int,
 ) -> tuple[SprocketHoleSpec, ...]:
     rows = str(config.sprocket_rows)
-    if rows == "none" or config.format_key == "120":
+    if rows == "none" or config.format_key in ROLL_120_FORMATS:
         return ()
     count = config.sprocket_count
     if count is None:
-        count = int(_DEFAULT_SPROCKET_COUNTS.get(config.format_key, 8))
+        count = (6 if config.format_key == "110" and config.strip_layout == "frame_layout_v1"
+                 else _DEFAULT_SPROCKET_COUNTS[config.format_key])
     if count <= 0:
         return ()
     hole_w = max(2, int(round(canvas_w / (count * 2.35))))
     hole_h = max(1, int(round(rebate * 0.50)))
+    single_registration = config.format_key == "110" and count == 1 and config.strip_layout == "registered_strip_v2"
+    if single_registration:
+        hole_w = max(1, round(canvas_w * .075))
+    # New full-strip stock uses the same native perforation geometry on both engines.
+    if config.formation_mode != "attached":
+        hole_w = canvas_w*.075 if single_registration else canvas_w*.48/count
+        hole_h = rebate*.50
     margin_x = hole_w * 0.55
     usable = max(float(canvas_w) - 2.0 * margin_x - float(hole_w), 1.0)
     specs: list[SprocketHoleSpec] = []
@@ -297,7 +377,12 @@ def _sprocket_holes(
         row_ys.append(float(canvas_h - rebate) + rebate * 0.12)
     for top in row_ys:
         for index in range(count):
-            left = margin_x + usable * (float(index) / float(max(count - 1, 1)))
+            if single_registration:
+                left = canvas_w * .94 - hole_w / 2
+            elif config.strip_layout == "registered_strip_v2" or config.formation_mode != "attached":
+                left = (index + .5) * canvas_w / count - hole_w / 2
+            else:
+                left = margin_x + usable * (float(index) / float(max(count - 1, 1)))
             specs.append(
                 SprocketHoleSpec(
                     normalized_rect=(
@@ -392,27 +477,28 @@ def _render_imprint_mask(
     font_size = max(8, int(round(min(height, width) * 0.045 * config.imprint_scale)))
     style = str(config.imprint_style)
     scale=4
-    font = _imprint_font(font_size*scale,label)
-    bbox=font.getbbox(label)
     available=max(1,int(width*.91))
-    if bbox[2]-bbox[0] > available*scale:
-        font_size=max(4,int(font_size*available*scale/(bbox[2]-bbox[0])))
-        font=_imprint_font(font_size*scale,label);bbox=font.getbbox(label)
-    text_w=max(1,int(math.ceil((bbox[2]-bbox[0])/scale)))
-    text_h=max(1,int(math.ceil((bbox[3]-bbox[1])/scale)))
-    # Supersample only the small text strip, never a full frame at 4x.
-    strip=Image.new("L",(min(available,text_w)*scale,text_h*scale),0)
-    ImageDraw.Draw(strip).text((-bbox[0],-bbox[1]),label,font=font,fill=255)
-    high=np.asarray(strip,dtype=np.uint8)
-    if config.imprint_font != 'legacy':
+    if config.imprint_font not in ("seven_segment_open", "seven_segment_narrow"):
+        # Preserve the old date back's font metrics, including its width limit.
+        font = _imprint_font(font_size*scale,label)
+        bbox=font.getbbox(label)
+        if bbox[2]-bbox[0] > available*scale:
+            font_size=max(4,int(font_size*available*scale/(bbox[2]-bbox[0])))
+            font=_imprint_font(font_size*scale,label);bbox=font.getbbox(label)
+    if config.imprint_font == "legacy":
+        text_w=max(1,int(math.ceil((bbox[2]-bbox[0])/scale)))
+        text_h=max(1,int(math.ceil((bbox[3]-bbox[1])/scale)))
+        strip=Image.new("L",(min(available,text_w)*scale,text_h*scale),0)
+        ImageDraw.Draw(strip).text((-bbox[0],-bbox[1]),label,font=font,fill=255)
+        high=np.asarray(strip,dtype=np.uint8)
+    else:
         from film_foundry.core.imprint_glyphs import render_display_text
         high=render_display_text(label,config.imprint_font,font_size*scale,available*scale)
         text_h=max(1,int(math.ceil(high.shape[0]/scale)))
-        strip=Image.fromarray(high)
     if style == "optical_amber":
         # Quarter-pixel thinning keeps counters open without erasing strokes.
         high=cv2.erode(high,np.ones((2,2),np.uint8))
-    ink=cv2.resize(high,(strip.width//scale,text_h),interpolation=cv2.INTER_AREA).astype(np.float32)/255.
+    ink=cv2.resize(high,(max(1,high.shape[1]//scale),text_h),interpolation=cv2.INTER_AREA).astype(np.float32)/255.
     x=int(round(width*.045))
     text_w=ink.shape[1]
     margin_y = max(2, int(round(height * 0.014)))

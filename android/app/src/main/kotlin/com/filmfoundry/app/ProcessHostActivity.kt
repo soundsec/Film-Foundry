@@ -53,6 +53,27 @@ class ProcessHostActivity : ComponentActivity() {
     private lateinit var cameraSounds: com.filmfoundry.app.session.CameraSounds
     private var soundCue: com.filmfoundry.app.session.CameraSoundSynth.Cue? = null
     private val soundLabels = mutableMapOf<com.filmfoundry.app.session.CameraSoundSynth.Cue, () -> Unit>()
+    private val pickLanguage = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if(uri!=null) movieWorker.execute {
+            val result=runCatching {
+                contentResolver.openInputStream(uri)?.use { MobileLanguages.install(this,it) }
+                    ?: error("Could not read language pack")
+            }
+            runOnUiThread {
+                if(!isFinishing && !isDestroyed) result.onSuccess { code ->
+                    applyAppearance(getSharedPreferences("mobile_ui",MODE_PRIVATE).getString("theme","dark") ?: "dark",code)
+                }.onFailure { status.text=copy("语言包导入失败","Language pack import failed")+" · "+it.message }
+            }
+        }
+    }
+
+    private fun applyAppearance(theme: String,language: String) {
+        if(importing || com.filmfoundry.app.session.ProcessingWork.busy || rollActions?.captureInProgress()==true) return
+        rollActions?.saveDrafts()
+        getSharedPreferences("mobile_ui",MODE_PRIVATE).edit().putString("theme",theme).putString("language",language)
+            .putString("page",shell.selected.key).apply()
+        recreate()
+    }
     private val pickSound = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         val cue = soundCue ?: return@registerForActivityResult
         soundCue = null
@@ -188,8 +209,8 @@ class ProcessHostActivity : ComponentActivity() {
         if(cameraChoices.isEmpty()) { loadCameraChoices { openNativeCameraSettings() };return }
         val motionNow=rollActions?.captureTarget()?.startsWith("motion")==true
         isoLock.selectRoll(if(shell.selected==MobileShell.Page.CAPTURE) rollActions?.captureRollId() else null)
-        val shown=if(motionNow) nativeSettings.copy(iso=null,exposureNs=null) else if(isoUnlocked) nativeSettings else exposureFromFilm(nativeSettings)
-        com.filmfoundry.app.ui.showNativeCameraDialog(this,shell,cameraChoices,selectedCamera ?: cameraChoices.first(),shown,shell.selected==MobileShell.Page.CAPTURE && !motionNow,isoUnlocked && !motionNow) { lens,requested,unlock ->
+        val shown=if(motionNow) com.filmfoundry.platform.NativeCaptureSettings() else if(isoUnlocked) nativeSettings else exposureFromFilm(nativeSettings)
+        com.filmfoundry.app.ui.showNativeCameraDialog(this,shell,cameraChoices,selectedCamera ?: cameraChoices.first(),shown,shell.selected==MobileShell.Page.CAPTURE && !motionNow,isoUnlocked && !motionNow,motion=motionNow) { lens,requested,unlock ->
             applyNativeCameraSelection(lens,requested,unlock)
         }
     }
@@ -202,13 +223,16 @@ class ProcessHostActivity : ComponentActivity() {
                 ToastMessage(copy("请先过片，或选择支持当前格尺寸的镜头。","Advance first, or select a lens supporting the current frame size."));return
             }
             val w=size?.first ?: 0;val h=size?.second ?: 0
-            val imageFormat=when(settings.format) { "raw"->android.graphics.ImageFormat.RAW_SENSOR;"ultra_hdr"->android.graphics.ImageFormat.JPEG_R;else->android.graphics.ImageFormat.JPEG }
+            val imageFormat=com.filmfoundry.platform.CameraOutputCatalog.streamFormat(settings.format,motion)
             if(motion && w>0 && h>0 && lens.sizes(imageFormat).none { (it.first==w && it.second==h) || (it.first==h && it.second==w) }) {
                 ToastMessage(copy("这颗镜头不支持当前胶卷的拍摄尺寸，当前相机保留","This lens cannot provide the loaded roll's capture size; current camera retained"));return
             }
             if(motion && settings!=com.filmfoundry.platform.NativeCaptureSettings()) {
                 ToastMessage(copy("原生手动控制和 HDR 当前仅用于静照，请恢复自动设置或切换静照卷","Manual native controls and HDR currently apply to still rolls; use automatic settings or load a still roll"));return
             }
+            // The motion stream already uses its fixed capture settings on this lens.
+            // Confirming its dialog must preserve the separate still-format choice.
+            if(motion && selectedCamera?.key==lens.key && cameraReady) return
             val keepUnlock=isoLock.snapshot()
             isoUnlocked=unlock && !motion
             val adapter=camera
@@ -327,7 +351,14 @@ class ProcessHostActivity : ComponentActivity() {
         gateView=ViewfinderBaffles(this);cameraPanel.addView(gateView,android.widget.FrameLayout.LayoutParams(-1,-1))
         touchControls=com.filmfoundry.app.ui.CameraTouchControls(preview,shell,
             { cameraReady && !bindingCamera && !importing && rollActions?.captureInProgress() != true && shell.selected == MobileShell.Page.CAPTURE },
-            { status.text=it },::openFinderLens,::openFinderFlash,::nativeFlashAvailable,finderExpert)
+            { status.text=it },::openFinderLens,::openFinderFlash,::nativeFlashAvailable,
+            { com.filmfoundry.app.ui.captureFormats(selectedCamera,rollActions?.captureTarget()?.startsWith("motion")==true) },
+            { format ->
+                val lens=selectedCamera
+                val applied=camera?.nativeRequests()
+                if(lens!=null && applied!=null && cameraReady && !bindingCamera)
+                    applyNativeCameraSelection(lens,applied.copy(format=format),isoUnlocked)
+            })
         cameraPanel.addView(touchControls,android.widget.FrameLayout.LayoutParams(-1,-1))
         cameraButton=Button(this).apply {
             this.text=copy("启用相机预览","Enable viewfinder")
@@ -352,12 +383,9 @@ class ProcessHostActivity : ComponentActivity() {
                 },{ if(::importButton.isInitialized) updateMovieControls(false) }, ::streamSceneFrames,{ selectedCamera },::openNativeCameraSettings,{ nativeSettings.format },{ format,model -> gateView.filmFormat=format;gateView.gateModel=model },::applyFilmIso,{ gateView.frameStyle=it },finderExpert)
         }.getOrElse { status.text=copy("胶卷库读取失败：","Could not open roll library: ")+it.message;null }
         val appearance=shell.card(MobileShell.Page.SETTINGS,"外观与语言","Appearance & language")
-        shell.appearance(appearance,theme,preferences.getString("language","system") ?: "system") { nextTheme,nextLanguage ->
-            if(!importing && !com.filmfoundry.app.session.ProcessingWork.busy && rollActions?.captureInProgress() != true) {
-                rollActions?.saveDrafts()
-                preferences.edit().putString("theme",nextTheme).putString("language",nextLanguage).putString("page",shell.selected.key).apply()
-                recreate()
-            }
+        shell.appearance(appearance,theme,preferences.getString("language","system") ?: "system",::applyAppearance)
+        shell.action(appearance,"导入语言包…","Import language pack…") {
+            if(!importing && !com.filmfoundry.app.session.ProcessingWork.busy) pickLanguage.launch(arrayOf("*/*"))
         }
         shell.settingsEntry("后置处理","Processing","计算与加速、内存与存储","Compute & acceleration, memory and storage",MobileShell.Page.SETTINGS_PROCESS)
         shell.settingsEntry("材料与配方","Recipes","材料、药液、扫描配方和分享码","Materials, chemistry, scanner recipes and share codes",MobileShell.Page.SETTINGS_RECIPES)
@@ -672,7 +700,7 @@ class ProcessHostActivity : ComponentActivity() {
             val w=parts.getOrNull(1)?.toIntOrNull() ?: 0;val h=parts.getOrNull(2)?.toIntOrNull() ?: 0
             return if(w>0 && h>0) w to h else null
         }
-        fun format(value: String)=when(value) { "raw"->android.graphics.ImageFormat.RAW_SENSOR;"ultra_hdr"->android.graphics.ImageFormat.JPEG_R;else->android.graphics.ImageFormat.JPEG }
+        fun format(value: String)=com.filmfoundry.platform.CameraOutputCatalog.streamFormat(value)
         return rollActions?.captureSizeForLens(lens.sizes(format(settings.format)),selectedCamera?.sizes(format(nativeSettings.format)).orEmpty())
     }
     private fun cameraBindingKey(lens: com.filmfoundry.platform.NativeCameraCatalog.Lens,settings: com.filmfoundry.platform.NativeCaptureSettings,size: Pair<Int,Int>?) =
@@ -703,7 +731,7 @@ class ProcessHostActivity : ComponentActivity() {
         val height=size?.second ?: 0
         val low=parts.getOrNull(3)?.toIntOrNull() ?: 0
         val high=parts.getOrNull(4)?.toIntOrNull() ?: 0
-        val captureImageFormat=when(nativeSettings.format) { "raw"->android.graphics.ImageFormat.RAW_SENSOR;"ultra_hdr"->android.graphics.ImageFormat.JPEG_R;else->android.graphics.ImageFormat.JPEG }
+        val captureImageFormat=com.filmfoundry.platform.CameraOutputCatalog.streamFormat(nativeSettings.format,motion)
         if(motion && width>0 && height>0 && lens.sizes(captureImageFormat).none { (it.first==width && it.second==height) || (it.first==height && it.second==width) }) {
             status.text=copy("这颗镜头不支持本卷的拍摄尺寸，请换回兼容镜头","This lens cannot provide this roll's capture size; choose a compatible lens");return
         }

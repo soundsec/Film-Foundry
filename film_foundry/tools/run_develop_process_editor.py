@@ -316,7 +316,8 @@ def safe_preset_stem(name: str) -> str:
 
 
 def develop_preset_names() -> list[str]:
-    names = {path.stem for path in DEVELOP_PRESET_DIR.glob("*.json")}
+    from film_foundry.app.preset_catalog import public_builtin_preset_names
+    names = public_builtin_preset_names(DEVELOP_PRESET_DIR, "develop")
     names.update(path.stem for path in USER_DEVELOP_PRESET_DIR.glob("*.json"))
     supported: list[str] = []
     for name in sorted(names):

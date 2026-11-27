@@ -2,6 +2,23 @@ package com.filmfoundry.kernel
 
 import com.filmfoundry.interchange.DataKernel
 
+/** Permanent RGB support in material coordinates, excluding the processed coupler mask. */
+internal fun permanentSupport(film: Map<*,*>, polarity: Any?): FloatArray {
+    fun density(key: String, default: FloatArray): FloatArray {
+        val value = film[key] ?: return default
+        require(value is List<*> && value.size == 3) { "$key requires RGB optical density" }
+        return FloatArray(3) { c ->
+            (value[c] as Number).toFloat().also { require(it.isFinite() && it >= 0f) }
+        }
+    }
+    val total = density("film_base_density_rgb", PhoneReducedKernel.DEFAULT_BASE)
+    val process = film["color_process"]?.toString()?.trim()?.lowercase()?.replace('-', '_')?.replace(' ', '_')
+    val side = (film["image_polarity"] ?: polarity)?.toString()?.trim()?.lowercase().orEmpty()
+    if (side.contains("positive") || side == "slide" || process in setOf("bw","black_white","monochrome")) return total
+    val floor = density("clear_support_density_rgb", floatArrayOf(.03f,.03f,.035f))
+    return FloatArray(3) { minOf(floor[it], total[it]) }
+}
+
 /** Small setup values only. No per-pixel spectral buffers or desktop runtime. */
 internal class PhoneSpectralExposure private constructor(
     val metadata: Map<String, Any?>,
@@ -109,6 +126,12 @@ internal data class PhoneMaterialGeometry(
     )
 
     companion object {
+        fun frameLength(develop: Map<*,*>): Double {
+            develop["frame_long_edge_mm"]?.let { return number(it, "frame_long_edge_mm", positive = true) }
+            val key = (develop["frame_size"] ?: "35mm").toString().trim().lowercase().replace('-', '_').replace(' ', '_')
+            return mapOf("half_frame" to 24.0, "35mm" to 36.0, "6x6" to 56.0, "6x7" to 69.0, "4x5" to 120.0)[key]
+                ?: throw KernelException("unknown physical frame_size; supply frame_long_edge_mm.")
+        }
         fun resolve(recipe: Map<String, Any?>, height: Int, width: Int): PhoneMaterialGeometry? {
             val film = recipe["film"] as? Map<*, *>
             val develop = ((recipe["chemistry"] as? Map<*, *>)?.entries.orEmpty() +
@@ -120,11 +143,7 @@ internal data class PhoneMaterialGeometry(
                 return null
             }
             val ref = number(reference, "spatial_reference_short_edge_mm", positive = true)
-            val long = if (rawLong != null) number(rawLong, "frame_long_edge_mm", positive = true) else {
-                val key = (develop["frame_size"] ?: "35mm").toString().trim().lowercase().replace('-', '_').replace(' ', '_')
-                mapOf("half_frame" to 24.0, "35mm" to 36.0, "6x6" to 56.0, "6x7" to 69.0, "4x5" to 120.0)[key]
-                    ?: throw KernelException("unknown physical frame_size; supply frame_long_edge_mm.")
-            }
+            val long = frameLength(develop)
             return PhoneMaterialGeometry(long, ref, height, width)
         }
 

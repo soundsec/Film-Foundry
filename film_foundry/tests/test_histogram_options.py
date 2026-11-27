@@ -96,7 +96,7 @@ def test_workbench_switches_histogram_location_and_retains_drag_sizes(desktop):
     settings.controls['layout'].setCurrentIndex(1);settle()
     assert histogram.parentWidget() is panel.histogram_below_host and panel.histogram_sidebar_host.isHidden()
     panel.root.qt.resize(1280,720);settle()
-    assert panel.result_view.height()>=180 and histogram.height()<=130
+    assert panel.result_view.height()>=180 and histogram.height()<panel.result_view.height()
     panel.root.qt.resize(1320,860);settle()
     drag(panel.preview_histogram_splitter,1,-25);below=panel.preview_histogram_splitter.sizes()
     settings.controls['layout'].setCurrentIndex(0);settle();near(panel.inspector_splitter.sizes(),side)

@@ -23,6 +23,8 @@ SURFACE_FIELDS={"polish_y","microtexture","pit_depth"}
 
 @dataclass(frozen=True)
 class PlateMaterial(StructureMaterial):
+    ARCHIVED_DEFAULTS = {'iodized_response': 0.}
+    iodized_response: float = field(default=1., kw_only=True)
     half_exposure: float=.18
     reaction_seconds: float=40.
     roughness: float=.12
@@ -37,6 +39,7 @@ class PlateMaterial(StructureMaterial):
     def __post_init__(self):
         super().__post_init__()
         from film_foundry.core.sheet_common import number
+        number(self.iodized_response, 'iodized_response')
         number(self.gold_capacity,'gold_capacity',0,10);number(self.gold_adhesion,'gold_adhesion')
         for value in (self.half_exposure,self.reaction_seconds,self.fixing_seconds,self.gilding_seconds):
             if not math.isfinite(value) or value<=0:raise ValueError("Positive finite material parameters required")
@@ -139,9 +142,18 @@ def expose_surface(state,*,image):
     image=np.asarray(image,dtype=np.float32)
     if image.shape!=state.fields["latent"].shape+(3,) or not np.isfinite(image).all() or (image<0).any():
         raise ValueError("Exposure must be matching finite nonnegative linear RGB")
-    y=image @ np.array([.2126,.7152,.0722],np.float32)
+    mix = state.material.iodized_response if state.schema_version >= 4 else 0.
+    if mix == 1:
+        y = image[..., 2] + .06 * image[..., 1]
+    else:
+        y = image @ np.array([.2126,.7152,.0722],np.float32)
+        if mix:
+            y = (1 - mix) * y + mix * (image[..., 2] + .06 * image[..., 1])
     fields=dict(state.fields)
-    if state.schema_version>=2:
+    if mix:
+        from film_foundry.core.sheet_common import response
+        fields['latent'] = np.where(y > 0, response(y, state.material.half_exposure, state.material.response_contrast), 0.) * fields['sensitivity']
+    elif state.schema_version>=2:
         exponent=state.material.response_contrast
         # Exposure response, not a contrast curve applied to an observed photograph.
         power=np.power(y,exponent)

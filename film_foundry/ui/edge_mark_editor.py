@@ -100,8 +100,10 @@ class EdgeMarkEditor(QtWidgets.QDialog):
         layout.addLayout(process)
         process.addWidget(QtWidgets.QLabel(text("成印方式", "Marking method")))
         self.mark_type = QtWidgets.QComboBox()
-        self.mark_type.addItem(text("清晰印字（曝光）", "Hard-edged exposure"), "hard")
+        self.mark_type.addItem(text("光学掩模板印字", "Optical mask printing"), "hard")
         self.mark_type.addItem(text("激光式曝光", "Laser-style exposure"), "laser")
+        self.mark_type.addItem(text("激光刻蚀（去除乳剂）", "Laser etching (emulsion removal)"), "laser_etched")
+        self.mark_type.addItem(text("油墨印刷", "Ink printing"), "ink")
         self.mark_type.setCurrentIndex(max(0, self.mark_type.findData(config.factory_mark_type)))
         process.addWidget(self.mark_type)
         process.addWidget(QtWidgets.QLabel(text("材料扩散倍率", "Material spread")))
@@ -116,8 +118,9 @@ class EdgeMarkEditor(QtWidgets.QDialog):
         template = QtWidgets.QHBoxLayout()
         layout.addLayout(template)
         self.template_text = QtWidgets.QLineEdit()
+        self.template_text.setValidator(QtGui.QRegularExpressionValidator(QtCore.QRegularExpression('[A-Za-z ]{0,14}'), self.template_text))
         self.template_text.setText(config.stock_label or 'FILM FOUNDRY')
-        self.template_text.setPlaceholderText(text("厂标文字：最多14位英文/数字", "Factory label: up to 14 letters/digits"))
+        self.template_text.setPlaceholderText(text("厂标文字：最多14个英文字母或空格", "Factory label: up to 14 English letters or spaces"))
         self.template_batch = QtWidgets.QSpinBox()
         self.template_batch.setRange(0,4095)
         self.template_batch.setValue(config.factory_batch)
@@ -165,12 +168,14 @@ class EdgeMarkEditor(QtWidgets.QDialog):
         try:
             pattern=self.generated_pattern()
         except ValueError:
-            self.error.setText(text("请输入1–14位英文字母、数字、空格或连字符。", "Use 1–14 letters, digits, spaces or hyphens."))
+            self.error.setText(text("请输入1–14个英文字母或空格。", "Use 1–14 English letters or spaces."))
             return
         self.grid.load(pattern);self.store();self.error.clear()
 
     def generated_pattern(self):
         from film_foundry.contracts.edge_marks import factory_edge_pattern
+        if self.template_text.text() != self.config.stock_label and not self.template_text.hasAcceptableInput():
+            raise ValueError("Custom edge text requires English letters and spaces")
         return factory_edge_pattern(self.template_text.text().strip().upper(),self.template_batch.value(),
             self.config.frame_number,self.config.factory_layout,self.config.factory_barcode,'top' if self.current==0 else 'bottom',self.config.factory_barcode_seed)
 

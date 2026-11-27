@@ -14,6 +14,7 @@ def test_layer_pack_density_alpha_and_grain_layer_share_grained_density(tmp_path
     density_grain[3, 4] = (0.8, 0.8, 0.8)
     empty_rgb = np.zeros((8, 8, 3), dtype=np.float32)
     negative = SimpleNamespace(
+        process_surface=None,
         density_cmy=density_cmy,
         density_grain=density_grain,
         after_mtf=empty_rgb,

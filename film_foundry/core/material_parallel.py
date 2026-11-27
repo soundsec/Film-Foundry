@@ -23,6 +23,10 @@ def configure(*,backend=None,threads=None):
 def thread_count():
     try:requested=int(os.environ.get('FILM_FOUNDRY_MATERIAL_THREADS','0'))
     except ValueError:requested=0
+    return resolve_thread_count(requested)
+
+
+def resolve_thread_count(requested):
     available=max(1,os.cpu_count() or 1)
     return min(available,requested) if requested>0 else min(4,available)
 
@@ -35,7 +39,11 @@ def run_rows(height,width,work,*,chunk_pixels=CHUNK_PIXELS,workers=None):
     """
     rows=max(1,chunk_pixels//width)
     spans=[(start,min(start+rows,height)) for start in range(0,height,rows)]
-    limit=thread_count() if workers is None else max(1,min(int(workers),os.cpu_count() or 1))
+    limit = thread_count()
+    if workers is not None:
+        # Headless callers without a process policy retain their explicit budget.
+        ceiling = limit if 'FILM_FOUNDRY_MATERIAL_THREADS' in os.environ else (os.cpu_count() or 1)
+        limit = max(1, min(int(workers), ceiling))
     enabled=limit>1 and len(spans)>1 and height*width>=PARALLEL_MIN_PIXELS and not reference_execution_enabled()
     acquired=enabled and _lease.acquire(blocking=False)
     if not acquired:

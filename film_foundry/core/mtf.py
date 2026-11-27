@@ -210,7 +210,7 @@ def apply_emulsion_mtf(
 
     if (
         not reference_execution_enabled()
-        and int(image.shape[0]) * int(image.shape[1]) >= 1_000_000
+        and int(image.shape[0]) * int(image.shape[1]) >= 524288
     ):
         # Gaussian filtering is channel-separable. On large frames, keeping
         # both three-channel blur results beside the source is the dominant

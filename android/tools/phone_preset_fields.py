@@ -2,7 +2,9 @@
 allowed = {
     "film": {"grain_strength", "grain_scales", "grain_scale_weights", "name", "color_process", "image_polarity", "contrast", "film_base_density_rgb",
              "retained_halide_density_rgb", "layer_sensitivity_matrix", "dye_absorption_matrix",
-             "hd_gamma", "log_exposure_toe", "log_exposure_shoulder", "density_max", "clear_support_density_rgb",
+             "hd_gamma", "log_exposure_toe", "log_exposure_shoulder", "hd_toe_width", "hd_shoulder_width",
+             "density_min", "density_max", "extreme_exposure_reversal_strength", "extreme_exposure_reversal_start_loge",
+             "extreme_exposure_reversal_width", "clear_support_density_rgb", "chemical_fog_susceptibility",
              "dir_material_response_matrix", "dir_diffusion_radius",
              "silver_grain_strength", "silver_grain_radius", "silver_grain_clump_mix",
              "light_piping_strength", "light_piping_depth", "light_piping_edge_mode", "light_piping_layer_weights",
@@ -23,4 +25,10 @@ allowed['film'].update({
     'halation_strength','halation_threshold','halation_softness','halation_core_radius','halation_outer_radius',
     'halation_core_mix','halation_color','halation_peak_threshold','halation_area_suppression',
     'time_response','storage_history','reciprocity_response'})
-allowed['scanner'].update({'color_mixer','scanner_response_matrix'})
+allowed['scanner'].update({'color_mixer','scanner_response_matrix','print_reference_density','print_gamma','positive_scan_color_control_strength'})
+allowed['film'].update({
+    'positive_density_contrast', 'positive_density_bias', 'positive_latitude_compression',
+    'positive_dye_saturation', 'positive_midtone_density', 'positive_shadow_toe',
+    'positive_shadow_toe_width', 'positive_highlight_shoulder', 'positive_highlight_shoulder_width',
+    'positive_highlight_chroma_retention', 'positive_shadow_chroma_retention',
+})

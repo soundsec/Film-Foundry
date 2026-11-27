@@ -16,6 +16,7 @@ import numpy as np
 from film_foundry.core.computation_control import checkpoint
 from film_foundry.core.color import linear_to_srgb
 from film_foundry.core.formed_film_border import image_gate_rows
+from film_foundry.core.scan_perforations import show_open_gate
 from film_foundry.core.electronic_negative import (
     scanner_raw_export_border_width,
     scanner_raw_with_reference_border,
@@ -434,6 +435,7 @@ def _scan_negative_pipeline(
         _prepared_config=True,
         consume_scanner_raw=not reference_execution_enabled(),
         measurement_region=image_gate_rows(negative, config),
+        formed_medium=negative,
     )
 
 
@@ -536,7 +538,7 @@ def _scan_positive_transparency_pipeline(
         scanner_raw=scanner_raw_snapshot,
         negative_total_density=negative_total_density,
         positive_linear=positive_linear,
-        output_srgb=frame_scan(output_srgb, config.scanner),
+        output_srgb=frame_scan(show_open_gate(output_srgb, negative, config.scanner), config.scanner),
         positive_no_grain=positive_linear,
         interpreter_key=str(config.scanner.interpreter_key),
         input_polarity=str(config.scanner.input_polarity),
@@ -808,6 +810,7 @@ def _scan_scanner_raw_array(
     _prepared_config: bool = False,
     consume_scanner_raw: bool = False,
     measurement_region=None,
+    formed_medium=None,
 ) -> ScannedPositive:
     """共享的 scanner raw -> positive 路径。"""
     config = _runtime_config(config, prepared=_prepared_config)
@@ -1076,7 +1079,7 @@ def _scan_scanner_raw_array(
         scanner_raw=scanner_raw_snapshot,
         negative_total_density=np.asarray(negative_total_density, dtype=np.float32),
         positive_linear=positive_linear,
-        output_srgb=frame_scan(output_srgb, config.scanner),
+        output_srgb=frame_scan(show_open_gate(output_srgb, formed_medium, config.scanner), config.scanner),
         positive_no_grain=positive_no_grain_snapshot,
         interpreter_key=str(config.scanner.interpreter_key),
         input_polarity=str(config.scanner.input_polarity),
@@ -1544,7 +1547,8 @@ def _scan_medium_output_only(
         configure_scan_interpretation(runtime, normalized)
 
     render = _scan_negative_output_only if runtime.scanner.invert_transmission else _scan_positive_output_only
-    return frame_scan(render(medium,runtime),runtime.scanner),runtime
+    output = show_open_gate(render(medium, runtime), medium, runtime.scanner)
+    return frame_scan(output, runtime.scanner), runtime
 
 
 def scan_medium_output(

@@ -62,7 +62,36 @@ def duration_from_record(record):
     return duration
 
 
+def validate_film_side(value):
+    if value not in ('emulsion', 'base'):
+        raise ValueError("film_side must be emulsion or base")
+    return value
+
+
+def rear_optics(value=None):
+    """Geometry of the scene on an emulsion-side-up film coordinate grid."""
+    value = {} if value is None else value
+    limits = {'thickness_um': (125., 10., 350.), 'index': (1.48, 1., 2.),
+              'f_number': (5.6, .7, 128.), 'focus_shift_um': (0., -500., 500.)}
+    if not isinstance(value, dict) or set(value) - {*limits, 'mirror', 'profile','auto_refocus'}:
+        raise ValueError('Invalid reverse-loading optics')
+    mirror = value.get('mirror', 'horizontal')
+    profile = value.get('profile', 'generic')
+    if mirror not in ('horizontal', 'vertical', 'none') or profile not in ('generic', 'harman_red_125'):
+        raise ValueError('Unknown reverse-loading orientation or reference')
+    auto_refocus = value.get('auto_refocus',False)
+    if not isinstance(auto_refocus,bool):
+        raise ValueError('auto_refocus must be boolean')
+    return {'mirror': mirror, 'profile': profile, 'auto_refocus': auto_refocus, **{
+        k: number(value.get(k, default), low, high, k) for k, (default, low, high) in limits.items()}}
+
+
 def validate_config(config):
+    validate_film_side(config.exposure.film_side)
+    if config.exposure.rear_optics is not None:
+        rear_optics(config.exposure.rear_optics)
+    from film_foundry.contracts.lens_filters import validate_filter
+    validate_filter(config.exposure.lens_filter)
     duration = validate_duration(config.exposure.duration_seconds)
     validate_response(config.film.reciprocity_response)
     if duration is not None and config.chemistry.program_key == 'legacy_density':

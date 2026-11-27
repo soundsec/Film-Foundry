@@ -6,6 +6,8 @@ from film_foundry.contracts.film_time import validate_response,validate_history,
 
 def vector(response,key,layers):
     values=np.asarray(response[key],np.float64)
+    if "_coating_records" in response:
+        return np.full(layers, values.mean()) if response["_mono_record"] else values[response["_coating_records"]]
     return np.array([values.mean()]) if layers==1 else values
 
 
@@ -58,7 +60,9 @@ def printout_dose(history,response,layers):
     dose=np.zeros(layers,np.float64)
     for row in history['segments']:
         light=np.asarray(row['light_rgb'],np.float64)
-        if layers==1:light=np.array([light.mean()])
+        if "_coating_records" in response:
+            light = np.full(layers, light.mean()) if response["_mono_record"] else light[response["_coating_records"]]
+        elif layers==1:light=np.array([light.mean()])
         dose+=row['duration_hours']*row['relative_illuminance']*light
     dose*=vector(response,'printout_rate_per_light_hour',layers)
     return dose

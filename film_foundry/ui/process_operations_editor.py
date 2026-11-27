@@ -1,5 +1,7 @@
 """Data-only event sequence editor; numerical responses remain in core."""
 from copy import deepcopy
+from secrets import randbelow
+from film_foundry.contracts.process_events import LOCAL_CONTACT_KINDS, CONTACT_CENTERS, EVENT_MODEL_V16
 from film_foundry.ui.qt import QtWidgets,QtCore
 from film_foundry.ui.curve_editor import text
 from film_foundry.contracts.process_events import EVENT_MODEL,EVENT_MODEL_V2,EVENT_MODEL_V3,EVENT_MODEL_V4,EVENT_MODEL_V5,DISTRIBUTION_FIELDS,EVENT_FIELDS,RESPONSE_RANGES,RESPONSE_V2_RANGES,RESPONSE_MODEL_V2,validate_process_events,validate_process_response
@@ -19,7 +21,7 @@ KINDS['backing_wash']=('碳背层清洗与搬运','Carbon backing wash')
 KINDS['rotary_contact']=('旋转冲洗','Rotary processing')
 LABELS={'before_bath':('进入此药浴前携入','Carry in before bath'),'concentration_mmol_l':('抑制剂浓度 mmol/L','Inhibitor mmol/L'),'after_bath':('执行位置','Run after'),'bath':('药浴序号','Bath index'),'fill_s':('注液时间 s','Filling time s'),'immersion_fraction':('浸没比例','Submerged fraction'),
     'angle_degrees':('注液方向 °','Filling direction °'),'bubble_radius_mm':('气泡半径 mm','Air bubble radius mm'),
-    'bubble_release_s':('气泡脱离时间 s','Bubble release time s'),'center_x':('横向位置 0–1','Horizontal position 0–1'),'center_y':('纵向位置 0–1','Vertical position 0–1'),
+    'bubble_release_s':('气泡脱离时间 s','Bubble release time s'),'center_x':('横向位置（画幅比例）','Horizontal position (frame widths)'),'center_y':('纵向位置（画幅比例）','Vertical position (frame heights)'),
     'radius_mm':('接触半径 mm（0=全片）','Contact radius mm (0=whole frame)'),
     'concentration_mg_l':('污染物浓度 mg/L','Contaminant mg/L'),'retained_ml_m2':('残液体积 mL/m²','Retained solution mL/m²'),
     'contact_s':('吸附接触时间 s','Binding contact time s'),'duration_s':('持续时间 s','Duration s'),
@@ -48,6 +50,7 @@ def _control_value(control):
 
 LABELS['travel_mm']=('横向拖动 mm（正值向右）','Horizontal travel mm (positive right)')
 LABELS['band_width_mm']=('作用带宽 mm（0=全片）','Band width mm (0=whole frame)')
+LABELS['contact_seed']=('接触图案种子','Contact pattern seed')
 LABELS['pressure']=('接触压力 0–1','Contact pressure 0–1')
 LABELS.update({'rotation_rpm':('转速 r/min','Rotation speed r/min'),
     'rotation_instability':('滚动不稳定性','Rotation instability'), 'rotation_seed':('随机种子','Random seed'),
@@ -92,7 +95,7 @@ class ProcessOperationsEditor(QtWidgets.QWidget):
         if 0<=index<len(self.rows):
             row=self.rows[index]
             fields=dict(EVENT_FIELDS[row['kind']])
-            if row['kind'] in ('backing_condition','backing_wash') or row['kind'] in ('emulsion_wear','emulsion_shear') and self.original_model in (EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):
+            if row['kind'] in ('backing_condition','backing_wash') or row['kind'] in ('emulsion_wear','emulsion_shear') and self.original_model in (EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,EVENT_MODEL_V16):
                 position='after_bath' if 'after_bath' in row or row['kind'] in ('emulsion_wear','emulsion_shear') and 'before_bath' not in row else 'before_bath'
                 self.position=QtWidgets.QComboBox()
                 self.position.addItem(text('药浴之前','Before bath'),'before_bath');self.position.addItem(text('药浴之后','After bath'),'after_bath')
@@ -107,7 +110,7 @@ class ProcessOperationsEditor(QtWidgets.QWidget):
                 self.form_widget.setToolTip(text('单幅按一周展开。浸液比例是接触弧比例，不是药液毫升数；离液后残液逐渐衰减。停转时刻0–1对应药浴开始至结束；停转时长0为连续旋转。搅拌强度仍控制基础反应速率。无三维滚筒、液体输运或槽容量耗竭。',
                     'One frame is unwrapped over one turn. Immersion is wet arc fraction, not millilitres. Residual liquid access decays after emergence. Pause start 0–1 spans the bath; zero duration means continuous rotation. Agitation sets base kinetics. No 3D tank, fluid transport or bath capacity depletion.'))
             if row['kind']=='emulsion_wear':
-                if self.original_model not in (EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):fields['after_bath']=(0,0,0)
+                if self.original_model not in (EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,EVENT_MODEL_V16):fields['after_bath']=(0,0,0)
                 self.form_widget.setToolTip(text('新操作可插入指定药浴之前或之后；旧v9保持末段处理。压力、时长、湿润、硬化和已有损伤决定缺层，已移走的银盐、银和染料不再参与后续药浴。片基和背层保留；整组成像乳剂一同移除，没有坐标位移。','New operations run before or after a selected bath; legacy v9 remains terminal. Removed halide, silver and dye cannot react in later baths. Pressure, duration, hydration, hardening and damage determine loss. Support and backing remain. Imaging layers leave together; no coordinate displacement.'))
             if row['kind']=='emulsion_shear':
                 self.form_widget.setToolTip(text('沿图像横向拖动湿乳剂；作用带内每行整体移动，硬化、湿润与热损伤决定可动程度。成像物质与乳剂所属附着物同行，片基/背层保留。出框部分记账移出，不回卷；不模拟折叠或垂直位移。','Rows shear horizontally according to pressure, duration and material response. Image material and emulsion-owned deposits move; support and backing stay. Out-of-frame matter is recorded and discarded, never wrapped. No folding or vertical motion.'))
@@ -119,9 +122,17 @@ class ProcessOperationsEditor(QtWidgets.QWidget):
                     self.controls[key]=combo;self.display_values[key]=combo.currentData()
                     self.form.addRow(text(*WETTING_LABELS[key]),combo)
                     combo.setToolTip(text('贴边模型：连续滚动按周期平均接触，停转或慢转保留连接上/下边的起伏液面。旧模型仅用于复现旧配方。残液是有限溶质，可在后续清洗中减少，吸附部分保留。','Edge model: moving rotation averages contact; pauses or slow motion preserve an irregular front connected to the selected edge. Legacy reproduces old recipes. Finite retained solute can be washed away; bound material remains.'))
+            if row['kind'] in LOCAL_CONTACT_KINDS:
+                combo=QtWidgets.QComboBox()
+                for mode,zh,en in [('automatic','自动分布','Automatic'),('manual','指定位置','Manual'),('legacy','旧版轮廓','Legacy contour')]:
+                    combo.addItem(text(zh,en),mode)
+                combo.setCurrentIndex(combo.findData(row.get('placement','legacy')))
+                self.controls['placement']=combo;self.display_values['placement']=combo.currentData()
+                self.form.addRow(text('接触位置','Contact placement'),combo)
+                fields={**fields,'center_x':(.5,*CONTACT_CENTERS),'center_y':(.5,*CONTACT_CENTERS),'contact_seed':(0,0,2147483647)}
             for key,(default,low,high) in fields.items():
-                spin=QtWidgets.QSpinBox() if key in ('bath','after_bath','before_bath','distribution_seed','rotation_seed') else QtWidgets.QDoubleSpinBox()
-                if key not in ('bath','after_bath','before_bath','distribution_seed','rotation_seed'):spin.setDecimals(3)
+                spin=QtWidgets.QSpinBox() if key in ('bath','after_bath','before_bath','distribution_seed','rotation_seed','contact_seed') else QtWidgets.QDoubleSpinBox()
+                if key not in ('bath','after_bath','before_bath','distribution_seed','rotation_seed','contact_seed'):spin.setDecimals(3)
                 if key=='after_bath':
                     spin.setSpecialValueText(text('全部药浴结束后','After all baths'))
                     spin.setToolTip(text('正整数表示第几步药浴之后；改动浴表顺序后请核对。','A positive integer selects the preceding bath. Check it after reordering baths.'))
@@ -139,6 +150,19 @@ class ProcessOperationsEditor(QtWidgets.QWidget):
                     spin.setToolTip(text('在实际接触场中生成毫米尺度的过渡与不规则边界，影响局部物质反应或移除；不模糊最终照片。使用铺布种子，0保留原轮廓；半径0仍为全片。','Millimetre-scale transitions and seeded irregular boundaries act on real contact, reaction and removal, not final-image blur. Zero preserves the old contour; radius zero remains whole-frame.'))
                 if key=='rotation_seed':spin.setToolTip(text('相同种子复现同一组位置与角度；更改种子可换一组，不改变颗粒或其他事故的随机序列。随配方与中途档保存。',
                     'The same seed reproduces the poses. Change it for another arrangement without changing grain or other random streams. Saved with the recipe and processing checkpoint.'))
+            if row['kind'] in LOCAL_CONTACT_KINDS:
+                def placement_controls():
+                    mode=self.controls['placement'].currentData()
+                    radius=self.controls.get('bubble_radius_mm')
+                    if radius is not None:
+                        self.form.labelForField(radius).setText(text(*LABELS['bubble_radius_mm']) if mode=='legacy'
+                            else text('气泡群尺度 mm','Bubble cluster scale (mm)'))
+                    for axis in ('center_x','center_y'):
+                        self.controls[axis].setEnabled(mode!='automatic')
+                        self.controls[axis].setRange(*(CONTACT_CENTERS if mode!='legacy' else (0.,1.)))
+                    self.controls['contact_seed'].setEnabled(mode!='legacy')
+                self.controls['placement'].currentIndexChanged.connect(placement_controls)
+                placement_controls()
             if row['kind']=='rotary_contact':
                 self.wetting_legacy_tooltips={key:control.toolTip() for key,control in self.controls.items()}
                 self.wetting_legacy_form_tooltip=self.form_widget.toolTip()
@@ -177,12 +201,18 @@ class ProcessOperationsEditor(QtWidgets.QWidget):
         self.commit();kind=self.kind.currentData();row={'kind':kind,**{key:limits[0] for key,limits in EVENT_FIELDS[kind].items()}}
         index=next((i for i,r in enumerate(self.rows) if r['kind'] not in CONTACT_KINDS),len(self.rows)) if kind in CONTACT_KINDS else len(self.rows)
         if kind=='rotary_contact':
-            row.update(wetting_model='edge_front_v1',contact_edge='bottom',liquid_level_gradient=0.,meniscus_retention_s=12.,residue_concentration_mg_l=500.);self.original_model=EVENT_MODEL_V15
+            row.update(wetting_model='edge_front_v1',contact_edge='bottom',liquid_level_gradient=0.,meniscus_retention_s=12.,residue_concentration_mg_l=500.)
+            if self.original_model != EVENT_MODEL_V16:self.original_model=EVENT_MODEL_V15
         elif 'edge_width_mm' in row:
             row.update(edge_width_mm=.4,boundary_variation=.65)
-            if self.original_model!=EVENT_MODEL_V15:self.original_model=EVENT_MODEL_V14
-        elif kind=='emulsion_shear' and self.original_model not in (EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):self.original_model=EVENT_MODEL_V11
-        elif kind=='emulsion_wear' and self.original_model not in (EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):self.original_model=EVENT_MODEL_V10
+            if self.original_model not in (EVENT_MODEL_V15,EVENT_MODEL_V16):self.original_model=EVENT_MODEL_V14
+        elif kind=='emulsion_shear' and self.original_model not in (EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,EVENT_MODEL_V16):self.original_model=EVENT_MODEL_V11
+        elif kind=='emulsion_wear' and self.original_model not in (EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,EVENT_MODEL_V16):self.original_model=EVENT_MODEL_V10
+        if kind in LOCAL_CONTACT_KINDS:
+            self.original_model=EVENT_MODEL_V16
+            row.update(placement='automatic',contact_seed=randbelow(2147483647))
+            if 'radius_mm' in row and kind not in ('backing_condition','backing_wash'):
+                row['radius_mm']=2.5
         self.rows.insert(index,row);self.refresh(index)
 
     def remove(self):
@@ -196,7 +226,7 @@ class ProcessOperationsEditor(QtWidgets.QWidget):
     def read(self):
         self.commit()
         rows=deepcopy(self.rows)
-        uses_distribution=self.original_model in (EVENT_MODEL_V5,EVENT_MODEL_V6,EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15) or any(any(row.get(key,limits[0])!=limits[0] for key,limits in DISTRIBUTION_FIELDS.items()) for row in rows)
+        uses_distribution=self.original_model in (EVENT_MODEL_V5,EVENT_MODEL_V6,EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,EVENT_MODEL_V16) or any(any(row.get(key,limits[0])!=limits[0] for key,limits in DISTRIBUTION_FIELDS.items()) for row in rows)
         if not uses_distribution:
             for row in rows:
                 for key in DISTRIBUTION_FIELDS:row.pop(key,None)
@@ -213,7 +243,11 @@ class ProcessOperationsEditor(QtWidgets.QWidget):
         if self.original_model==EVENT_MODEL_V13 or any(row['kind']=='rotary_contact' and any(key in row for key in ROTARY_INSTABILITY_FIELDS) for row in rows):model=EVENT_MODEL_V13
         if self.original_model==EVENT_MODEL_V14 or any(any(key in row for key in (*MENISCUS_FIELDS,*BOUNDARY_FIELDS)) for row in rows):model=EVENT_MODEL_V14
         if self.original_model==EVENT_MODEL_V15 or any(row['kind']=='rotary_contact' and any(key in row for key in (*WETTING_CHOICES,*EDGE_WETTING_FIELDS)) for row in rows):model=EVENT_MODEL_V15
-        if model not in (EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):
+        if self.original_model==EVENT_MODEL_V16 or any('placement' in row or 'contact_seed' in row for row in rows):
+            model=EVENT_MODEL_V16
+            for row in rows:
+                if row['kind'] in LOCAL_CONTACT_KINDS:row.setdefault('placement','legacy')
+        if model not in (EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,EVENT_MODEL_V16):
             for row in rows:
                 if row['kind']=='dye_bath':
                     row.pop('after_bath',None)

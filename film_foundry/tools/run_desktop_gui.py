@@ -48,8 +48,10 @@ class DesktopPanel(legacy.DarkroomPanel):
                                    ('debounce','PREVIEW_DEBOUNCE_MS',(100,200,350,500,800))]:
             if preview_options.get(key) in allowed:
                 setattr(self, name, preview_options[key])
-        from film_foundry.app.desktop_settings import load_settings
-        last_batch = load_settings().get("last_interrupted_batch")
+        from film_foundry.app.desktop_settings import initialize_compute, load_settings
+        settings = load_settings()
+        initialize_compute(settings)
+        last_batch = settings.get("last_interrupted_batch")
         self._resume_record = Path(last_batch) if isinstance(last_batch,str) and Path(last_batch).is_file() else None
         self._frame_exposure_offsets={}
         self._selected_photos=[]
@@ -89,12 +91,14 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.control_resets=ControlResets(self._preview_edited)
         from film_foundry.app.camera_profile import CameraProfileStore
         self._camera_profile = CameraProfileStore()
+        self._coating_choices = {"layered_response": True, "independent_coating_grain": False}
         super().__init__()
         self._recipe_base=self._config()
-        self._recipe_base.film_border.imprint_font='seven_segment'
+        self._recipe_base.film_border.imprint_font='seven_segment_narrow'
         self.control_resets.capture()
         for variable in (self.fast_mode, self.quality_mode):
             variable.trace_add('write', lambda *_: self.root.after(0, self._refresh_formation_status))
+        self.enable_grain.trace_add('write', lambda *_: self._sync_coating_execution())
         self._refresh_formation_status()
         self._preview_timer = QtCore.QTimer(self.root.qt)
         self._preview_timer.setSingleShot(True)
@@ -123,6 +127,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.work_shortcuts=WorkShortcuts(self,desktop=True)
 
     def _build(self):
+        self._coating_widgets = {key: [] for key in self._coating_choices}
         self._histogram_placement=None
         if self.layout_memory is not None:
             self.layout_memory.dispose();self.layout_memory=None
@@ -163,6 +168,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         opened.aboutToShow.connect(list_opened)
         menu.addAction(text('整卷暗房','Roll darkroom'),self.open_roll_workspace)
         menu.addAction(text('胶片分段冲洗','Film reaction stages'),self.open_film_process_workspace)
+        menu.addAction(text('三色分离与合成','Three-colour separations'),self._open_separations)
         menu.addAction(text('印刷与制版','Print & plate studio'),self._open_print_workspace)
         menu.addSeparator()
         from film_foundry.ui.desktop_library import FAMILIES
@@ -299,6 +305,9 @@ class DesktopPanel(legacy.DarkroomPanel):
         for expanded,zh,en in ((True,'展开当前页参数','Expand current controls'),(False,'收起当前页参数','Collapse current controls')):
             tools_menu.addAction(text(zh,en),lambda e=expanded:self._expand_current_sections(e))
         source_bar._ensure_pack_layout('left').addWidget(self.work_tools)
+        from film_foundry.ui.raw_import_notice import RawImportNotice
+        self.dng_note = RawImportNotice()
+        shell._ensure_pack_layout().addWidget(self.dng_note)
         for variable in (self.input_path,self.negative_path,self.output_path,self.scan_output_near_source):
             variable._bind_view(lambda _: self._refresh_source_summary(),self.source_summary)
 
@@ -446,9 +455,16 @@ class DesktopPanel(legacy.DarkroomPanel):
             page._ensure_pack_layout().addStretch(1)
         activity=ui.Frame(shell);activity.pack(fill="x",pady=(6,0))
         self.activity_label=ui.Label(activity,text=text("就绪","Ready"),wraplength=900);self.activity_label.qt.setObjectName("sectionNote");self.activity_label.pack(side="left")
-        ui.Label(activity,textvariable=self.status,wraplength=1180).pack(side="left",fill="x",expand=True)
         self.activity_progress=QtWidgets.QProgressBar();self.activity_progress.setFixedWidth(128);self.activity_progress.setFixedHeight(14);self.activity_progress.setTextVisible(False)
+        self.activity_progress.setAccessibleName(text('任务进度','Task progress'))
         activity._ensure_pack_layout().addWidget(self.activity_progress)
+        detail = ui.Label(activity,wraplength=1180)
+        detail.pack(side="left",fill="x",expand=True)
+        def show_detail(value):
+            stage = self._task_stage if self._processing else None
+            duplicate = stage and value == tr('mode.'+stage.command)+' · '+tr('progress.'+stage.stage)
+            detail.configure(text='' if duplicate else value)
+        self.status._bind_view(show_detail, detail)
         self.open_output_button=ui.Button(activity,text=text("最近结果…","Recent output…"),command=self._open_latest_output);self.open_output_button.pack(side="right")
         bottom=activity
         self.test_strip_button=ui.Button(self.preview_actions,text=text('试条…','Test strip…'),command=self._open_test_strip);self.test_strip_button.pack(side='left',padx=2)
@@ -470,6 +486,13 @@ class DesktopPanel(legacy.DarkroomPanel):
         formation_menu = QtWidgets.QMenu(self.formation_badge)
         formation_menu.addAction(text('完整形成', 'Full formation'), lambda: self.fast_mode.set(False))
         formation_menu.addAction(text('启用当前降阶方案', 'Enable current reduced profile'), lambda: self.fast_mode.set(True))
+        formation_menu.addSeparator()
+        formation_menu.setToolTipsVisible(True)
+        for key in self._coating_choices:
+            action = formation_menu.addAction(self._coating_label(key))
+            action.setCheckable(True)
+            self._bind_coating_widget(key, action)
+        formation_menu.aboutToShow.connect(self._sync_coating_execution)
         formation_menu.addSeparator()
         formation_menu.addAction(text('计算与输出设置…', 'Compute and output settings…'), self._open_runtime_settings)
         self.formation_badge.setMenu(formation_menu)
@@ -826,6 +849,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         window.config_tabs.setCurrentWidget(window.process_group)
         size=window.work_size.value()
         window._submit(lambda:window.session.open_image(path,size),text("读取图像…","Reading image…"),body_index=0)
+        window.dng_note.offer([path])
 
     def _replace_film_sources(self,paths,*,material_key=None):
         self._scan_version_path=None
@@ -842,6 +866,7 @@ class DesktopPanel(legacy.DarkroomPanel):
             self.film_preset.set(material_key)
         self._apply_recommended_development();self._apply_matching_scanner()
         self._update_mode_visibility();self.navigation.setCurrentRow(self.page_index['film']);self.show_workbench()
+        self.dng_note.offer(paths)
         self.edit_tools.timer.stop();self.edit_tools.initialize()
         if self.last_work.unclean:self.last_work.capture()
 
@@ -1256,7 +1281,7 @@ class DesktopPanel(legacy.DarkroomPanel):
     def _preset_library_changed(self):
         # Changing catalogue files is not a request to change the active image.
         config=self._config();pairing=(self.link_scanner.get(),self.auto_develop.get())
-        baselines=copy.deepcopy(self.control_resets.baselines)
+        baselines={key:copy.deepcopy(value) for key,value in self.control_resets.baselines.items()}
         ready=self._auto_preview_ready;self._auto_preview_ready=False
         try:
             self._refresh_all_preset_combos();self._apply_loaded_config(config)
@@ -1308,6 +1333,77 @@ class DesktopPanel(legacy.DarkroomPanel):
     def _open_runtime_settings(self):
         self.open_embedded_editor('runtime')
 
+    @staticmethod
+    def _coating_label(key):
+        if key == "layered_response":
+            return text("逐层计算响应", "Layered response")
+        return text("每层独立颗粒", "Independent grain per coating")
+
+    def _bind_coating_widget(self, key, widget):
+        self._coating_widgets[key].append(widget)
+        widget.toggled.connect(lambda checked: self._set_coating_choice(key, checked))
+
+    def _set_coating_choice(self, key, checked):
+        self._coating_choices[key] = checked
+        self._refresh_formation_status()
+        self._preview_edited()
+
+    def _sync_film_preset_controls(self):
+        super()._sync_film_preset_controls()
+        self._sync_coating_execution()
+
+    def _sync_coating_execution(self):
+        from film_foundry.ui.coating_editor import separation_hint
+        mode = self.pipeline_mode.get()
+        capture = mode in ('full', 'develop', 'expose')
+        supported = bool(self._recipe_base and self._recipe_base.film.supports_ordered_coatings)
+        layered = supported and self._coating_choices["layered_response"] and capture
+        frozen_roll = False
+        if mode == 'develop_latent':
+            if self._active_roll is not None:
+                data = self._active_roll.data
+                stack = data['material']['film'].get('coating_stack')
+                layered = bool(stack and stack.get('mode', 'ordered') == 'ordered')
+                frozen_roll = data['phase'] != 'sealed'
+            else:
+                try:
+                    context = self._current_film_context() or {}
+                except (OSError, ValueError, KeyError, zipfile.BadZipFile):
+                    context = {}
+                layered = bool(context.get('metadata', {}).get('coating_ids'))
+        grain = layered and mode != 'expose' and bool(self.enable_grain.get())
+        response_hint = text("分别计算各乳剂的感光响应；关闭时使用整片等效记录。",
+                             "Expose each emulsion separately. Clear to use effective stock records.")
+        if not capture:
+            response_hint = text("曝光已完成，沿用来源的感光记录。", "Exposure is complete. The source owns its records.")
+        elif not supported:
+            response_hint = separation_hint()
+        grain_hint = text("冲洗时为各乳剂独立生成颗粒，计算开销随层数增加。",
+                          "Generate grain separately for each emulsion during development. Cost grows with layer count.")
+        if mode in ('scan', 'expose'):
+            grain_hint = text("冲洗时可设置颗粒。", "Grain is available during development.")
+        elif frozen_roll:
+            grain_hint = text("本卷已开始冲洗，沿用冻结设置。", "Development has begun with the saved roll settings.")
+        elif not layered:
+            grain_hint = text("需要逐层曝光形成的潜影。", "Requires a latent exposed by coating.")
+        elif not self.enable_grain.get():
+            grain_hint = text("先开启颗粒总开关。", "Enable grain first.")
+        independent = self._coating_choices["independent_coating_grain"]
+        if frozen_roll:
+            saved = self._active_roll.data['config']
+            grain = layered and saved['enable_grain']
+            independent = saved['processing'].get('independent_coating_grain', False)
+        for key, enabled, checked, hint in (
+            ("layered_response", capture and supported, layered, response_hint),
+            ("independent_coating_grain", grain and not frozen_roll, grain and independent, grain_hint),
+        ):
+            for widget in self._coating_widgets[key]:
+                blocked = widget.blockSignals(True)
+                widget.setChecked(checked)
+                widget.blockSignals(blocked)
+                widget.setEnabled(enabled)
+                widget.setToolTip(hint)
+
     def _refresh_formation_status(self):
         if not self.root.winfo_exists():return
         from film_foundry.model.config import DarkroomConfig
@@ -1315,6 +1411,9 @@ class DesktopPanel(legacy.DarkroomPanel):
         config.fast_mode = bool(self.fast_mode.get())
         config.processing.execution_mode = 'reduced_fast' if config.fast_mode else 'quality'
         config.processing.quality_mode = self.quality_mode.get()
+        for key, value in self._coating_choices.items():
+            setattr(config.processing, key, value)
+        self._sync_coating_execution()
         self.formation_badge.set_config(config)
         for bank in ('film', 'develop'):
             editor = self._editor_windows.get(bank)
@@ -1424,13 +1523,23 @@ class DesktopPanel(legacy.DarkroomPanel):
         source=str(path)
         index=self._selected_photos.index(source)+1 if source in self._selected_photos else 1
         ev=self._frame_exposure_offsets.get(str(Path(source).resolve()),0.) if self._frame_exposure_offsets else 0.
-        return index,ev
+        roll_start=(self._frame_identity or {}).get("frame_index")
+        return index,ev,(roll_start+index-1 if roll_start is not None else None)
+
+    def _focused_incident_config(self,config,path):
+        from film_foundry.core.incident_identity import bind_incident_frame
+        from film_foundry.app.frame_batch import frame_identity_for_item
+        index=self._focused_frame_settings(path)[0]
+        identity=frame_identity_for_item({"frame_identity":self._frame_identity},index-1,len(self._selected_photos) or 1)
+        return bind_incident_frame(config,identity=identity,path=path,source_offset=legacy.offset_for(path,self._path_seed_offsets))
 
     def _fast_preview_config(self):
         config=self._freeze_incident_config(self._config())
-        if self.pipeline_mode.get() in ('full','develop','expose') and self._selected_photos:
+        if self.pipeline_mode.get() in ('full','develop','expose') and self.input_path.get():
             from film_foundry.app.workspace_jobs import apply_frame_settings
             apply_frame_settings(config,*self._focused_frame_settings(self.input_path.get()))
+        if self.input_path.get() and self.pipeline_mode.get() in ("full","expose","develop"):
+            config=self._focused_incident_config(config,self.input_path.get())
         config.debug_output=False;config.comparison_grid=False;config.save_sidecar=False
         config.fast_mode=True
         config.processing.execution_mode="reduced_fast"
@@ -1492,6 +1601,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.preview_button.state(["disabled"]);self.clear_cache_action.setEnabled(False)
         self.status.set(tr("status.previewing"))
         self._set_preview_state("running")
+        self._sync_activity_ui()
         Thread(target=self._render_preview,args=(request,),daemon=True).start()
 
     def _clear_preview_cache(self):
@@ -1578,6 +1688,9 @@ class DesktopPanel(legacy.DarkroomPanel):
         if self._active_roll:
             phase=self._active_roll.data['phase']
             self._configure_roll(self._active_roll,'develop' if phase in ('sealed','developing') else 'scan',destination=Path(self.output_path.get()));return
+        sources = ([self.negative_path.get()] if self.pipeline_mode.get() in ('scan','develop_latent')
+                   else self._selected_photos or [self.input_path.get()])
+        self.dng_note.offer(sources)
         if self._selected_photos and self._is_photo_workflow() and Path(self.input_path.get()).is_file():
             from film_foundry.app.workspace_jobs import process_photos
             try:config=self._freeze_incident_config(self._config())
@@ -1587,6 +1700,7 @@ class DesktopPanel(legacy.DarkroomPanel):
             scaled=bool(self.run_as_preview.get())
             path_seed_offsets=copy.deepcopy(self._path_seed_offsets)
             frame_offsets=dict(self._frame_exposure_offsets)
+            frame_identity=copy.deepcopy(self._frame_identity)
             command=self.pipeline_mode.get()
             def work():
                 run_root = None
@@ -1596,7 +1710,7 @@ class DesktopPanel(legacy.DarkroomPanel):
                     self.root.after(0,lambda:self._remember_workspace_output(root))
                 try:
                     failures=process_photos(paths,output,config,control=self._workflow_control(self._cancel_flag),scaled_override=scaled,
-                        path_seed_offsets=path_seed_offsets,command=command,on_run=started,frame_exposure_offsets=frame_offsets,
+                        path_seed_offsets=path_seed_offsets,command=command,on_run=started,frame_exposure_offsets=frame_offsets,frame_identity=frame_identity,
                         on_result=lambda record:self.root.after(0,lambda record=record:self._record_result(record)))
                 except Exception:
                     if run_root and (run_root/'film_foundry_run.json').is_file():self._offer_resume(run_root/'film_foundry_run.json')
@@ -1722,17 +1836,29 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.pages[self.page_index['develop']].qt.setEnabled(not strict)
         self.preview_button.qt.setEnabled(not busy and not self._preview_running and not strict)
         self.test_strip_button.qt.setEnabled(not busy and not self._preview_running and not strict)
-        self.activity_progress.setVisible(busy)
+        self.activity_progress.setVisible(busy or self._preview_running)
         if busy:
             cancelling=self._cancel_flag is not None and self._cancel_flag.requested()
             label=text("正在取消，等待任务安全结束…","Cancelling; waiting for the task to finish safely…") if cancelling else (
                 tr("mode."+self._task_stage.command)+" · "+tr("progress."+self._task_stage.stage) if self._task_stage is not None else text("任务进行中 · 使用启动时的配置","Task running · using the starting configuration"))
+            stage = self._task_stage
+            if stage is not None and not cancelling:
+                if stage.step_position:
+                    label = f'{stage.step_position}  {label}'
+                if stage.fraction is not None:
+                    label += f'  {stage.fraction:.0%}'
             self.activity_label.configure(text=label)
             self.activity_label.set_tooltip(text("调整参数将用于下一次任务。","Parameter edits apply to the next task."))
             fraction=self._task_stage.fraction if self._task_stage is not None else None
             self.activity_progress.setRange(0,0 if fraction is None else 1000)
             if fraction is not None:self.activity_progress.setValue(round(fraction*1000))
             self.activity_progress.setToolTip(text("当前阶段进度，不是整批总进度","Current stage progress, not the whole batch"))
+        elif self._preview_running:
+            self.activity_progress.setRange(0, 0)
+            label = text('生成预览','Rendering preview')
+            self.activity_label.configure(text=label)
+            self.activity_label.set_tooltip('')
+            self.activity_progress.setToolTip(label)
         else:
             self.activity_label.configure(text=text("就绪","Ready"));self.activity_label.set_tooltip("")
         self.open_output_button.qt.setEnabled(self._latest_output is not None)
@@ -2021,13 +2147,20 @@ class DesktopPanel(legacy.DarkroomPanel):
         self.change_material_button.grid(row=0,column=1,rowspan=2,sticky='e',padx=(8,0))
         self.choice(g,tr("label.frame_size"),self.frame_size,("half_frame","35mm","6x6","6x7","4x5"),1)
         self.material_editor_link=self._editor_link(g,"材料编辑器…","Material editor…","run_film_material_editor",2)
+        switches = ui.Frame(g)
+        switches.grid(row=3, column=0, columnspan=5, sticky='ew')
+        for key in self._coating_choices:
+            box = QtWidgets.QCheckBox(self._coating_label(key))
+            switches._ensure_pack_layout('left').addWidget(box)
+            self._bind_coating_widget(key, box)
         self.film_border_group=self.group(page,'片边与齿孔','Film edges & perforations')
         self.film_border_button=ui.Button(self.film_border_group,text=text('配置片边与齿孔…','Configure film edges…'),command=self._edit_film_border)
         self.film_border_button.pack(fill='x')
         self.film_border_group.set_tooltip(text('位于画面外的真实介质片边。边字通过材料与药浴形成，齿孔没有片基。画面内的文字在“画面打印”中设置。','Physical film rebates outside the image. Lettering forms through the stock and baths; perforations contain no film base. Use Picture imprint for text inside the photograph.'))
         self.capture_exposure_group=self.group(page,"单张／批次曝光","Single / batch exposure")
         self.sliders(self.capture_exposure_group,[("exposure_ev","exposure_ev",-5,5)])
-        ui.Button(self.capture_exposure_group,text=text('曝光时间条件…','Exposure time conditions…'),command=self._edit_exposure_conditions).grid(row=1,column=0,columnspan=4,sticky='ew')
+        self.exposure_conditions_button = ui.Button(self.capture_exposure_group, text=text('镜前滤镜与曝光条件…','Lens filter and exposure…'), command=self._edit_exposure_conditions)
+        self.exposure_conditions_button.grid(row=1,column=0,columnspan=4,sticky='ew')
         self.film_condition_group=self.group(page,"储存与老化","Storage & ageing",key="film.ageing",collapsed=False)
         self.sliders(self.film_condition_group,[("material_degradation","material_degradation",0,1)])
         self.film_gate_group=self.group(page,"片门脏物","Gate dirt",key="film.gate",collapsed=True)
@@ -2065,22 +2198,52 @@ class DesktopPanel(legacy.DarkroomPanel):
         from film_foundry.ui.imprint_dialog import ImprintDialog
         dialog=ImprintDialog(self._config().film_border,self.root.qt)
         def apply():
-            value=dialog.value();self._restore_imprint_placement((value.imprint_font,value.imprint_position_xy,value.imprint_scale,value.imprint_light_color_rgb,value.imprint_exposure_ev));self._preview_edited()
+            value=dialog.value()
+            self.imprint_style.set(value.imprint_style);self.imprint_style_display.set(imprint_style_label(value.imprint_style))
+            self._restore_imprint_placement((value.imprint_font,value.imprint_position_xy,value.imprint_scale,value.imprint_light_color_rgb,value.imprint_exposure_ev));self._preview_edited()
         self._present_workspace_dialog(dialog,key='imprint',on_accept=apply)
+
+    def _open_separations(self):
+        from film_foundry.ui.separations import SeparationDialog
+        existing = self.workspace_host.find_page('separations')
+        if existing is not None:
+            self.workspace_host.setCurrentWidget(existing)
+            return
+        photo = self.input_path.get() if self._is_photo_workflow() else ''
+        dialog = SeparationDialog(self._config(), photo, self.root.qt)
+        self.workspace_host.add_page(dialog, dialog.windowTitle(), key='separations')
 
     def _edit_exposure_conditions(self):
         from film_foundry.ui.film_exposure_editor import FilmExposureDialog
         try:
-            existing=self.workspace_host.find_page('film-exposure')
-            if existing is not None:self.workspace_host.setCurrentWidget(existing);return
+            existing=self.find_configuration_dialog('film-exposure')
+            if existing is not None:
+                existing.raise_()
+                existing.activateWindow()
+                return
             dialog=FilmExposureDialog(self._config(),self.root.qt)
             def apply():
                 config=self._config()
                 config.exposure.duration_seconds=dialog.duration
+                config.exposure.lens_filter=dialog.lens_filter
+                config.exposure.film_side=dialog.facing.currentData()
+                config.exposure.rear_optics=dialog.rear
                 self._recipe_base=config
+                self._show_exposure_setting(config.exposure)
                 self._preview_edited()
             self._present_workspace_dialog(dialog,key='film-exposure',on_accept=apply)
         except ValueError as exc:self.status.set(str(exc))
+
+    def _show_exposure_setting(self, exposure):
+        from film_foundry.ui.film_exposure_editor import FILTER_LABELS
+        label = text('镜前滤镜与曝光条件', 'Lens filter and exposure')
+        if exposure.film_side == 'base':
+            label += ' · ' + text('片基朝镜头', 'Base toward lens')
+        if exposure.lens_filter:
+            label += ' · ' + text(*FILTER_LABELS[exposure.lens_filter['key']])
+            if exposure.lens_filter['compensate']:
+                label += text('（已补偿）', ' (compensated)')
+        self.exposure_conditions_button.configure(text=label + '…')
 
     def _edit_edge_stencil(self):
         from film_foundry.ui.edge_mark_editor import EdgeMarkEditor
@@ -2098,7 +2261,14 @@ class DesktopPanel(legacy.DarkroomPanel):
 
     def _edit_film_border(self):
         from film_foundry.ui.film_border_dialog import FilmBorderDialog
-        editor=FilmBorderDialog(self._config().film_border,self.root.qt)
+        from film_foundry.core.io_utils import probe_image_dimensions
+        size=None
+        if self._is_photo_workflow() and self.input_path.get():
+            try:
+                size=probe_image_dimensions(self.input_path.get())
+            except (OSError, ValueError):
+                pass
+        editor=FilmBorderDialog(self._config().film_border,self.root.qt,source_size=size)
         def apply():
             config=self._config();config.film_border=editor.value();self._recipe_base=config
             self._update_mode_visibility();self._preview_edited()
@@ -2351,32 +2521,47 @@ class DesktopPanel(legacy.DarkroomPanel):
     def _build_exposure_spectrum(self, page):
         group=self.group(page,"曝光光谱升维","Exposure spectral lift")
         self.exposure_spectrum_group=group
-        group.set_tooltip(text("没有附带光谱 JSON。不开启时，材料继续用自带感光。七色升维是内置算法，打开即可，不必先找文件。", "No spectrum JSON is included. Until you turn this on, the material keeps its own sensitivity. The seven-color lift is built in and does not need a file."))
+        group.set_tooltip(text("恢复材料自带感光可取回装片时的响应，包括全色、正色和蓝敏档案。", "Restore the loaded stock's response, including panchromatic, orthochromatic and blue-sensitive profiles."))
         ui.Label(group,textvariable=self._profile_labels["spectral_exposure_profile"],wraplength=380).grid(row=1,column=0,columnspan=4,sticky="ew")
         ui.Button(group,text=text("使用材料自带感光","Use the material's own sensitivity"),command=self._use_material_sensitivity).grid(row=2,column=0,columnspan=4,sticky="ew",pady=(6,2))
         ui.Button(group,text=text("开启七色升维","Turn on seven-color lift"),command=self._enable_smits_exposure).grid(row=3,column=0,columnspan=4,sticky="ew",pady=2)
         ui.Button(group,text=text("载入自己的光谱","Load your own spectrum"),command=lambda:self._load_profile("spectral_exposure_profile")).grid(row=4,column=0,columnspan=4,sticky="ew",pady=2)
+        ui.Button(group,text=text("使用 RGB 感度（关闭升维）","Use RGB sensitivity (lift off)"),command=self._disable_spectral_exposure).grid(row=5,column=0,columnspan=4,sticky="ew",pady=2)
         self._profile_labels["spectral_exposure_profile"].set(self._exposure_spectrum_text(self._profiles["spectral_exposure_profile"]))
 
     def _exposure_spectrum_text(self, profile):
         if profile is None:
-            return text("当前：材料自带感光。","Current: the material's own sensitivity.")
+            return text("RGB 曝光。逐层波段与曲线保留，曝光使用 RGB 参数。","RGB exposure. Saved coating spectra are bypassed using RGB parameters.")
+        if profile.profile_id == "ff_stock_rgb_calibrated_v1":
+            return text("七色升维 · 按材料 RGB 分色估计感光谱。","Seven-color lift · sensitivity estimated from the stock's RGB calibration.")
+        if profile == self._stock_exposure_profile:
+            return text("材料自带光谱已启用，可用于逐层响应和夹层透射。","Stock spectrum active for coating response and transmission.")
         if "smits" in str(getattr(profile,"model","")):
             return text("当前：七色升维已开启。","Current: seven-color lift is on.")
         return text("当前：已载入自己的光谱。","Current: using a spectrum you loaded.")
 
     def _smits_profile(self):
-        from film_foundry.contracts.spectral_exposure import make_smits_exposure_profile
-        from film_foundry.core.media import is_monochrome_material
-        return make_smits_exposure_profile(1 if is_monochrome_material(self._config()) else 3)
+        from film_foundry.core.spectral_exposure import stock_lift_profile
+        return stock_lift_profile(self._config().film, self._paused_exposure_profile or self._stock_exposure_profile)
+
+    def _disable_spectral_exposure(self):
+        active = self._profiles["spectral_exposure_profile"]
+        if active is not None:
+            self._paused_exposure_profile = active
+        self._set_profile("spectral_exposure_profile", None)
 
     def _use_material_sensitivity(self):
-        self._set_profile("spectral_exposure_profile", None)
+        self._paused_exposure_profile = None
+        self._set_profile("spectral_exposure_profile", self._stock_exposure_profile)
         self.status.set(text("已回到材料自带感光。","Restored the material's own sensitivity."))
 
     def _enable_smits_exposure(self):
-        self._set_profile("spectral_exposure_profile", self._smits_profile())
-        self.status.set(text("已开启七色升维。更换胶卷后如要继续使用，再按一次。","Seven-color lift is on. Press it again after changing film if you want to keep it."))
+        try:
+            self._set_profile("spectral_exposure_profile", self._smits_profile())
+        except ValueError as exc:
+            self.status.set(str(exc))
+            return
+        self.status.set(text("七色升维已开启，沿用当前材料的感色响应。","Seven-color lift is on with the current stock's sensitivity."))
 
     def _film_origin(self, key):
         return "custom" if (legacy.USER_FILM_PRESET_DIR / f"{key}.json").exists() else "official"
@@ -2570,11 +2755,15 @@ class DesktopPanel(legacy.DarkroomPanel):
         if self.input_view.source is not None:shape=(self.input_view.source.height(),self.input_view.source.width())
         source=Path(self.input_path.get())
         if source.is_file() and self.pipeline_mode.get() not in ('develop_latent','scan'):
-            from PIL import Image
-            with Image.open(source) as image:
-                width,height=image.size
-                if image.getexif().get(274) in (5,6,7,8):width,height=height,width
-                shape=(height,width)
+            if source.suffix.lower() == '.dng':
+                from film_foundry.core.source_image import dng_dimensions
+                width, height = dng_dimensions(source)
+            else:
+                from PIL import Image
+                with Image.open(source) as image:
+                    width,height=image.size
+                    if image.getexif().get(274) in (5,6,7,8):width,height=height,width
+            shape = (height, width)
         config=self._config()
         if self.pipeline_mode.get()=='develop_latent':
             from film_foundry.core.latent_io import inspect_latent_material
@@ -2686,6 +2875,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         self._refresh_source_summary()
         self._refresh_scanner_catalog();self._update_scan_parameter_visibility();self._update_expert_visibility()
         self._sync_task_navigation()
+        self._sync_coating_execution()
         if not self._processing:self._set_process_button_mode("process")
         descriptions={
             "output":text("来源信息与输出内容；执行时选择保存位置","Source information and output content; choose the destination when running"),
@@ -2869,6 +3059,7 @@ class DesktopPanel(legacy.DarkroomPanel):
         for name in ('source_record_button','redevelop_button','related_results_button','staged_develop_button'):
             if hasattr(self,name):getattr(self,name).qt.hide()
         if self._active_roll:
+            self.dng_note.hide()
             roll=self._active_roll.data['roll']
             self.source_summary.configure(text=text('整卷：','Roll: ')+f"{roll.get('label') or roll['roll_id']} · {roll['capacity']}")
             return
@@ -2910,6 +3101,8 @@ class DesktopPanel(legacy.DarkroomPanel):
 
     def _config(self):
         config=super()._config()
+        for key, value in self._coating_choices.items():
+            setattr(config.processing, key, value)
         for key,editor in getattr(self,"curve_editors",{}).items():setattr(config.scanner,key,editor.read())
         if hasattr(self,"color_mixer"):config.scanner.color_mixer=self.color_mixer.read()
         config.process_control_mode=self._expert_operating_mode if self.expert_mode.get() else 'normal'
@@ -2943,7 +3136,10 @@ class DesktopPanel(legacy.DarkroomPanel):
         config=preserve_legacy_camera_identity(config)
         ready=self._auto_preview_ready;self._auto_preview_ready=False
         try:
+            for key in self._coating_choices:
+                self._coating_choices[key] = getattr(config.processing, key)
             super()._apply_loaded_config(config)
+            self._show_exposure_setting(config.exposure)
             self._load_effect_controls(config.chemistry)
             if config.process_control_mode=='principle':self._principle_chemistry=copy.deepcopy(config.chemistry)
             self._expert_operating_mode=config.process_control_mode if config.process_control_mode!='normal' else 'expected'

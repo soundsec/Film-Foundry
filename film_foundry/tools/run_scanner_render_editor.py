@@ -120,9 +120,9 @@ def is_supported_positive_scanner(config: DarkroomConfig) -> bool:
 
 
 def scanner_preset_names(interpretation: str = "negative") -> list[str]:
-    names = {path.stem for path in SCANNER_PRESET_DIR.glob("*.json")}
+    from film_foundry.app.preset_catalog import public_builtin_preset_names
     from film_foundry.app.seasonal_collection import visible_builtin_names
-    names = visible_builtin_names(names, "scanner")
+    names = visible_builtin_names(public_builtin_preset_names(SCANNER_PRESET_DIR, "scanner"), "scanner")
     names.update(path.stem for path in USER_SCANNER_PRESET_DIR.glob("*.json"))
     supported: list[str] = []
     for name in sorted(names):

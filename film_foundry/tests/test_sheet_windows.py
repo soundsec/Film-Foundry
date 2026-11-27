@@ -111,17 +111,16 @@ def test_wet_prepared_archive_can_receive_image_after_reopening(tmp_path):
     assert len(json.loads(prepared.state.process_json)['optical_cascade']['steps'])==1
 
 
-def test_sheet_batch_uses_controls_and_registers_each_result(tmp_path,monkeypatch):
+def test_sheet_batch_uses_controls_and_registers_each_result(tmp_path):
     paths=[]
     for index in range(2):
         path=tmp_path/f'{index}.png';Image.new('RGB',(16,12),(index*100+50,50,150)).save(path);paths.append(str(path))
     window=SheetBatchWindow('paper',paths);wait(window)
     try:
         output=tmp_path/'batch';output.mkdir()
-        monkeypatch.setattr(QtWidgets.QFileDialog,'getExistingDirectory',lambda *a,**k:str(output))
         window.material_controls['kind'].setCurrentIndex(window.material_controls['kind'].findData('color'))
         window.operation_controls['develop']['seconds'].setValue(20)
-        records=[];window.result_ready.connect(records.append);window.start_batch();wait(window)
+        records=[];window.result_ready.connect(records.append);window.start_batch(output);wait(window)
         assert len(records)==2
         state=load(records[0]['artifacts']['process_state'])
         assert state.material.kind=='color'
@@ -182,7 +181,8 @@ def test_wet_stage_strip_expands_selection_and_preserves_each_number(tmp_path, m
         _application().processEvents()
         strip = window.flow_bar
         buttons = strip.buttons
-        assert len(buttons) == 8 and all(b.show_title for b in buttons)
+        assert len(buttons) == len(window.flow_buttons) and "tilt" in window.flow_buttons
+        assert all(b.show_title or b.stage_title in b.toolTip() for b in buttons)
         assert len({b.y() for b in buttons}) == 1
         assert all(b.isVisible() and strip.rect().contains(b.geometry()) for b in buttons)
         narrow = sum(b.compact_widths()[0] for b in buttons) + 150

@@ -39,7 +39,7 @@ class SelectionPreview(QtWidgets.QWidget):
         note=QtWidgets.QLabel(text('参考流程示意 · 240 px','Reference process · 240 px'));layout.addWidget(note)
         note.setToolTip(text('固定比较种子。材料采用标准工序与推荐观察；冲洗和扫描预设与打开窗口时的其他参数组组合。只缩图，不额外简化计算；不是当前工作最终效果或原尺寸颗粒的保证。',
             'Fixed comparison seed. Materials use standard processing and recommended observation; process/scan presets combine with the other banks captured when opened. Resized input, no extra reduction. Not a promise of the current work or full-size grain.'))
-        scope=QtWidgets.QLabel(text('标准工序与观看条件；采用后以工作预览为准。','Standard process and viewing; use the work preview after applying.') if bank=='material' else text('与当前其他参数组组合；采用后以工作预览为准。','Combined with the other current parameter banks; check the work preview after applying.'))
+        scope=QtWidgets.QLabel(text('示例照片用参考负片呈现负感印相材料。来源照片与色卡直接曝光。','The example photograph uses a reference negative for negative-working prints. Source photographs and charts expose the material directly.') if bank=='material' else text('与当前其他参数组组合；采用后以工作预览为准。','Combined with the other current parameter banks; check the work preview after applying.'))
         scope.setWordWrap(True);layout.addWidget(scope)
         self.canvas=QtWidgets.QLabel(text('选择材料或预设以预览','Select a material or preset'))
         self.canvas.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter);self.canvas.setMinimumSize(160,100)

@@ -22,9 +22,9 @@ def _read(path: Path):
     try:
         value = json.loads(path.read_text(encoding="utf-8-sig"))
         if not isinstance(value, dict):
-            return "zh_CN", "dark", None, None, None, None, None, None, None, None, None, False
+            return "zh_CN", "dark", None, None, None, None, None, None, None, None, None, False, False
     except (OSError, ValueError):
-        return "zh_CN", "dark", None, None, None, None, None, None, None, None, None, False
+        return "zh_CN", "dark", None, None, None, None, None, None, None, None, None, False, False
     language = value.get("language", "zh_CN")
     theme = value.get("theme", "dark")
     return (language if isinstance(language,str) else "zh_CN",
@@ -37,13 +37,18 @@ def _read(path: Path):
             value.get("shortcuts") if isinstance(value.get("shortcuts"), dict) else None,
             value.get("preview_options") if isinstance(value.get("preview_options"), dict) else None,
             value.get('parameter_pins') if isinstance(value.get('parameter_pins'), dict) else None,
-            normalize_custom(value.get('custom_colors')), value.get('tour_seen') is True)
+            normalize_custom(value.get('custom_colors')), value.get('tour_seen') is True, value.get('hide_raw_hint') is True)
 
 
 def load_preferences(path: Path | None = None) -> dict[str, object]:
-    language, theme, auto_preview, show_preset_variants, workspace_layout, histogram, scan_advanced, shortcuts, preview_options, parameter_pins, custom_colors, tour_seen = _read(path or preferences_path())
+    language, theme, auto_preview, show_preset_variants, workspace_layout, histogram, scan_advanced, shortcuts, preview_options, parameter_pins, custom_colors, tour_seen, hide_raw_hint = _read(path or preferences_path())
+    if language not in ('zh_CN','en_US'):
+        from film_foundry.ui.language_packs import installed
+        if language not in installed(path):
+            language='zh_CN'
     value = {"language": language, "theme": theme}
     if tour_seen:value["tour_seen"]=True
+    if hide_raw_hint:value["hide_raw_hint"]=True
     if auto_preview is not None:
         value["auto_preview"] = auto_preview
     if show_preset_variants is not None:
@@ -65,11 +70,12 @@ def load_preferences(path: Path | None = None) -> dict[str, object]:
     return value
 
 
-def save_preferences(*, language: str | None = None, theme: str | None = None, auto_preview: bool | None = None, show_preset_variants: bool | None = None, workspace_layout: str | None = None, histogram: dict | None = None, scan_advanced: bool | None = None, shortcuts: dict | None = None, preview_options: dict | None = None, parameter_pins: dict | None = None, custom_colors: dict | None = None, tour_seen: bool | None = None, path: Path | None = None) -> None:
+def save_preferences(*, language: str | None = None, theme: str | None = None, auto_preview: bool | None = None, show_preset_variants: bool | None = None, workspace_layout: str | None = None, histogram: dict | None = None, scan_advanced: bool | None = None, shortcuts: dict | None = None, preview_options: dict | None = None, parameter_pins: dict | None = None, custom_colors: dict | None = None, tour_seen: bool | None = None, hide_raw_hint: bool | None = None, path: Path | None = None) -> None:
     """Atomic small preference write; no image/config access or directory scan."""
     if language is not None:
-        from film_foundry.ui.i18n import available_languages
-        if language not in available_languages():raise ValueError("Unsupported UI language")
+        from film_foundry.ui.language_packs import installed
+        if language not in ('zh_CN','en_US') and language not in installed(path):
+            raise ValueError("Unsupported UI language")
     if theme is not None and theme not in THEME_KEYS:
         raise ValueError("Unsupported UI theme")
     if custom_colors is not None and normalize_custom(custom_colors) is None:
@@ -85,6 +91,7 @@ def save_preferences(*, language: str | None = None, theme: str | None = None, a
     path = path or preferences_path()
     value = load_preferences(path)
     if tour_seen is not None:value["tour_seen"]=bool(tour_seen)
+    if hide_raw_hint is not None:value["hide_raw_hint"]=bool(hide_raw_hint)
     if custom_colors is not None:
         value["custom_colors"] = normalize_custom(custom_colors)
     if parameter_pins is not None:

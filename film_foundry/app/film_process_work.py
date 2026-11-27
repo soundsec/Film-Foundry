@@ -74,6 +74,8 @@ def start_work(source, output, config, *, stop_after=0, control=None, path_seed_
     source = Path(source).resolve()
     if control: control.check_cancel()
     latent, identity = load_exposed_latent(source)
+    from film_foundry.core.incident_identity import bind_incident_frame
+    config=bind_incident_frame(config,stored_seed=latent.incident_frame_seed,path=source,source_offset=path_seed_offset)
     runtime, _ = prepare_develop_runtime_config(config)
     rng, seed = rng_and_resolved_seed_for_develop(source, runtime, path_seed_offset=path_seed_offset)
     metadata = {'run_id': str(uuid4()), 'config': asdict(runtime), 'rng_initial': deepcopy(rng.bit_generator.state),
@@ -98,6 +100,8 @@ def continue_work(source, output, *, stop_after=None, control=None, reuse_prepar
     if metadata['scope']=='frozen_program_wet_history_v5' and metadata['surface_state'].get('model')!='film_surface_boundary_v2':
         raise ValueError('Missing continuous wet history in film checkpoint')
     runtime = DarkroomConfig.from_dict(metadata['config'])
+    from film_foundry.app.incident_batch import restore_incident_scope
+    restore_incident_scope(runtime, metadata['config'])
     return _run(source, output, latent, runtime, metadata, _boundary(metadata, state), stop_after, control,
         reuse_preparation=reuse_preparation)
 

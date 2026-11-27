@@ -9,13 +9,14 @@ description = "Material-based film and developed-medium workflow."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
-license-files = ["LICENSE", "COPYING"]
+license-files = ["LICENSE", "COPYING", "third_party_licenses/ROBOTO_APACHE_2_0.txt"]
 authors = [{ name = "soundsec" }]
 dependencies = [
   "numpy>=1.24",
   "opencv-python>=4.8",
   "Pillow>=10.0",
   "tifffile>=2023.7",
+  "rawpy>=0.25,<0.29",
   "python-lcms2>=0.1.1,<0.2",
   "PySide6-Essentials>=6.8,<7",
 ]
@@ -45,7 +46,7 @@ where = ["."]
 include = ["film_foundry*"]
 
 [tool.setuptools.package-data]
-film_foundry = ["presets/*.json", "presets/*/*.json", "assets/*.svg", "assets/*.png", "assets/*.ico", "assets/*.bin", "assets/selection_examples.sqlite3"]
+film_foundry = ["contracts/material_state_fields.json", "presets/*.json", "presets/*/*.json", "assets/*.svg", "assets/*.png", "assets/*.ico", "assets/*.bin", "assets/edge_sans.txt", "assets/edge_rounded.txt", "assets/date_segments.txt", "assets/date_segments_narrow.txt", "assets/harman_red_125_wedge.txt", "assets/selection_examples.sqlite3"]
 
 [tool.pytest.ini_options]
 testpaths = ["film_foundry/tests"]

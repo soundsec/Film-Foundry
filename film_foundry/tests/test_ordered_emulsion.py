@@ -139,6 +139,7 @@ def test_editor_new_wear_exposes_position_and_preserves_legacy(monkeypatch,tmp_p
     from film_foundry.ui.qt import _application
     from film_foundry.ui.process_operations_editor import ProcessOperationsEditor
     from film_foundry.core.effect_intent import compile_effect_intent
+    from film_foundry.contracts.process_events import EVENT_MODEL_V16
     for key in ('FILM_FOUNDRY_UI_SETTINGS','FILM_FOUNDRY_CAMERA_SETTINGS','FILM_FOUNDRY_CATALOG'):
         monkeypatch.setenv(key,str(tmp_path/(key+'.json')))
     app=_application();old=ProcessOperationsEditor(legacy_config(WEAR).chemistry.process_events)
@@ -150,11 +151,11 @@ def test_editor_new_wear_exposes_position_and_preserves_legacy(monkeypatch,tmp_p
         assert new.controls['after_bath'].maximum()==32
         new.position.setCurrentIndex(new.position.findData('before_bath'))
         new.controls['before_bath'].setValue(2)
-        value=new.read();assert value['model']==EVENT_MODEL_V10
+        value=new.read();assert value['model']==EVENT_MODEL_V16
         assert value['events'][0]['before_bath']==2
         cfg=config();cfg.chemistry.process_events=value
         cfg.chemistry.effect_intent={'model':'process_effect_intent_v1','amounts':{'chemical_stain':.1}}
         compiled,_=compile_effect_intent(cfg)
-        assert compiled.chemistry.process_events['model']==EVENT_MODEL_V10
+        assert compiled.chemistry.process_events['model']==value['model']
         assert compiled.chemistry.process_events['events'][0]==value['events'][0]
     finally:old.close();new.close();app.processEvents()

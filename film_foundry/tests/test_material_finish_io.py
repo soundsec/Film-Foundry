@@ -26,6 +26,7 @@ def source(path):
 def test_seven_results_move_reopen_all_products_reuse_and_recipe(kind,tmp_path,monkeypatch):
     session=formed(kind);session.source_path=str(tmp_path/'gone.png');session.source_name='gone.png'
     view=ViewingConditions(exposure_ev=.2)
+    session.storage_precision='full'
     record=archive_material_result(session,tmp_path/'before',view)
     old=Path(record['medium']).parent;root=tmp_path/'moved';shutil.move(old,root)
     restored,rebound,restored_view=results.load_result(root)
@@ -61,7 +62,7 @@ def test_peel_member_reopens_group_continues_and_keeps_original_bundle(panel,tmp
             {'transfer':'silver_compound','donor_mode':'silver_negative'},seed=19)
     record=archive_material_result(session,tmp_path/'archive',ViewingConditions(exposure_ev=.4))
     role=session.group.bodies[1].role;path=record['artifacts'][role]
-    panel._open_result_artifact(path,'peel');page=panel.workspace_host.currentWidget()
+    panel._open_result_artifact(path,'peel',body_id=session.group.bodies[1].body_id,rework=True);page=panel.workspace_host.currentWidget()
     wait(lambda:not page.busy and page.session.group is not None)
     assert len(page.session.group.bodies)==2 and page.body_choice.currentIndex()==1
     assert page.conditions().exposure_ev==.4 and page.session.state is not None

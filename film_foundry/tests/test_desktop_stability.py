@@ -205,8 +205,7 @@ def test_folded_settings_keep_values_and_language_keeps_workspace_position(panel
     assert opened==["film_foundry.tools.run_film_material_editor","film_foundry.tools.run_develop_process_editor","film_foundry.tools.run_scanner_render_editor"]
 
 
-def test_preset_browser_search_is_non_destructive_and_confirms_existing_selection_path(panel,monkeypatch):
-    from film_foundry.ui.preset_picker import PresetPicker
+def test_preset_browser_search_is_non_destructive_and_confirms_existing_selection_path(panel):
     from film_foundry.tools import run_darkroom_gui as legacy
     combo=panel.scanner_preset_combo.qt
     labels=[combo.itemText(i) for i in range(combo.count())]
@@ -217,8 +216,8 @@ def test_preset_browser_search_is_non_destructive_and_confirms_existing_selectio
         assert not dialog.apply.isEnabled()
         assert dialog.selected_index is None
         dialog.reject();return dialog.result()
-    monkeypatch.setattr(PresetPicker,"exec",cancel)
     panel._browse_presets(panel.scanner_preset_combo,"Scanner")
+    cancel(panel.root.qt._inline_editor_host.frames[-1][1])
     assert panel.scanner_preset.get()==original and asdict(panel._config())==before
     def choose(dialog):
         dialog.search.setText(labels[target])
@@ -226,8 +225,8 @@ def test_preset_browser_search_is_non_destructive_and_confirms_existing_selectio
         assert dialog.results.currentItem().text()==labels[target]
         assert asdict(panel._config())==before
         dialog._apply();return dialog.result()
-    monkeypatch.setattr(PresetPicker,"exec",choose)
     panel._browse_presets(panel.scanner_preset_combo,"Scanner")
+    choose(panel.root.qt._inline_editor_host.frames[-1][1])
     key=panel._scanner_display_key_map[labels[target]]
     assert panel.scanner_preset.get()==key and key!=original
     expected=legacy.DarkroomConfig.from_json(legacy.scanner_preset_path(key))

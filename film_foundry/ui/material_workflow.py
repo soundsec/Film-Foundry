@@ -21,11 +21,11 @@ FLOWS = {
 MATERIAL_SECTIONS = {
     'peel': (('感光与转移', 'Exposure & transfer', ('transfer', 'donor_mode', 'half_exposure', 'response_contrast', 'reaction_seconds')),
              ('接收片', 'Receiver', ('maximum_density', 'paper_reflectance')),
-             ('分离与层间强度','Separation & layer strength',('interlayer_adhesion','receiver_cohesion','donor_cohesion','separation_variation'))),
+             ('分离与层间强度','Separation & layer strength',('peel_travel_fraction','interlayer_adhesion','receiver_cohesion','donor_cohesion','separation_variation'))),
     'integral': (('感光与转移', 'Exposure & transfer', ('transfer', 'half_exposure', 'response_contrast', 'reaction_seconds')),
                  ('接收层与稳定', 'Receiver & stability', ('maximum_density', 'paper_reflectance', 'stabilization_seconds'))),
     'plate': (('银面与颗粒', 'Silver surface & particles', ('roughness', 'metal_reflectance', 'particle_reflectance')),
-              ('感光与影调', 'Sensitivity & tone', ('half_exposure', 'reaction_seconds', 'maximum_density', 'response_contrast')),
+              ('感光与影调', 'Sensitivity & tone', ('iodized_response','half_exposure', 'reaction_seconds', 'maximum_density', 'response_contrast')),
               ('药浴与金层', 'Baths & gold layer', ('fixing_seconds','gilding_seconds','gold_capacity','gold_adhesion'))),
 }
 NEXT = {
@@ -209,7 +209,7 @@ class MaterialWorkflow:
             for zh,en,controls in (
                 ('铺展与接触','Spread & contact',[w.direction,*[w.process_controls[key] for key in ('coverage','contact','spread_seconds','roller_streaks','edge_loss')]]),
                 ('药剂与瑕疵','Reagent & defects',[w.process_controls['reagent_load'],w.shortage_enabled,w.shortage_strength,*[w.defect_controls[key] for key in ('reagent_decay','contact_defects','reagent_leak','spread_unevenness')]]),
-                ('显影环境','Development environment',[w.process_controls['temperature_c'],*[w.defect_controls[key] for key in ('light_protection','ambient_light','solar_warming') if key in w.defect_controls]])):
+                ('显影环境','Development environment',[w.process_controls['temperature_c'],*[w.defect_controls[key] for key in ('shield_seconds','light_protection','ambient_light','solar_warming') if key in w.defect_controls]])):
                 page,form=form_page();sections.addItem(page,text(zh,en))
                 for control in controls:move_row(control,form)
                 if en=='Spread & contact':self.spread_form=form

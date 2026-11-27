@@ -13,9 +13,12 @@ object ObservationImplementation {
     const val CALIBRATED_DEVICE="phone_scan_calibrated_device_v5"
     const val RANGE_FIRST="phone_scan_range_first_v6"
     const val RANGE_FIRST_DEVICE="phone_scan_range_first_device_v7"
+    const val DESKTOP_PRINT="phone_scan_desktop_print_v8"
+    const val DESKTOP_PRINT_DEVICE="phone_scan_desktop_print_device_v9"
     fun forRecipe(recipe: Map<String,Any?>): String {
-        require(recipe[PhoneScanModels.OPTION]==null || recipe[PhoneScanModels.OPTION] in listOf(PhoneScanModels.LEGACY,PhoneScanModels.RESULT_BASE,PhoneScanModels.CALIBRATED,PhoneScanModels.CURRENT)) { "Unknown scan interpretation implementation" }
+        require(recipe[PhoneScanModels.OPTION]==null || recipe[PhoneScanModels.OPTION] in listOf(PhoneScanModels.LEGACY,PhoneScanModels.RESULT_BASE,PhoneScanModels.CALIBRATED,PhoneScanModels.CURRENT,PhoneScanModels.NEUTRAL)) { "Unknown scan interpretation implementation" }
         val device=PhoneReducedKernel().usesScannerDeviceResponse(recipe)
+        if(PhoneScanModels.desktopPrint(recipe)) return if(device) DESKTOP_PRINT_DEVICE else DESKTOP_PRINT
         return when(recipe[PhoneScanModels.OPTION]) {
             PhoneScanModels.LEGACY -> if(device) DEVICE_RESPONSE else LEGACY
             PhoneScanModels.RESULT_BASE -> if(device) RESULT_DEVICE else RESULT_DEFAULTS
@@ -29,6 +32,7 @@ object ObservationImplementation {
             RESULT_DEFAULTS,RESULT_DEVICE -> PhoneScanModels.RESULT_BASE
             CALIBRATED,CALIBRATED_DEVICE -> PhoneScanModels.CALIBRATED
             RANGE_FIRST,RANGE_FIRST_DEVICE -> PhoneScanModels.CURRENT
+            DESKTOP_PRINT,DESKTOP_PRINT_DEVICE -> PhoneScanModels.NEUTRAL
             else -> throw IllegalArgumentException("Frozen scanner implementation unavailable")
         }
         return (recipe+(PhoneScanModels.OPTION to implementation)).also {

@@ -15,6 +15,7 @@ import android.widget.Button
 import com.filmfoundry.app.session.DevicePerformance
 import com.filmfoundry.app.testing.AutomationFixtureActivity
 import com.filmfoundry.app.ui.GalleryQuery
+import com.filmfoundry.app.ui.MobileLanguages
 import com.filmfoundry.interchange.*
 import com.filmfoundry.kernel.*
 import com.filmfoundry.platform.*
@@ -50,7 +51,7 @@ class DeviceTestRunner : Instrumentation() {
         val runId = args.getString("run_id") ?: "run-${System.currentTimeMillis()}"
         require(runId.matches(Regex("[A-Za-z0-9_-]{1,64}")))
         val profile = args.getString("profile") ?: "quick"
-        require(profile in listOf("quick", "full", "gpu_probe", "hardware_self_test", "capture_ingest", "viewer_ui", "capture_ui"))
+        require(profile in listOf("quick", "full", "gpu_probe", "hardware_self_test", "capture_ingest", "viewer_ui", "capture_ui", "scan_ui", "language_pack"))
         report = File(targetContext.filesDir, "automation/results/$runId.json")
         val workspace = File(targetContext.cacheDir, "automation/$runId").canonicalFile
         var isolated: FixtureContext? = null
@@ -65,6 +66,31 @@ class DeviceTestRunner : Instrumentation() {
             check(workspace.mkdirs())
             isolated = FixtureContext(targetContext, workspace)
             checkpoint()
+            if (profile == "language_pack") {
+                verify("runtime_language_install_and_update") {
+                    val languageContext = object : ContextWrapper(isolated) {
+                        override fun getExternalFilesDir(type: String?): File = File(workspace, "external")
+                    }
+                    val source = """{"format":"film-foundry-language","version":1,"code":"fr_CA","name":"Français","fallback":"en_US","translations":{"text:Settings":"Réglages"}}"""
+                    val directory = File(languageContext.getExternalFilesDir(null), "languages")
+                    check(directory.mkdirs())
+                    File(directory, "de_AT.json").writeText(source.replace("fr_CA", "de_AT").replace("Français", "Deutsch"))
+                    File(directory, "fr_CA.json").writeText(source.replace("Réglages", "Paramètres"))
+                    check(MobileLanguages.install(languageContext, source.byteInputStream()) == "fr_CA")
+                    check("de_AT" to "Deutsch" in MobileLanguages.choices(languageContext))
+                    check("fr_CA" to "Français" in MobileLanguages.choices(languageContext))
+                    val locale = android.content.res.Configuration().apply { setLocale(java.util.Locale.CANADA_FRENCH) }
+                    val localized = languageContext.createConfigurationContext(locale)
+                    check(MobileLanguages.forContext(localized).text("设置", "Settings") == "Réglages")
+                    check(MobileLanguages.forContext(localized).text("相机", "Camera") == "Camera")
+                    check(runCatching { MobileLanguages.install(languageContext, "{}".byteInputStream()) }.isFailure)
+                    MobileLanguages.install(languageContext, source.replace("Réglages", "Options").byteInputStream())
+                    MobileLanguages.choices(languageContext)
+                    check(MobileLanguages.forContext(localized).text("设置", "Settings") == "Options")
+                }
+                state = "passed"
+                return
+            }
             if(profile=="capture_ingest") {
                 CaptureIngestProbe.run(context,isolated.filesDir) { name,action -> verify(name,action) }
                 state="passed"
@@ -79,12 +105,12 @@ class DeviceTestRunner : Instrumentation() {
             val automation=getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
             val monitor=addMonitor(AutomationFixtureActivity::class.java.name,null,false)
             try {
-                automation.adoptShellPermissionIdentity("android.permission.START_ACTIVITIES_FROM_BACKGROUND")
+                if(Build.VERSION.SDK_INT>=29) automation.adoptShellPermissionIdentity("android.permission.START_ACTIVITIES_FROM_BACKGROUND")
                 targetContext.startActivity(Intent(targetContext,AutomationFixtureActivity::class.java)
                     .putExtra("landscape",profile=="capture_ui").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 fixture=waitForMonitorWithTimeout(monitor,15000) as? AutomationFixtureActivity
                     ?: error("Test page did not start within 15 seconds")
-            } finally { removeMonitor(monitor); automation.dropShellPermissionIdentity() }
+            } finally { removeMonitor(monitor); if(Build.VERSION.SDK_INT>=29) automation.dropShellPermissionIdentity() }
             val laidOut=CountDownLatch(1)
             onMain {
                 val root=fixture!!.shell.root
@@ -95,6 +121,11 @@ class DeviceTestRunner : Instrumentation() {
             }
             check(laidOut.await(10,TimeUnit.SECONDS)) { "Test page layout timed out" }
             check(targetContext.getSystemService(PowerManager::class.java).isInteractive) { "Wake the display before benchmarking" }
+            if(profile=="scan_ui") {
+                ScanGestureChecks(fixture!!, AndroidStorageAdapter(isolated), ::onMain, ::waitForIdleSync, ::saveView).run(::verify)
+                state="passed"
+                return
+            }
             if(profile=="capture_ui") {
                 val deadline=SystemClock.elapsedRealtime()+5000
                 while(fixture!!.resources.configuration.orientation!=android.content.res.Configuration.ORIENTATION_LANDSCAPE && SystemClock.elapsedRealtime()<deadline) Thread.sleep(50)
@@ -157,6 +188,16 @@ class DeviceTestRunner : Instrumentation() {
         sendStatus(0, Bundle().apply { putString("stream", "\n$phase ($state)\n") })
     }
 
+    private fun saveView(view: View, name: String) {
+        val bitmap=android.graphics.Bitmap.createBitmap(view.width,view.height,android.graphics.Bitmap.Config.ARGB_8888)
+        try {
+            view.draw(android.graphics.Canvas(bitmap))
+            File(report.parentFile,"${report.nameWithoutExtension}-$name.png").outputStream().use {
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)
+            }
+        } finally { bitmap.recycle() }
+    }
+
     private fun captureUiChecks() {
         val activity=fixture!!
         val worker=Executors.newSingleThreadExecutor()
@@ -165,6 +206,58 @@ class DeviceTestRunner : Instrumentation() {
         val initial=mapOf<String,Any?>("imprint" to "Film Aa-01 @50%!","leak" to .2,"seed" to 17L)
         fun descendants(v: View): List<View> = listOf(v)+if(v is ViewGroup) (0 until v.childCount).flatMap { descendants(v.getChildAt(it)) } else emptyList()
         try {
+            verify("finder_switches_jpeg_raw_jpeg_with_synthetic_adapter") {
+                val shell=activity.shell
+                var adapter: CameraXCameraAdapter?=null
+                var allowed=true
+                lateinit var controls: com.filmfoundry.app.ui.CameraTouchControls
+                fun bind(format: String) {
+                    adapter?.unbind()
+                    adapter=CameraXCameraAdapter(activity,activity,nativeSettings=NativeCaptureSettings(format=format))
+                    controls.bind(adapter)
+                }
+                fun button(label: String)=descendants(shell.root).filterIsInstance<Button>().single { it.isShown && it.text==label }
+                try {
+                    onMain {
+                        // The fixture also hosts gallery checks. Give the finder its normal viewport.
+                        listOf(activity.rating, activity.tile, activity.selection).forEach { it.visibility=View.GONE }
+                        shell.enterLoadedCamera()
+                        controls=com.filmfoundry.app.ui.CameraTouchControls(androidx.camera.view.PreviewView(activity),shell,
+                            {allowed},{},{},{},{false},{listOf("jpeg","raw")},::bind)
+                        bind("jpeg")
+                    }
+                    waitForIdleSync()
+                    onMain {
+                        shell.resumeFinderGuides()
+                        shell.showFinderGuide()
+                    }
+                    waitForIdleSync()
+                    onMain {
+                        val coach=descendants(shell.root).filterIsInstance<com.filmfoundry.app.ui.FinderCoachOverlay>().single()
+                        check(coach.isShown)
+                        saveView(shell.root,"guide")
+                        coach.dismiss()
+                        allowed=false;button("JPEG").performClick()
+                        check(!shell.quickControls.isOpen)
+                        allowed=true;button("JPEG").performClick()
+                    }
+                    waitForIdleSync()
+                    onMain {
+                        val choice=button("○  RAW / DNG")
+                        val visible=android.graphics.Rect()
+                        check(choice.getGlobalVisibleRect(visible) && visible.height()==choice.height) {
+                            "RAW choice must be fully visible in the finder"
+                        }
+                        val bitmap=android.graphics.Bitmap.createBitmap(shell.root.width,shell.root.height,android.graphics.Bitmap.Config.ARGB_8888)
+                        shell.root.draw(android.graphics.Canvas(bitmap))
+                        File(report.parentFile,"${report.nameWithoutExtension}-format.png").outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it) }
+                        bitmap.recycle();choice.performClick()
+                        check(adapter?.nativeRequests()?.format=="raw")
+                        button("RAW").performClick();button("○  JPEG").performClick()
+                        check(adapter?.nativeRequests()?.format=="jpeg" && button("JPEG").isEnabled)
+                    }
+                } finally { onMain { controls.bind(null);adapter?.unbind() } }
+            }
             verify("landscape_imprint_preview_and_controls_fit_side_by_side") {
                 onMain {
                     check(activity.resources.configuration.orientation==android.content.res.Configuration.ORIENTATION_LANDSCAPE)

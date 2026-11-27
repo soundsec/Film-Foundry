@@ -1,0 +1,245 @@
+{
+  "film_latent": {
+    "required": [
+      "halide",
+      "developability",
+      "metallic_silver"
+    ],
+    "optional": [
+      "coupler",
+      "dye",
+      "bleached_halide",
+      "original_developability"
+    ],
+    "scalars": [
+      "auxiliary_remaining",
+      "masking_coupler_remaining"
+    ]
+  },
+  "material_families": {
+    "peel_apart_transfer_v1": {
+      "schema_version": 2,
+      "scalar": [
+        "arrival_seconds",
+        "backing_texture",
+        "contact",
+        "coverage",
+        "escaped_reagent",
+        "paper_texture",
+        "reagent"
+      ],
+      "rgb": [
+        "stain_density"
+      ],
+      "layers": [
+        "channel_activity",
+        "developed_donor",
+        "exposure_response",
+        "immobile",
+        "received",
+        "remaining",
+        "transfer_yield"
+      ]
+    },
+    "integral_instant_v1": {
+      "schema_version": 2,
+      "scalar": [
+        "arrival_seconds",
+        "backing_texture",
+        "contact",
+        "coverage",
+        "escaped_reagent",
+        "opacifier",
+        "paper_texture",
+        "reagent",
+        "stabilization"
+      ],
+      "rgb": [
+        "stain_density"
+      ],
+      "layers": [
+        "channel_activity",
+        "developed_donor",
+        "exposure_response",
+        "immobile",
+        "received",
+        "remaining",
+        "transfer_yield"
+      ]
+    },
+    "daguerreotype_surface_v1": {
+      "schema_version": 2,
+      "scalar": [
+        "damage",
+        "gold",
+        "latent",
+        "microtexture",
+        "particles",
+        "pit_depth",
+        "polish_x",
+        "polish_y",
+        "roughness",
+        "sensitivity",
+        "tarnish"
+      ]
+    },
+    "photographic_paper_v1": {
+      "schema_version": 2,
+      "scalar": [
+        "coating",
+        "paper",
+        "paper_moisture"
+      ],
+      "rgb": [
+        "dose",
+        "dye",
+        "halide",
+        "removed_silver",
+        "residue",
+        "silver"
+      ]
+    },
+    "wet_collodion_v1": {
+      "schema_version": 2,
+      "scalar": [
+        "coating",
+        "dose",
+        "flow",
+        "halide",
+        "latent",
+        "moisture",
+        "removed_silver",
+        "roughness",
+        "silver",
+        "surface",
+        "varnish"
+      ],
+      "rgb": [
+        "residue"
+      ]
+    },
+    "cyanotype_v1": {
+      "schema_version": 3,
+      "scalar": [
+        "binding",
+        "blue_pigment",
+        "coating",
+        "ferric",
+        "ferrous",
+        "fibers",
+        "iron_removed",
+        "paper",
+        "paper_moisture",
+        "reduced_pigment"
+      ],
+      "rgb": [
+        "residue"
+      ]
+    },
+    "platinum_palladium_v1": {
+      "schema_version": 3,
+      "scalar": [
+        "absorption",
+        "clear_access",
+        "coating",
+        "ferric",
+        "ferrous",
+        "fibers",
+        "iron_removed",
+        "metal_removed",
+        "palladium",
+        "palladium_salt",
+        "paper",
+        "paper_moisture",
+        "platinum",
+        "platinum_salt",
+        "spent_ferric"
+      ],
+      "rgb": [
+        "residue"
+      ]
+    }
+  },
+  "desktop_state_additions": {
+    "wet_collodion_v1": {
+      "3": ["external_silver", "external_deposit", "external_removed", "external_supplied"],
+      "4": ["collodion_access", "enhancement_silver", "enhancement_deposit", "enhancement_removed", "enhancement_supplied"],
+      "5": ["surface_allocation"]
+    }
+  },
+  "terms": {
+    "external_silver": "Mobile silver solution carried out of the sensitizing bath.",
+    "external_deposit": "Image silver deposited from the carried solution.",
+    "external_removed": "Carried silver lost to runoff, fixing or washing.",
+    "external_supplied": "Cumulative sensitizing-bath supply at the original loading site.",
+    "collodion_access": "Remaining permeability of the collodion coating.",
+    "enhancement_silver": "Available soluble silver in the intensification bath on the plate.",
+    "enhancement_deposit": "Silver deposited by intensification.",
+    "enhancement_removed": "Undeposited intensifier silver removed from the plate.",
+    "enhancement_supplied": "Cumulative intensifier silver supplied to the site.",
+    "surface_allocation": "Local carried-silver budget following transport, including deposited and removed shares.",
+    "absorption": "Local absorption of sensitizer by the paper.",
+    "arrival_seconds": "Local reagent arrival time in seconds.",
+    "auxiliary_remaining": "Remaining auxiliary chemistry fraction.",
+    "backing_texture": "Donor backing texture.",
+    "binding": "Local pigment retention by the paper.",
+    "bleached_halide": "Halide formed by bleaching silver.",
+    "blue_pigment": "Oxidized blue image pigment.",
+    "channel_activity": "Relative reaction activity per transfer layer.",
+    "clear_access": "Local access of clearing solution.",
+    "coating": "Local photosensitive coating coverage or loading.",
+    "contact": "Local contact between donor and receiver.",
+    "coupler": "Remaining dye-forming coupler.",
+    "coverage": "Local coverage of spread reagent.",
+    "damage": "Local plate surface damage.",
+    "developability": "Latent layer response available to development.",
+    "developed_donor": "Developed material retained in the donor.",
+    "dose": "Linear exposure dose in the material's input channels.",
+    "dye": "Formed dye amount.",
+    "escaped_reagent": "Reagent lost from the intended spread.",
+    "exposure_response": "Transfer layer response to the exposure.",
+    "ferric": "Remaining ferric sensitizer.",
+    "ferrous": "Reduced ferrous iron.",
+    "fibers": "Paper fiber structure.",
+    "flow": "Local collodion pour structure.",
+    "gold": "Gilding deposited on the plate.",
+    "halide": "Remaining photosensitive silver halide.",
+    "immobile": "Immobile donor pool.",
+    "iron_removed": "Iron removed by processing.",
+    "latent": "Local latent image response.",
+    "masking_coupler_remaining": "Remaining masking coupler fraction.",
+    "metal_removed": "Image-forming metal inventory removed during processing.",
+    "metallic_silver": "Metallic silver present in the film layer.",
+    "microtexture": "Fine plate surface texture.",
+    "moisture": "Relative water content of the collodion layer.",
+    "opacifier": "Remaining optical shielding of the integral sheet.",
+    "original_developability": "Developability retained from the original exposure.",
+    "palladium": "Deposited palladium.",
+    "palladium_salt": "Remaining palladium salt.",
+    "paper": "Local paper support reflectance.",
+    "paper_moisture": "Relative water content of the paper support.",
+    "paper_texture": "Receiver paper texture.",
+    "particles": "Developed image particles on the plate.",
+    "pit_depth": "Relative depth of plate surface pits.",
+    "platinum": "Deposited platinum.",
+    "platinum_salt": "Remaining platinum salt.",
+    "polish_x": "Horizontal component of the polish direction field.",
+    "polish_y": "Vertical component of the polish direction field.",
+    "reagent": "Local spread reagent amount.",
+    "received": "Material transferred to the receiver.",
+    "reduced_pigment": "Reduced pigment available to oxidize.",
+    "remaining": "Mobile donor pool still available for transfer.",
+    "removed_silver": "Silver-bearing material removed during processing.",
+    "residue": "Surface residue with an RGB optical effect.",
+    "roughness": "Relative local surface roughness.",
+    "sensitivity": "Remaining photosensitive surface response.",
+    "silver": "Metallic image silver.",
+    "spent_ferric": "Spent ferric inventory after development.",
+    "stabilization": "Local progress toward a stable integral print.",
+    "stain_density": "Optical stain density in RGB.",
+    "surface": "Local support surface appearance.",
+    "tarnish": "Local tarnish on the plate.",
+    "transfer_yield": "Transfer efficiency per layer.",
+    "varnish": "Applied varnish coverage."
+  }
+}

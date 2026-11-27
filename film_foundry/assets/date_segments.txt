@@ -1,0 +1,9 @@
+# Seven-segment exposure plate. Coordinates within a 51 x 75 cell.
+# Segment, axis, first tip, last tip, centre line, half thickness.
+a h 9 41 5 2.5
+b v 10 32 45 2.5
+c v 42 64 45 2.5
+d h 9 41 69 2.5
+e v 42 64 5 2.5
+f v 10 32 5 2.5
+g h 9 41 37 2.5

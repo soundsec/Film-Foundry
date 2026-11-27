@@ -29,6 +29,9 @@ def resolve_native_thread_limit(limit: int) -> int:
     if normalized < 0:
         raise ValueError("processing.native_thread_limit must be zero or positive.")
     requested = _STARTUP_OPENCV_THREADS if normalized == 0 else normalized
+    cap = os.environ.get('FILM_FOUNDRY_DESKTOP_THREAD_CAP')
+    if cap and cap.isdecimal() and int(cap) > 0:
+        requested = min(requested, int(cap))
     available = os.cpu_count()
     if available is not None and available > 0:
         requested = min(requested, int(available))

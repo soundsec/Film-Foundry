@@ -188,6 +188,7 @@ def layer_density_to_optical_density_rgb(
     *,
     base_density_rgb: np.ndarray | tuple[float, float, float] | None = None,
     consume_input: bool = False,
+    workers: int = 1,
 ) -> np.ndarray:
     """Observe image-dye layer density through a specified final film base.
 
@@ -260,7 +261,12 @@ def layer_density_to_optical_density_rgb(
         tile_rows = max(1, min(height, int(131_072 / max(width, 1))))
     elif height * width > 2_000_000:
         tile_rows = max(1, min(height, int(2_000_000 / max(width, 1))))
-    for start in range(0, height, tile_rows):
+    # Independent row blocks share the application's CPU lease. Bound all live
+    # private working tiles together to the previous serial tile budget.
+    workers = min(4, max(1, workers), height) if not reference_topology and height * width >= 262_144 else 1
+    tile_rows = max(1, tile_rows // workers)
+
+    def project_rows(start):
         stop = min(start + tile_rows, height)
         if legacy_additive:
             dye_tile = output[start:stop]
@@ -272,7 +278,7 @@ def layer_density_to_optical_density_rgb(
             )
             dye_tile += base_density.reshape(1, 1, 3)
             np.maximum(dye_tile, 0.0, out=dye_tile)
-            continue
+            return
 
         source_tile = density[start:stop]
         dye_tile = output[start:stop]
@@ -323,6 +329,15 @@ def layer_density_to_optical_density_rgb(
             np.log10(dye_tile, out=dye_tile)
             dye_tile *= -1.0
             dye_tile += base_density.reshape(1, 1, 3)
+    starts = range(0, height, tile_rows)
+    if workers == 1:
+        for start in starts:
+            project_rows(start)
+    else:
+        from film_foundry.core.material_parallel import ordered_results
+        with ordered_results(starts, project_rows, workers=workers) as (_, results):
+            for _ in results:
+                pass
     np.maximum(output, 0.0, out=output)
     return output
 
@@ -901,6 +916,10 @@ def render_positive_scan(
     color_shift = np.asarray(scanner.print_color_shift, dtype=np.float32)
     gamma = float(scanner.print_gamma) * max(float(print_contrast), 0.01)
 
+    highlight_bias = np.asarray(scanner.highlight_color_bias, dtype=np.float32)
+    # A unit highlight bias multiplies every channel by exactly one at every density.
+    apply_highlights = reference_execution_enabled() or not np.all(highlight_bias == 1.0)
+
     if (
         consume_input
         and positive_raw_density.dtype == np.float32
@@ -931,31 +950,32 @@ def render_positive_scan(
             dtype=np.float32,
         ).reshape(1, 1, 3)
 
-        luma = luminance(mapped)
-        highlight_weight = _smoothstep(
-            luma,
-            scanner.highlight_bias_threshold,
-            scanner.highlight_bias_threshold + scanner.highlight_bias_softness,
-        )
-        highlight_bias = np.asarray(scanner.highlight_color_bias, dtype=np.float32)
-        factor = np.empty_like(highlight_weight, dtype=np.float32)
-        for channel in range(3):
-            np.multiply(
-                highlight_weight,
-                np.float32(highlight_bias[channel] - 1.0),
-                out=factor,
+        luma = None
+        if apply_highlights:
+            luma = luminance(mapped)
+            highlight_weight = _smoothstep(
+                luma,
+                scanner.highlight_bias_threshold,
+                scanner.highlight_bias_threshold + scanner.highlight_bias_softness,
             )
-            factor += 1.0
-            mapped[..., channel] *= factor
-            if channel == 0:
-                np.multiply(mapped[..., channel], 0.2126, out=luma)
-            elif channel == 1:
-                np.multiply(mapped[..., channel], 0.7152, out=factor)
-                luma += factor
-            else:
-                np.multiply(mapped[..., channel], 0.0722, out=factor)
-                luma += factor
-        del factor, highlight_weight
+            factor = np.empty_like(highlight_weight, dtype=np.float32)
+            for channel in range(3):
+                np.multiply(
+                    highlight_weight,
+                    np.float32(highlight_bias[channel] - 1.0),
+                    out=factor,
+                )
+                factor += 1.0
+                mapped[..., channel] *= factor
+                if channel == 0:
+                    np.multiply(mapped[..., channel], 0.2126, out=luma)
+                elif channel == 1:
+                    np.multiply(mapped[..., channel], 0.7152, out=factor)
+                    luma += factor
+                else:
+                    np.multiply(mapped[..., channel], 0.0722, out=factor)
+                    luma += factor
+            del factor, highlight_weight
 
         mapped = _luma_preserving_saturation(
             mapped,
@@ -977,14 +997,14 @@ def render_positive_scan(
         mapped = 1.0 - np.exp(-positive)
     mapped = mapped * np.asarray(scanner.print_color_bias, dtype=np.float32)[None, None, :]
 
-    luma = luminance(mapped)
-    highlight_weight = _smoothstep(
-        luma,
-        scanner.highlight_bias_threshold,
-        scanner.highlight_bias_threshold + scanner.highlight_bias_softness,
-    )[..., None]
-    highlight_bias = np.asarray(scanner.highlight_color_bias, dtype=np.float32)[None, None, :]
-    mapped = mapped * (1.0 + highlight_weight * (highlight_bias - 1.0))
+    if apply_highlights:
+        luma = luminance(mapped)
+        highlight_weight = _smoothstep(
+            luma,
+            scanner.highlight_bias_threshold,
+            scanner.highlight_bias_threshold + scanner.highlight_bias_softness,
+        )[..., None]
+        mapped = mapped * (1.0 + highlight_weight * (highlight_bias - 1.0))
     mapped = _luma_preserving_saturation(
         mapped,
         scanner.scan_saturation,

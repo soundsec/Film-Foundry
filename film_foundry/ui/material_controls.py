@@ -100,6 +100,9 @@ def sync_source_preview(window):
         badge.setObjectName('sourcePreviewNote')
         badge.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         badge.move(10,10);badge.adjustSize();window.source_preview_badge=badge
+    if fresh:
+        window.source_preview_badge.setText(text('来源预览 · 尚未曝光','Source preview · not exposed'))
+        window.source_preview_badge.adjustSize()
     window.source_preview_badge.setVisible(fresh);window.source_preview_badge.raise_()
     key=(id(session.image),session.scan_adjustments.get('rotation_quarters',0)) if fresh else None
     if fresh and key!=getattr(window,'_unexposed_preview_key',None):

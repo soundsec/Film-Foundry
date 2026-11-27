@@ -4,6 +4,7 @@ Fields remain immutable host-owned material data. Only the optical result is
 returned; observers never write back into formation pools.
 """
 import os
+from contextlib import ExitStack
 import numpy as np
 from . import desktop_compute as compute
 from .execution_topology import reference_execution_enabled
@@ -56,6 +57,14 @@ def run(name,arrays,parameters,*,kind=0,channels=3):
         except Exception as exc:
             (oc.reject if backend=='opencl' else compute.reject)(f'{type(exc).__name__}: {exc}')
             return None
+        finally:
+            if backend == 'cuda' and compute._runtime is not None:
+                pool = compute._runtime[3]
+                try:
+                    if pool.free_bytes() > 128 * 1024 * 1024:
+                        pool.free_all_blocks()
+                except Exception as exc:
+                    compute.reject(f'CUDA pool cleanup failed: {exc}')
 
 
 def _run(backend,runtime,name,arrays,parameters,kind,channels):
@@ -79,34 +88,45 @@ def _run(backend,runtime,name,arrays,parameters,kind,channels):
         if name not in kernels:
             kernels[name]=cl.Kernel(cl.Program(context,source(name,'opencl')).build(),name)
         limit=min(limit,max(1,limit*72//(4*sum(sizes))))
-    rows=max(1,limit//w);inputs=target=None
-    try:
-        for start in range(0,h,rows):
-            stop=min(start+rows,h);count=(stop-start)*w
-            packed=np.concatenate([a[start:stop].ravel() for a in unique]).astype(np.float32,copy=False)
-            arguments=(np.int32(kind),np.int32(channels),np.int32(count))
-            if backend=='cuda':
-                with stream,cp.cuda.using_allocator(pool.malloc):
-                    inputs=[cp.asarray(a) for a in (packed,offsets,params)]
-                    target=cp.empty((stop-start,w,3),cp.float32)
-                    _kernels[name](((count+255)//256,),(256,),(*inputs,*arguments,target))
-                    target.get(out=result[start:stop],stream=stream,blocking=True)
+    rows = max(1, min(h, limit // w))
+    capacity = rows * w
+    # Upload constant tables once and reuse device buffers for every row tile.
+    with ExitStack() as resources:
+        if backend == 'cuda':
+            resources.enter_context(stream)
+            resources.enter_context(cp.cuda.using_allocator(pool.malloc))
+            tables = [cp.asarray(a) for a in (offsets, params)]
+            src = cp.empty(capacity * plane_count, cp.float32)
+            dst = cp.empty((capacity, 3), cp.float32)
+            resources.callback(stream.synchronize)
+        else:
+            flags = cl.mem_flags
+            def buffer(mode, **options):
+                value = cl.Buffer(context, mode, **options)
+                resources.callback(value.release)
+                return value
+            tables = [buffer(flags.READ_ONLY | flags.COPY_HOST_PTR, hostbuf=a) for a in (offsets, params)]
+            src = buffer(flags.READ_ONLY, size=capacity * plane_count * 4)
+            dst = buffer(flags.WRITE_ONLY, size=capacity * 12)
+            resources.callback(queue.finish)
+
+        for start in range(0, h, rows):
+            stop = min(start + rows, h)
+            count = (stop - start) * w
+            if len(unique) == 1:
+                packed = np.ascontiguousarray(unique[0][start:stop], dtype=np.float32).reshape(-1)
             else:
-                buffers=[];output=None
-                try:
-                    buffers=[cl.Buffer(context,cl.mem_flags.READ_ONLY|cl.mem_flags.COPY_HOST_PTR,hostbuf=a) for a in (packed,offsets,params)]
-                    output=cl.Buffer(context,cl.mem_flags.WRITE_ONLY,size=count*12)
-                    kernels[name](queue,(count,),None,*buffers,*arguments,output)
-                    cl.enqueue_copy(queue,result[start:stop],output,is_blocking=True)
-                finally:
-                    queue.finish()
-                    for buffer in buffers:buffer.release()
-                    if output is not None:output.release()
-        return result
-    finally:
-        if backend=='cuda':
-            stream.synchronize();inputs=target=None
-            if pool.free_bytes()>128*1024*1024:pool.free_all_blocks()
+                packed = np.concatenate([a[start:stop].ravel() for a in unique]).astype(np.float32, copy=False)
+            arguments = (src, *tables, np.int32(kind), np.int32(channels), np.int32(count), dst)
+            if backend == 'cuda':
+                src[:packed.size].set(packed, stream=stream)
+                _kernels[name](((count+255)//256,), (256,), arguments)
+                dst[:count].get(out=result[start:stop].reshape(count, 3), stream=stream, blocking=True)
+            else:
+                cl.enqueue_copy(queue, src, packed, is_blocking=False)
+                kernels[name](queue, (count,), None, *arguments)
+                cl.enqueue_copy(queue, result[start:stop], dst, is_blocking=True)
+    return result
 
 
 def sheet(body,material,view,kind):

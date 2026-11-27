@@ -8,7 +8,7 @@ import numpy as np
 from film_foundry import __version__
 from film_foundry.app.preview_session import PreviewSession
 from film_foundry.app.diagnostic_targets import diagnostic_target
-from film_foundry.model.config import DarkroomConfig, merge_config_presets
+from film_foundry.model.config import DarkroomConfig, MONO_LEGACY_EXPOSURE, merge_config_presets
 
 
 class SelectionPreviewSession:
@@ -66,9 +66,35 @@ class SelectionPreviewSession:
         # Old factory thumbnails used the same uncropped scan. Omit only the
         # identity settings so those read-only examples remain usable.
         if config is not None:
+            # Serialize the effective formation choices in the existing cache
+            # key layout so equivalent factory samples remain reusable.
+            recipe['processing'].pop('layered_response')
+            recipe['processing'].pop('independent_coating_grain')
+            recipe['film']['coating_stack'] = config.formation_film().coating_stack
+            if recipe['film'].get('coating_stack') is None:
+                recipe['film'].pop('coating_stack', None)
+            if recipe['exposure']['rear_optics'] is None:
+                del recipe['exposure']['rear_optics']
+            if recipe['exposure']['film_side'] == 'base':
+                recipe['rear_exposure_revision'] = 3
+            if recipe['exposure']['film_side'] == 'emulsion':
+                del recipe['exposure']['film_side']
+            if recipe['exposure']['lens_filter'] is None:
+                del recipe['exposure']['lens_filter']
             for name,default in (('crop_rect',None),('straighten_degrees',0.),('base_sample_rect',None),('base_reference_rgb',None)):
                 if recipe['scanner'][name]==default:del recipe['scanner'][name]
-        key=cache.key(dict(version='selection-v1',engine=__version__,family=record.get('family','film'),
+        family = record.get('family','film')
+        revision = {'plate':'selection-plate-view-v3', 'wet':'selection-process-v2',
+                    'peel':'selection-process-v2', 'platinum':'selection-pt-clear-v2'}.get(family, 'selection-v1')
+        if config is not None:
+            from film_foundry.core.media import is_monochrome_material
+            model = recipe['film'].pop('monochrome_exposure_model')
+            if is_monochrome_material(config) and (config.film.spectral_exposure_profile is not None or model != MONO_LEGACY_EXPOSURE):
+                revision += '-silver-rgb-exposure-v1'
+        reference_print = not use_source and target == 'astronaut' and family in ('paper','cyanotype','platinum')
+        if reference_print:
+            revision += '-contact-photo-v1'
+        key=cache.key(dict(version=revision,engine=__version__,family=family,
             recipe=recipe,
             source=self._comparison_revision if use_source else target,edge=self.long_edge,seed=13579))
         cached,generation=cache.lookup(key)
@@ -91,7 +117,6 @@ class SelectionPreviewSession:
             else:_,result,_=self.film.render_target(target,config,long_edge=self.long_edge)
         else:
             from film_foundry.app.material_lab_session import MaterialLabSession
-            from film_foundry.core.material_family import ViewingConditions
             from film_foundry.core.color import srgb_to_linear
             session=MaterialLabSession(record['family'])
             if use_source:
@@ -104,9 +129,16 @@ class SelectionPreviewSession:
                     self._linear,_=load_exposure_image(self.source,self.long_edge)
                     self._source_revision=revision
                 session.image=self._linear.copy()
-            else:session.image=srgb_to_linear(diagnostic_target(target,long_edge=self.long_edge))
+            else:
+                session.image=srgb_to_linear(diagnostic_target(target,long_edge=self.long_edge))
+                if reference_print:
+                    from film_foundry.app.material_reference import example_exposure
+                    session.image=example_exposure(session.image,family,record['material'])
             session.run_standard(deepcopy(record['material']),seed=13579,control=control)
-            control.check_cancel();result=session.preview(ViewingConditions())
+            if reference_print:
+                control.check_cancel()
+                session.process('dry', {'seconds':3600.})
+            control.check_cancel();result=session.preview()
         control.check_cancel()
         if use_source:self.check_source()
         if not np.isfinite(result).all():raise ValueError('Non-finite reference preview')

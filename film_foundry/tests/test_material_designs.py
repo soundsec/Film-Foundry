@@ -7,6 +7,15 @@ from film_foundry.app.material_designs import DESIGNS,compose_material
 
 def cfg():return DarkroomConfig(enable_mtf=False,enable_halation=False,enable_grain=False,seed_strategy='fixed',random_seed=17)
 
+@pytest.mark.parametrize("render_print", [True, False])
+def test_design_preserves_selected_scan_path(render_print):
+    source = cfg()
+    source.enable_subtractive = render_print
+    for design in ("blue_sensitive", "color_negative", "chromogenic_mono"):
+        configured = compose_material(source, design)
+        assert configured.enable_subtractive is render_print
+        assert configured.scanner == source.scanner
+
 @pytest.mark.parametrize('design',tuple(DESIGNS))
 def test_material_starts_form_and_preserve_chemistry(design):
     from film_foundry.core.engine import develop_negative

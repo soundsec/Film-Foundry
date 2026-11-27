@@ -4,6 +4,13 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class ScanPreviewStateTest {
+    @Test fun lateFramesCannotReplaceTheNewestVisibleToolEdit() {
+        val state=ScanPreviewState()
+        val edits=(0..15).map { state.begin("frame","film.npz",mapOf("look" to mapOf("print_exposure_ev" to it/20.0))) }
+        assertTrue(state.complete(edits.last()))
+        for(late in edits.dropLast(1).reversed()) assertFalse(state.complete(late))
+        assertEquals(edits.last().recipe,state.recipeFor("frame","film.npz"))
+    }
     @Test fun backgroundKeepsTheCompletedReceiptButRejectsItsOldCompletionToken() {
         val state=ScanPreviewState();val shown=state.begin("a","a.npz",mapOf("scanner" to mapOf("scan_saturation" to 1.4)))
         assertTrue(state.complete(shown));state.cancelPendingKeepingDisplayed()

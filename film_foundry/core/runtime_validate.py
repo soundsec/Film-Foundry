@@ -36,6 +36,7 @@ from film_foundry.model.config import (
     normalize_color_mixer,
     SCANNER_COLOR_RESPONSE_MODELS,
     normalize_scanner_color_curve_rgb,
+    validate_monochrome_exposure_model,
 )
 
 
@@ -154,12 +155,16 @@ def _validate_develop_runtime(
     allow_discarded_history: bool = False,
 ) -> None:
     """Reject malformed material/process settings before forming latent state."""
+    validate_monochrome_exposure_model(config.film.monochrome_exposure_model)
     from film_foundry.contracts.film_time import validate_config as validate_time_config
     validate_time_config(config)
     from film_foundry.contracts.film_exposure import validate_config as validate_exposure_config
     validate_exposure_config(config)
     from film_foundry.core.incident_identity import validate_incident_seed
     validate_incident_seed(config.chemistry.incident_identity_seed)
+    validate_incident_seed(config.chemistry.incident_frame_seed, "incident_frame_seed")
+    if config.chemistry.incident_pattern_scope not in ("roll","frame"):
+        raise ValueError("develop.incident_pattern_scope must be frame or roll")
     if config.film.spectral_exposure_profile is not None:
         profile = SpectralExposureProfile.from_value(config.film.spectral_exposure_profile)
         expected_layers = 1 if is_monochrome_material(config) else 3

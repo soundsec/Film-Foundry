@@ -50,6 +50,7 @@ def pack_state(state, prefix, arrays):
 
 def unpack_state(archive, record, prefix):
     record = dict(record)
+    record.setdefault('incident_frame_seed', None)
     record.setdefault('film_border_snapshot', None)  # pre-rebate archives
     if set(record) != {f.name for f in fields(FilmProcessState)}:
         raise ValueError('Incomplete or unsupported reaction checkpoint state')

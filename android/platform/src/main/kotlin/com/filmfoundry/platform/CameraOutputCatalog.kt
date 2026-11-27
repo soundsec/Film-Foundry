@@ -8,6 +8,13 @@ import android.util.Range
 
 /** Supported still sizes and frame-rate ranges. These are device capabilities, not a chosen film grid. */
 object CameraOutputCatalog {
+    fun streamFormat(stillFormat: String, motion: Boolean = false): Int = when {
+        motion -> ImageFormat.YUV_420_888
+        stillFormat == "raw" -> ImageFormat.RAW_SENSOR
+        stillFormat == "ultra_hdr" -> ImageFormat.JPEG_R
+        else -> ImageFormat.JPEG
+    }
+
     fun jpegSizes(context: Context,lens: NativeCameraCatalog.Lens?=null,format: Int=ImageFormat.JPEG): List<Pair<Int, Int>> {
         val characteristics = lens?.characteristics ?: backCamera(context) ?: return emptyList()
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return emptyList()

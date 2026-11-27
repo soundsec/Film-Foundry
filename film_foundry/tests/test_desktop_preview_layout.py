@@ -28,8 +28,10 @@ def test_studio_left_tabs_always_restore_scan_controls(desktop,tmp_path):
     for mode in ('compact','studio','compact','studio'):
         panel.set_workspace_layout(mode,persist=False);_application().processEvents()
         assert panel.stack.currentIndex()==panel.page_index['scan' if mode=='studio' else 'film']
-        assert panel.preview_histogram.parent() is panel.control_panel
-    assert panel.preview_histogram.height()==100
+        host = (panel.histogram_sidebar_host if panel.preview_histogram.settings.values['layout']=='sidebar'
+                else panel.histogram_below_host)
+        assert panel.preview_histogram.parentWidget() is host
+        assert host.layout().indexOf(panel.preview_histogram) >= 0
 
 
 def test_browser_upgrades_thumbnail_to_native_image_and_ignores_stale_result(desktop,tmp_path,monkeypatch):

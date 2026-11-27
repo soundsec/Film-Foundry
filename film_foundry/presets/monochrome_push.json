@@ -1,6 +1,13 @@
 {
   "film": {
     "name": "Monochrome Push",
+    "coating_stack": {
+      "model": "ordered_coatings_v1",
+      "layers": [
+        {"id": "Ag-fast", "kind": "emulsion", "record": "G", "speed_ev": 1.35, "amount": 0.52, "development_rate": 1.18, "density_rgb": [0.016, 0.016, 0.016]},
+        {"id": "Ag-slow", "kind": "emulsion", "record": "G", "speed_ev": -0.72, "amount": 0.48, "development_rate": 0.83, "density_rgb": [0.022, 0.022, 0.022]}
+      ]
+    },
     "halation_strength": 0.055,
     "halation_threshold": 0.78,
     "halation_softness": 0.16,

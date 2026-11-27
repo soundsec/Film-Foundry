@@ -17,7 +17,10 @@ MODEL = 'film_reaction_boundary_v1'
 def binding_for(material, program, compatibility):
     # Compare the small complete execution description, including kinetics and
     # time histories. Display/audit program payloads intentionally omit fields.
-    return json.loads(json.dumps({'model': MODEL, 'material': asdict(material),
+    coefficients = asdict(material)
+    if coefficients.get("coating_ids") is None:
+        coefficients.pop("coating_ids", None)
+    return json.loads(json.dumps({'model': MODEL, 'material': coefficients,
         'program': asdict(program), 'compatibility': asdict(compatibility)}, allow_nan=False))
 
 

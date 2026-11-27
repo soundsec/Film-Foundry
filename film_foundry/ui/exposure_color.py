@@ -9,9 +9,10 @@ from film_foundry.core.color import linear_to_srgb,srgb_to_linear
 class ExposureColor(QtWidgets.QWidget):
     changed=QtCore.Signal()
 
-    def __init__(self,value,*,default=(1.,1.,1.),optional=False,parent=None):
+    def __init__(self,value,*,default=(1.,1.,1.),optional=False,parent=None,ink=False):
         super().__init__(parent)
         self._value=None if value is None else tuple(value)
+        self.ink=ink
         self._baseline=self._value;self.default=default;self.optional=optional
         line=QtWidgets.QHBoxLayout(self);line.setContentsMargins(0,0,0,0);line.setSpacing(4)
         self.button=QtWidgets.QPushButton();line.addWidget(self.button,1);self.button.clicked.connect(self.choose)
@@ -24,6 +25,8 @@ class ExposureColor(QtWidgets.QWidget):
         self.reset.clicked.connect(lambda:self.set_value(self._baseline))
         self.setToolTip(text('设置曝光光源的颜色，亮度另调。最终字色与明暗由材料、冲洗和扫描共同决定；黑白材料不会产生彩色字。','Sets the exposure lamp colour; brightness is separate. Stock, processing and scanning determine the final colour and tone. Monochrome stock stays monochrome.'))
         self.refresh()
+        if ink:
+            self.setToolTip(text('透过满版油墨的光色与亮度，白色为透明。','Colour and brightness transmitted through solid ink. White is transparent.'))
 
     def value(self):return self._value
 
@@ -39,11 +42,13 @@ class ExposureColor(QtWidgets.QWidget):
         rgb=linear_to_srgb(np.asarray(self._value if self._value is not None else self.default,np.float32))
         color=QtGui.QColor.fromRgbF(*[float(v) for v in np.clip(rgb,0,1)])
         pixmap=QtGui.QPixmap(24,16);pixmap.fill(color);self.button.setIcon(QtGui.QIcon(pixmap))
-        self.button.setText(color.name().upper());self.button.setAccessibleName(text('选择曝光颜色','Choose exposure colour'))
+        self.button.setText(color.name().upper())
+        self.button.setAccessibleName(text('油墨透射色','Ink transmission colour') if self.ink else text('选择曝光颜色','Choose exposure colour'))
 
     def choose(self):
         rgb=linear_to_srgb(np.asarray(self._value if self._value is not None else self.default,np.float32))
-        color=QtWidgets.QColorDialog.getColor(QtGui.QColor.fromRgbF(*[float(v) for v in np.clip(rgb,0,1)]),self,text('曝光颜色','Exposure colour'))
+        title=text('油墨透射色','Ink transmission colour') if self.ink else text('曝光颜色','Exposure colour')
+        color=QtWidgets.QColorDialog.getColor(QtGui.QColor.fromRgbF(*[float(v) for v in np.clip(rgb,0,1)]),self,title)
         if color.isValid():
             linear=srgb_to_linear(np.array([color.redF(),color.greenF(),color.blueF()],np.float32))
             self.set_value(tuple(float(v) for v in linear))

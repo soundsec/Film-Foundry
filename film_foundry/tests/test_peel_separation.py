@@ -91,15 +91,15 @@ def test_v4_archive_recipe_optical_source_and_future_environment(tmp_path):
     from film_foundry.contracts.optical_cascade import OpticalRelay
     s=contact(transfer='silver_compound',donor_mode='silver_negative',interlayer_adhesion=.7)
     s.process('environment',{'temperature_c':35});s.process('advance',{'seconds':30})
-    path=tmp_path/'pause.npz';api.save(path,s.state)
+    path=tmp_path/'pause.npz';api.save(path,s.state,precision='full')
     s.state=api.load(path);s.process('peel',{'speed_mm_s':100,'angle_degrees':45})
     s.process('clear_negative',{'strength':.4,'marks':.6})
-    api.save(path,s.state);s.state=api.load(path)
+    api.save(path,s.state,precision='full');s.state=api.load(path)
     s.process('clear_negative',{'strength':.5});s.process('handling',{'target':'donor','fingerprints':.2})
     s.process('clean',{'target':'receiver','abrasion':.15})
     replay=MaterialLabSession('peel');replay.image=IMAGE;replay.replay_recipe(s.recipe())
     for key,value in s.state.fields.items():np.testing.assert_array_equal(value,replay.state.fields[key],err_msg=key)
-    api.save(path,s.group);group=api.load(path)
+    api.save(path,s.group,precision='full');group=api.load(path)
     for actual,expected in zip(group.bodies,s.group.bodies):np.testing.assert_array_equal(api.observe(actual),api.observe(expected))
     before={key:value.copy() for key,value in group.bodies[1].fields.items()}
     projected=project_medium(group,OpticalRelay(mode='transmission'),body_id=group.bodies[1].body_id)

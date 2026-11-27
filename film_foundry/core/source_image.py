@@ -4,6 +4,8 @@ SDR retains the established display-sRGB path. DNG and JPEG gain maps return
 linear working RGB with an explicit encoding, never a tone-mapped exposure.
 """
 from pathlib import Path
+from contextlib import contextmanager
+from functools import lru_cache
 import io
 import struct
 
@@ -19,27 +21,77 @@ def _rawpy():
         raise RuntimeError('DNG input requires rawpy (install project requirements).') from exc
 
 
+@contextmanager
+def _open_dng(path):
+    import tifffile
+    # LibRaw probes file contents and also accepts vendor RAW renamed to .dng.
+    with tifffile.TiffFile(path) as container:
+        if not container.pages or 50706 not in container.pages[0].tags:
+            raise ValueError("Expected a DNGVersion tag in the primary DNG directory.")
+    rawpy = _rawpy()
+    try:
+        with rawpy.imread(str(path)) as raw:
+            yield raw
+    except rawpy.LibRawError as exc:
+        raise ValueError(f'LibRaw could not decode DNG {Path(path).name}: {exc}') from exc
+
+
 def dng_dimensions(path):
-    with _rawpy().imread(str(path)) as raw:
+    with _open_dng(path) as raw:
         size = raw.sizes
         w, h = size.width, size.height
-        return (h, w) if size.flip in (5, 6) else (w, h)
+        # LibRaw's transpose bit also covers the two mirrored quarter-turns.
+        return (h, w) if size.flip & 4 else (w, h)
 
 
-def _dng(path):
+def _decode_dng16(path):
+    from .computation_control import checkpoint
+    checkpoint()
     rawpy = _rawpy()
-    with rawpy.imread(str(path)) as raw:
+    with _open_dng(path) as raw:
+        # LibRaw owns the mosaic and interpolation. Asking rawpy to reconstruct
+        # its pattern here would restrict decoding to patterns that wrapper knows.
+        if raw.num_colors == 1:
+            layout = 'single_plane'
+        elif raw.raw_type == rawpy.RawType.Stack:
+            layout = 'linear_planes'
+        else:
+            layout = 'cfa'
+        checkpoint()
         # LibRaw applies black/white levels, camera WB, demosaic, color matrix
         # and orientation. No auto-brightening or display tone curve.
         pixels = raw.postprocess(output_color=rawpy.ColorSpace.sRGB,
             gamma=(1, 1), output_bps=16, use_camera_wb=True,
             use_auto_wb=False, no_auto_bright=True, bright=1.0)
-    return pixels.astype(np.float32) / np.float32(65535), {
-        'source': 'dng', 'decoder': f'rawpy {rawpy.__version__}',
+        levels = {'black_level_per_channel': list(raw.black_level_per_channel),
+                  'white_level': raw.white_level}
+    checkpoint()
+    if pixels.ndim == 3 and pixels.shape[-1] == 1:
+        pixels = np.broadcast_to(pixels, (*pixels.shape[:2], 3))
+    if pixels.ndim != 3 or pixels.shape[-1] != 3 or pixels.dtype != np.uint16:
+        raise ValueError(f'Unsupported LibRaw output for {Path(path).name}: {pixels.shape}, {pixels.dtype}')
+    return pixels, {
+        'source': 'dng', 'capture_kind': 'sensor_raw_dng', 'raw_layout': layout,
+        'decoder': f'rawpy {rawpy.__version__}',
+        'libraw_version': '.'.join(map(str, rawpy.libraw_version)),
         'encoding': 'linear_rgb', 'working_space': 'linear_srgb',
-        'white_balance': 'camera', 'auto_bright': False,
+        'white_balance': 'none' if layout == 'single_plane' else 'camera', 'auto_bright': False,
+        'sensor_levels': levels,
         'range': 'sensor_normalized_16bit', 'orientation_applied': True,
     }
+
+
+@lru_cache(maxsize=1)
+def _display_codes():
+    from .color import linear_to_srgb
+    return linear_to_srgb(np.arange(65536, dtype=np.float32) / np.float32(65535))
+
+
+def dng_display_image(path):
+    # LibRaw's linear 16-bit output has exactly 65536 possible channel values.
+    # Apply the same display transfer before thumbnail resampling.
+    codes, record = _decode_dng16(path)
+    return _display_codes()[codes], {**record, 'encoding': 'srgb', 'preview_only': True}
 
 
 # ICC colorants are PCS D50. Identify the same three gamuts understood by
@@ -130,7 +182,10 @@ def load_formation_image(path, *, decode_long_edge=None, input_icc_policy='apply
         raise ValueError('decode_long_edge must be positive or None.')
     suffix = path.suffix.lower()
     if suffix == '.dng':
-        return _dng(path)
+        codes, record = _decode_dng16(path)
+        linear = codes.astype(np.float32)
+        linear /= np.float32(65535)
+        return linear, record
     if suffix in ('.jpg', '.jpeg'):
         decoded = _jpeg_capture(path)
         if decoded is not None:
@@ -138,6 +193,8 @@ def load_formation_image(path, *, decode_long_edge=None, input_icc_policy='apply
     from .io_utils import load_image_with_color
     image, record = load_image_with_color(path, decode_long_edge=decode_long_edge,
                                          input_icc_policy=input_icc_policy)
+    if suffix in ('.jpg', '.jpeg'):
+        record = {**record, 'capture_kind': 'display_referred_srgb'}
     return image, {**record, 'encoding': 'srgb'}
 
 

@@ -11,8 +11,6 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
-from datetime import datetime
 from pathlib import Path
 import sys
 
@@ -20,7 +18,7 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from film_foundry.core.engine import process_file
+from film_foundry.core.sidecar import final_positive_sidecar
 from film_foundry.core.io_utils import (
     SUPPORTED_EXTENSIONS,
     assert_unique_output_stems,
@@ -368,10 +366,11 @@ def _run_full(config: DarkroomConfig) -> None:
         return
     failures: list[tuple[Path, Exception]] = []
     completed = 0
-    for input_path in input_paths:
+    from film_foundry.app.workspace_jobs import numbered_photo_config
+    for index,input_path in enumerate(input_paths,1):
         try:
             output_path = _output_path_for(input_path, OUTPUT_PATH, config.output.format)
-            process_file(input_path, output_path, config, preview=RUN_AS_PREVIEW)
+            _workflow.process_image_file(input_path, output_path, numbered_photo_config(config,index), scaled_override=RUN_AS_PREVIEW)
             print(f"已保存最终图: {output_path}")
             completed += 1
         except Exception as exc:
@@ -389,12 +388,13 @@ def _run_develop(config: DarkroomConfig) -> None:
         return
     failures: list[tuple[Path, Exception]] = []
     completed = 0
-    for input_path in input_paths:
+    from film_foundry.app.workspace_jobs import numbered_photo_config
+    for index,input_path in enumerate(input_paths,1):
         try:
             _medium, negative_path, _paths = _workflow.develop_image_file(
                 input_path,
                 NEGATIVE_PATH,
-                config,
+                numbered_photo_config(config,index),
                 scaled_override=RUN_AS_PREVIEW,
             )
             print(f"已保存冲洗底片: {negative_path}")
@@ -424,16 +424,9 @@ def _run_scan(config: DarkroomConfig) -> None:
             )
             output_path = _output_path_for(negative_path, OUTPUT_PATH, config.output.format)
             if SAVE_SIDECAR:
-                sidecar = {
-                        "kind": "ScannedPositive",
-                        "created_at": datetime.now().isoformat(timespec="seconds"),
-                        "negative_path": str(negative_path),
-                        "scan_source": scan_source,
-                        "scan_source_path": str(source_path),
-                        "output_path": str(output_path),
-                        "note": "这个结果由已冲洗介质重新观察得到，没有重新运行 film/develop 阶段。",
-                        "config": asdict(config),
-                    }
+                sidecar = final_positive_sidecar(negative_path=negative_path, scan_source=scan_source,
+                    scan_source_path=source_path, output_path=output_path, config=config, scanned=scanned)
+                sidecar["note"] = "这个结果由已冲洗介质重新观察得到，没有重新运行 film/develop 阶段。"
             else:
                 sidecar = None
             save_image_bundle(

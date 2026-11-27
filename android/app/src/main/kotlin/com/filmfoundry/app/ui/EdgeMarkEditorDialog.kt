@@ -23,15 +23,16 @@ fun showEdgeMarkEditor(activity: ComponentActivity,shell: MobileShell,initial: M
     val flips=listOf("factory_flip_top" to c("上边翻转 180°","Top: rotate 180°"),"factory_flip_bottom" to c("下边翻转 180°","Bottom: rotate 180°"))
     for((key,title) in flips) panel.addView(CheckBox(activity).apply { text=title;isChecked=settings[key]==true;setOnCheckedChangeListener { _,value -> settings[key]=value } })
     panel.addView(TextView(activity).apply { text=c("成印方式","Marking method") })
+    val methods=listOf("hard","laser","laser_etched","ink")
     val method=Spinner(activity).apply {
-        adapter=ArrayAdapter(activity,android.R.layout.simple_spinner_dropdown_item,listOf(c("清晰印字（曝光）","Hard-edged exposure"),c("激光式曝光","Laser-style exposure")))
-        setSelection(if(settings["factory_mark_type"]=="laser") 1 else 0)
+        adapter=ArrayAdapter(activity,android.R.layout.simple_spinner_dropdown_item,listOf(c("光学掩模板印字","Optical mask printing"),c("激光式曝光","Laser-style exposure"),c("激光刻蚀 · 去除乳剂","Laser etching · remove emulsion"),c("油墨印刷","Ink printing")))
+        setSelection(methods.indexOf(settings["factory_mark_type"]))
     };panel.addView(method)
     val spreadText=TextView(activity);panel.addView(spreadText)
     val spread=shell.parameterRuler().apply { max=30;progress=((settings["factory_mark_spread"] as Number).toDouble()*10).toInt() };panel.addView(spread)
     fun refreshMethod() { spread.isEnabled=method.selectedItemPosition==1;spreadText.text=c("材料扩散倍率","Material spread")+" · "+String.format(java.util.Locale.ROOT,"%.1f",(settings["factory_mark_spread"] as Number).toDouble()) }
     method.onItemSelectedListener=object: AdapterView.OnItemSelectedListener {
-        override fun onItemSelected(parent: AdapterView<*>?,view: View?,position: Int,id: Long) { settings["factory_mark_type"]=if(position==1) "laser" else "hard";refreshMethod() }
+        override fun onItemSelected(parent: AdapterView<*>?,view: View?,position: Int,id: Long) { settings["factory_mark_type"]=methods[position];refreshMethod() }
         override fun onNothingSelected(parent: AdapterView<*>?)=Unit
     }
     spread.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
@@ -85,12 +86,12 @@ fun showEdgeMarkEditor(activity: ComponentActivity,shell: MobileShell,initial: M
     linked.setOnCheckedChangeListener { _,value -> settings["factory_pattern_linked"]=value;syncSide() }
     shell.action(panel,"清空图案","Clear stencil") { grid.cells.fill(false);settings[active]=grid.pattern().encode();grid.invalidate();code.setText(settings[active].toString()) }
     shell.action(panel,"恢复材料文字","Use stock text") { settings[active]="";reload() }
-    val templateText=EditText(activity).apply { setSingleLine(true);hint=c("厂标文字：最多14位英文/数字","Factory label: up to 14 letters/digits") };panel.addView(templateText)
+    val templateText=EditText(activity).apply { setSingleLine(true);hint=c("厂标文字：最多14个英文字母或空格","Factory label: up to 14 English letters or spaces") };panel.addView(templateText)
     val templateBatch=EditText(activity).apply { setSingleLine(true);inputType=android.text.InputType.TYPE_CLASS_NUMBER;hint=c("批号 0–4095","Batch 0–4095");setText("0") };panel.addView(templateBatch)
     shell.action(panel,"生成细字与识别条纹","Create lettering and ID bars") {
-        runCatching { com.filmfoundry.interchange.FactoryLabelPattern.create(templateText.text.toString(),templateBatch.text.toString().toInt()).encode() }
+        runCatching { com.filmfoundry.interchange.FactoryLabelPattern.create(com.filmfoundry.workflow.FilmEdgeSettings.customLabel(templateText.text.toString()),templateBatch.text.toString().toInt()).encode() }
             .onSuccess { settings[active]=it;reload();templateText.error=null;templateBatch.error=null }
-            .onFailure { templateText.error=c("1–14位英文/数字/空格/连字符；批号0–4095","1–14 letters/digits/spaces/hyphens; batch 0–4095") }
+            .onFailure { templateText.error=c("1–14个英文字母或空格；批号0–4095","1–14 English letters or spaces; batch 0–4095") }
     }
     shell.note(panel,"条纹仅为批次装饰标记，不是DX或可扫描条码。格号在图案之外自动保留。","Bars are decorative batch marks, not DX or scanner barcodes. Frame numbering remains outside the stencil.")
     shell.field(panel,code,c("图案编码","Stencil code"),c("粘贴后点导入。编码只保存方格，不是可读条码标准。","Paste and tap Import. This code stores cells, not a barcode standard."))

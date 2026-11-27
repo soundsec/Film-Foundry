@@ -31,7 +31,7 @@ def workflow_result_record(source,result,*,output_path=None):
 def scan_record(record, config, *, control=None, output=None):
     if control:control.check_cancel()
     medium=Path(record['medium'])
-    result=run_request(WorkflowRequest('scan',medium,medium.parent,config,control=control))
+    result=run_request(WorkflowRequest('scan',medium,medium.parent,config,control=control.before_export() if control else None))
     suffix='.'+config.output.format.lower().lstrip('.')
     destination=medium.parent if output is None else Path(output)
     target=destination/('scan-'+str(uuid4())[:8]+suffix)
@@ -39,12 +39,13 @@ def scan_record(record, config, *, control=None, output=None):
     from film_foundry.core.sidecar import final_positive_sidecar
     sidecar=final_positive_sidecar(negative_path=medium,scan_source=result.source_kind,scan_source_path=result.source_path or medium,
         output_path=target,config=config,scanned=result.extra['scanned']) if config.save_sidecar else None
-    if control:control.check_cancel()
+    if control:control.report('scan', 'saving')
     save_image_bundle(result.extra['scanned'].output_srgb,target,config.output,sidecar,protected_paths=(medium,))
     record.setdefault('artifacts',{})['scan:'+target.stem]=str(target)
     record['cover']=str(target)
     if sidecar:record['artifacts']['scan_metadata:'+target.stem]=str(target.with_suffix(target.suffix+'.json'))
     atomic_write_json(medium.parent/'result.json',record)
+    if control:control.output_saved('scan')
     return record
 
 
@@ -71,22 +72,24 @@ def exposure_offsets(value):
     return {key: ev for key, ev in result.items() if ev}
 
 
-def apply_frame_settings(config, index, exposure_offset):
+def apply_frame_settings(config, index, exposure_offset, actual_index=None):
     """Set exposure and frame numbering on a recipe owned by the current job."""
-    if config.film_border.frame_number is not None:
-        config.film_border.frame_number += index - 1
+    from film_foundry.app.frame_batch import numbered_border
+    config.film_border = numbered_border(config.film_border, index if actual_index is None else actual_index,
+                                         actual_slot=actual_index is not None)
     config.exposure_ev += exposure_offset
 
 
 def numbered_photo_config(config,index,exposure_offset=0.):
-    if config.film_border.frame_number is None and not exposure_offset:
+    from film_foundry.app.frame_batch import needs_strip_index
+    if config.film_border.frame_number is None and not needs_strip_index(config.film_border) and not exposure_offset:
         return config
     result = deepcopy(config)
     apply_frame_settings(result,index,exposure_offset)
     return result
 
 
-def process_photos(paths, output, config, *, control=None, on_result=None,scaled_override=False,on_run=None,path_seed_offsets=None,command="full",frame_exposure_offsets=None):
+def process_photos(paths, output, config, *, control=None, on_result=None,scaled_override=False,on_run=None,path_seed_offsets=None,command="full",frame_exposure_offsets=None,frame_identity=None):
     """No selection limit; one full-resolution image is resident at a time."""
     if command not in {"full","develop","expose","scan"}:raise ValueError("Photo jobs require an image-source workflow")
     paths=list(dict.fromkeys(str(Path(p).resolve()) for p in paths))
@@ -94,6 +97,12 @@ def process_photos(paths, output, config, *, control=None, on_result=None,scaled
     path_seed_offsets=normalize_offsets(path_seed_offsets)
     offsets=exposure_offsets(frame_exposure_offsets) if command != "scan" else {}
     config=deepcopy(config)
+    from film_foundry.app.frame_batch import frame_identity_for_item
+    identities={"frame_identity":frame_identity} if command!="scan" else {}
+    first=frame_identity_for_item(identities,0,len(paths))
+    if paths and command!="scan":
+        from film_foundry.app.incident_batch import prepare_incident_config
+        config=prepare_incident_config(config,roll_id=(first or {}).get("roll_id"),source=paths[0])
     from film_foundry.app.workflow import create_run_directory
     root,run_id=create_run_directory(Path(output),command)
     if on_run:on_run(root)
@@ -104,6 +113,7 @@ def process_photos(paths, output, config, *, control=None, on_result=None,scaled
     payload['run']={'id':run_id,'directory':str(root),'actual_output':str(root),'status':'running','inputs':paths,'selection_layout':'numbered'}
     payload['ui_options']={'run_as_preview':scaled_override}
     payload['path_seed_offsets']=path_seed_offsets
+    payload.update(identities)
     payload['frame_exposure_offsets']={p:offsets[p] for p in paths if p in offsets}
     from film_foundry.app.workflow import planned_developed_path
     from film_foundry.core.media import developed_medium_contract
@@ -122,15 +132,18 @@ def process_photos(paths, output, config, *, control=None, on_result=None,scaled
         try:
             if control:control.check_cancel()
             item_config=numbered_photo_config(config,index,offsets.get(str(path),0.)) if command!='scan' else config
-            result=run_request(WorkflowRequest(command,path,target,item_config,control=control,scaled_override=scaled_override,
+            render_control = control.before_export() if command == 'scan' and control else control
+            result=run_request(WorkflowRequest(command,path,target,item_config,control=render_control,scaled_override=scaled_override,
+                frame_identity=frame_identity_for_item(payload,index-1,len(paths)),
                 path_seed_offset=offset_for(path,path_seed_offsets)))
             if command=='scan':
                 from film_foundry.core.io_utils import save_image_bundle
                 from film_foundry.core.sidecar import final_positive_sidecar
                 sidecar=final_positive_sidecar(negative_path=path,scan_source=result.source_kind,scan_source_path=path,
                     output_path=target,config=config,scanned=result.extra['scanned']) if config.save_sidecar else None
-                if control:control.check_cancel()
+                if control:control.report('scan','saving')
                 save_image_bundle(result.extra['scanned'].output_srgb,target,config.output,sidecar,protected_paths=(path,))
+                if control:control.output_saved('scan')
                 result=replace(result,output_path=target)
             if command=='full':
                 record={'key':'photo:'+str(path.resolve()),'source':str(path.resolve()),'label':path.name,

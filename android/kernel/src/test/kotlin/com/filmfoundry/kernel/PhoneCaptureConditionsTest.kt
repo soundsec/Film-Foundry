@@ -51,9 +51,41 @@ class PhoneCaptureConditionsTest {
             assertTrue(lit.all { if(y==0.0) it/3/w<h/2 else it/3/w>h/2 })
             assertTrue(lit.all { if(x==0.0) it/3%w<w/2 else it/3%w>w/2 })
         }
-        for(bad in listOf(Double.NaN,-.1,2.1)) assertThrows(IllegalArgumentException::class.java) { render(mapOf("imprint_brightness" to bad)) }
+        for(bad in listOf(Double.NaN,-.1,4.1)) assertThrows(IllegalArgumentException::class.java) { render(mapOf("imprint_brightness" to bad)) }
         assertThrows(IllegalArgumentException::class.java) { render(mapOf("imprint_x" to 1.1)) }
     }
+    @Test fun openSevenSegmentHasDarkJunctionsAfterRowAssembly() {
+        val w=840;val h=420
+        val settings=mapOf("model" to PhoneCaptureConditions.MODEL,"camera" to mapOf("imprint" to "8",
+            "imprint_font" to "seven_segment_open","imprint_style" to "optical_amber","imprint_y" to 0.0,"imprint_brightness" to 2.38))
+        val conditions=PhoneCaptureConditions(w,h,settings)
+        val full=FloatArray(w*h*3);conditions.apply(full,0,h)
+        val checked=FloatArray(w*h*3)
+        for(y in 0 until h step 5) {
+            val n=minOf(5,h-y);val part=FloatArray(n*w*3)
+            conditions.apply(part,y,n);part.copyInto(checked,y*w*3)
+        }
+        assertArrayEquals(full,checked)
+        val stamp=DateSegmentPlate.stamp('8',51,75)
+        assertEquals(16,stamp[5*51+25].toInt());assertEquals(0,stamp[9*51+9].toInt())
+        assertTrue(full.any { it>0f })
+    }
+
+    @Test fun narrowJointsBringDateSegmentsCloserAtTheSameExposure() {
+        val wide=DateSegmentPlate.stamp('8',51,75)
+        val narrow=DateSegmentPlate.stamp('8',51,75,narrow=true)
+        assertTrue(narrow.sum()>wide.sum())
+        // Top-right diagonal seam, flanked by the horizontal and vertical emitters.
+        assertEquals(0,narrow[5*51+45].toInt())
+        assertEquals(16,narrow[4*51+42].toInt())
+        assertEquals(16,narrow[8*51+46].toInt())
+        val camera=mapOf("imprint_font" to "seven_segment_narrow","imprint" to "08","imprint_style" to "optical_amber")
+        val condition=PhoneCaptureConditions(420,240,mapOf("model" to PhoneCaptureConditions.MODEL,"camera" to camera))
+        val output=FloatArray(420*240*3)
+        condition.apply(output,0,240)
+        assertTrue(output.any { it>0f })
+    }
+
     @Test fun combinedLeaksAddExposureAndKeepTheirOwnIdentityAcrossPartitions() {
         val w=160;val h=108
         val left=mapOf("shape" to "edge","side" to "left","strength" to .7)

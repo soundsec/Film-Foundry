@@ -30,7 +30,10 @@ def main() -> int:
     parser.add_argument("--viewer-ui", action="store_true", help="Only synthetic viewer transition/cache and safe-area checks")
     parser.add_argument("--spectral", action="store_true", help="Use matching 31-wavelength material/observer integration (requires --focused)")
     parser.add_argument("--capture-ui", action="store_true", help="Synthetic landscape imprint controls; never opens a camera")
+    parser.add_argument("--scan-ui", action="store_true", help="Scan drawer, tool gestures, accessibility actions and comparison memory")
     opts = parser.parse_args()
+    if opts.scan_ui and any((opts.capture_ui, opts.viewer_ui, opts.full, opts.focused, opts.gpu, opts.gpu_probe, opts.spectral, opts.hardware_self_test, opts.capture_ingest)):
+        parser.error("--scan-ui runs the isolated scan controls only")
     if opts.capture_ui and any((opts.viewer_ui, opts.full, opts.focused, opts.gpu, opts.gpu_probe, opts.spectral, opts.hardware_self_test, opts.capture_ingest)):
         parser.error("--capture-ui is a separate diagnostic profile")
     if opts.viewer_ui and any((opts.full, opts.focused, opts.gpu, opts.gpu_probe, opts.spectral, opts.hardware_self_test, opts.capture_ingest)):
@@ -90,7 +93,7 @@ def main() -> int:
         if "Success" not in result: raise RuntimeError(result)
     metadata = json.loads((app.parent/"output-metadata.json").read_text(encoding="utf-8"))
     (out/"apk-metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-    profile = "capture_ui" if opts.capture_ui else "viewer_ui" if opts.viewer_ui else "capture_ingest" if opts.capture_ingest else "hardware_self_test" if opts.hardware_self_test else "gpu_probe" if opts.gpu_probe else "full" if opts.full else "quick"
+    profile = "scan_ui" if opts.scan_ui else "capture_ui" if opts.capture_ui else "viewer_ui" if opts.viewer_ui else "capture_ingest" if opts.capture_ingest else "hardware_self_test" if opts.hardware_self_test else "gpu_probe" if opts.gpu_probe else "full" if opts.full else "quick"
     require_idle()
     # Some vendors freeze an instrumented app on an already sleeping display despite a wake lock.
     # Wake only (never unlock or change timeout/settings); the fixture keeps the display on.

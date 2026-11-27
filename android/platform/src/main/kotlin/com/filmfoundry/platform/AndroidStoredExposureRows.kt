@@ -8,6 +8,7 @@ interface StoredExposurePixels: AutoCloseable {
     val width: Int
     val height: Int
     fun encodedRows(start: Int,count: Int): FloatArray
+    fun decodedRawMetadata(): Map<String,Any?> = emptyMap()
     fun configureCapture(record: Map<String,Any?>)=Unit
     fun encodedWindowRows(left: Int,top: Int,windowWidth: Int,count: Int): FloatArray {
         require(left >= 0 && left+windowWidth <= width && top >= 0 && top+count <= height)

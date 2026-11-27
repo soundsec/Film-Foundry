@@ -4,10 +4,10 @@ package com.filmfoundry.kernel
 data class PhoneProcessInspection(val program: String,val colorMaterial: Boolean,val positive: Boolean,
     val components: List<String>,val variableImage: Boolean,val steps: List<Map<String,Any?>> = emptyList())
 
-fun inspectPhoneProcess(film: Map<String,Any?>,develop: Map<String,Any?>): PhoneProcessInspection {
+fun inspectPhoneProcess(film: Map<String,Any?>,develop: Map<String,Any?>,doseResponse: Boolean=false): PhoneProcessInspection {
     val color=film["color_process"]?.toString()?.lowercase() !in listOf("bw","black_white","monochrome")
     val positive=film["image_polarity"]?.toString()?.lowercase() in listOf("positive","slide","reversal")
-    val program=PhoneProcessProgram.from(develop,color,positive,film,true,true,true)!!
+    val program=PhoneProcessProgram.from(develop,color,positive,film,true,true,true,doseResponse)!!
     val absorption=Array(3) { y -> FloatArray(3) { x ->
         val declared=(film["dye_absorption_matrix"] as? List<*>)?.get(y) as? List<*>
         val base=(declared?.get(x) as? Number)?.toFloat() ?: PhoneReducedKernel.DEFAULT_ABSORPTION[y][x]

@@ -36,8 +36,46 @@ class PhoneLightweightFormationTest {
     private fun rows(a: LatentState,start: Int,count: Int)=LatentState(a.arrays.mapValues { (_,v)->
         FloatNd(intArrayOf(count,w,v.shape[2]),v.values.copyOfRange(start*w*v.shape[2],(start+count)*w*v.shape[2])) },a.metadata)
 
-    @Test fun lightweightSkipsPreparationReadsAndIsExactAcrossReverseBlocksAndArchive() {
+    @Test fun newLightweightGrainTracksStockStrengthAndRetainsTheMeanDensity() {
+        val source=RgbVolume(w,h,linearRgb=FloatArray(w*h*3){.18f})
+        fun densities(profile: String,strength: Double): FloatArray {
+            val r=mapOf("film" to mapOf("grain_strength" to strength),
+                "develop" to mapOf("program_key" to "color_negative"),
+                PhoneProcessModels.OPTION to PhoneProcessModels.CURRENT,PhoneFormationProfile.OPTION to profile)
+            return kernel.develop(kernel.expose(source,r),r).opticalDensityRgb.values
+        }
+        fun rms(profile: String,strength: Double): Double {
+            val baseline=densities(profile,0.0)
+            val d=densities(profile,strength)
+            val delta=DoubleArray(d.size){ (d[it]-baseline[it]).toDouble() }
+            val energy=sqrt(delta.sumOf { it*it }/delta.size)
+            assertTrue(abs(delta.average()) < energy*.05)
+            return energy
+        }
+        val normal=rms(PhoneFormationProfile.LIGHTWEIGHT,.025)
+        assertTrue(normal>0)
+        assertEquals(2*normal,rms(PhoneFormationProfile.LIGHTWEIGHT,.05),1e-6)
+        assertTrue(normal < rms(PhoneFormationProfile.MONO_LIGHTWEIGHT,.025)*.3)
+    }
+
+    @Test fun activeSpatialBathSurvivesLightweightFormationAndRowReplay() {
         val r=recipe(true)+(PhoneFormationProfile.OPTION to PhoneFormationProfile.LIGHTWEIGHT)
+        val latent=expose(r);val formed=kernel.develop(latent,r)
+        val process=formed.metadata["film_process_model"] as Map<*,*>
+        val spatial=process["spatial_development"] as Map<*,*>
+        for(k in listOf("adjacency","dir")) assertEquals(true,(spatial[k] as Map<*,*>)["enabled"])
+        val source=object : LatentRows {
+            override val width=w; override val height=h
+            override fun readRows(start: Int,count: Int)=rows(latent,start,count)
+        }
+        kernel.prepareDevelopment(r,rows(latent,0,1),h).bindSource(source).use { bound ->
+            val bottom=bound.developRows(h-7,7)
+            assertArrayEquals(formed.opticalDensityRgb.values.copyOfRange((h-7)*w*3,h*w*3),bottom.opticalDensityRgb.values,0f)
+        }
+    }
+
+    @Test fun lightweightSkipsPreparationReadsAndIsExactAcrossReverseBlocksAndArchive() {
+        val r=recipe(true)+(PhoneFormationProfile.OPTION to PhoneFormationProfile.STOCK_LIGHTWEIGHT)
         val latent=expose(r);val before=latent.arrays.mapValues { it.value.values.copyOf() }
         val whole=kernel.develop(latent,r);var reads=0
         val source=object: LatentRows {
@@ -56,7 +94,7 @@ class PhoneLightweightFormationTest {
         val codec=NpzMediumArchive();val saved=codec.readLatent(codec.writeLatent(LatentArchive(latent.arrays,latent.metadata)))
         val resumed=kernel.develop(LatentState(saved.arrays,saved.metadata),r+(PhoneFormationProfile.OPTION to PhoneFormationProfile.DETAILED))
         assertArrayEquals(whole.opticalDensityRgb.values,resumed.opticalDensityRgb.values,0f)
-        assertEquals(PhoneFormationProfile.LIGHTWEIGHT,resumed.metadata[PhoneFormationProfile.OPTION])
+        assertEquals(PhoneFormationProfile.STOCK_LIGHTWEIGHT,resumed.metadata[PhoneFormationProfile.OPTION])
         val process=whole.metadata["film_process_model"] as Map<*,*>
         assertNotNull(process["formation_budget"])
         assertEquals(false,(process["independent_silver_grain"] as Map<*,*>)["whole_frame_conservation"])
@@ -69,7 +107,7 @@ class PhoneLightweightFormationTest {
         assertArrayEquals(old.opticalDensityRgb.values,detailed.opticalDensityRgb.values,0f)
         val original=rows(latent,0,h);val reduced=rows(latent,0,h)
         kernel.develop(original,r,true)
-        val fast=r+(PhoneFormationProfile.OPTION to PhoneFormationProfile.LIGHTWEIGHT)
+        val fast=r+(PhoneFormationProfile.OPTION to PhoneFormationProfile.STOCK_LIGHTWEIGHT)
         val formed=kernel.develop(reduced,fast,true)
         original.arrays.forEach { (key,v)->assertArrayEquals(v.values,reduced.arrays.getValue(key).values,0f) }
         assertFalse(old.opticalDensityRgb.values.contentEquals(formed.opticalDensityRgb.values))

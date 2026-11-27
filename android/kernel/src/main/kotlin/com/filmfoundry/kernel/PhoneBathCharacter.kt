@@ -3,7 +3,7 @@ package com.filmfoundry.kernel
 import kotlin.math.*
 
 /** Prepared low-dimensional bath character, independent of desktop kinetics. No pixel arrays. */
-internal class PhoneBathCharacter(val values: Map<String,Any?>) {
+internal class PhoneBathCharacter(val values: Map<String,Any?>, doseResponse: Boolean = false) {
     fun n(key: String,fallback: Double=0.0)=(values[key] as? Number)?.toDouble() ?: fallback
     val requested=values["developer_type"]?.toString() ?: "standard"
     val developer=requested.takeIf { it in profiles } ?: "standard"
@@ -13,9 +13,19 @@ internal class PhoneBathCharacter(val values: Map<String,Any?>) {
     val agitation=n("agitation",1.0)*(n("agitation_time_s",n("time_min",8.0)*60)/(n("time_min",8.0)*60))
     val push=n("push_stops")
     val activity=profile[0]*(1-.7*exhaustion)*2.0.pow(push*.18)
-    val gamma=(profile[1]*(1+push*.08)).coerceIn(.35,2.2).toFloat()
+    // Effective minutes at standard bath conditions. All dose math runs once per bath.
+    private val minutes = if (doseResponse) n("time_min",8.0) * activity *
+        2.05.pow((n("temperature_c",20.0)-20)/10) * n("concentration",1.0).pow(.92) *
+        (.62+.38*agitation) else 8.0
+    val progressRatio = -expm1(-.16*minutes) / -expm1(-.16*8)
+    private val over = (min(minutes/8,12.0)-1).coerceAtLeast(0.0)
+    private val under = (1-minutes/8).coerceAtLeast(0.0)
+    private val contrastDose = (1+.34*(progressRatio-1))*(1+.10*over-.22*under)
+    val gamma=(profile[1]*(1+push*.08)*contrastDose).coerceIn(.35,2.2).toFloat()
+    val fogDose = .002*.16*minutes*(1+4*exhaustion+.10*max(n("temperature_c",20.0)-20,0.0)+
+        .5*max(n("concentration",1.0)-1,0.0)+.35*max(push,0.0))
     val compensation=(profile[5]+n("compensation")*.6).coerceIn(0.0,.9).toFloat()
-    val grain=(profile[2]*(1+.45*exhaustion+.16*max(push,0.0)+.012*max(n("temperature_c",20.0)-20,0.0))).toFloat()
+    val grain=((1+.32*over)*profile[2]*(1+.45*exhaustion+.16*max(push,0.0)+.012*max(n("temperature_c",20.0)-20,0.0))).toFloat()
     val radius=profile[3].toFloat()
     val clump=profile[4].toFloat()
     val fixing=(1-n("fixer_exhaustion")*(if(fixer=="rapid") .65 else .95))*(if(fixer=="monobath" || developer=="monobath") .76 else if(fixer=="hardening") .9 else 1.0)

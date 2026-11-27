@@ -73,6 +73,8 @@ class PreviewSession:
             return self._latent.copy()
 
     def _develop(self,path,config,path_seed_offset):
+        from film_foundry.core.incident_identity import bind_incident_frame
+        config=bind_incident_frame(config,path=path,source_offset=path_seed_offset)
         return develop_negative(self._image,config,input_encoding=self._encoding,
             rng=rng_for_develop(path,config,path_seed_offset=path_seed_offset))
 
@@ -118,15 +120,15 @@ class PreviewSession:
                 probe.medium(self._medium)
                 probe.expected_pixels = self._image.shape[0]*self._image.shape[1]
             return self._rendered[0].copy(), self._rendered[1].copy(), True
-        values = asdict(config)
+        values = rendered_key[1].copy()
+        values["look"] = values["look"].copy()
         values['path_seed_offset'] = path_seed_offset
         # Only the established observation bank is excluded. Unknown/new
         # formation fields automatically invalidate the cache.
-        for key in ("scanner", "output", "debug_output", "save_sidecar", "comparison_grid"):
+        for key in ("scanner", "enable_subtractive", "output", "debug_output", "save_sidecar", "comparison_grid"):
             values.pop(key)
         for key in ("print_contrast", "print_exposure_ev"):
             values["look"].pop(key)
-        reusable = config.seed_strategy in {"fixed", "path"}
         hit = reusable and values == self._formation_key and self._medium is not None
         if probe is not None and self._profile is None:
             hit = False

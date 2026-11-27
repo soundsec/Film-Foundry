@@ -17,6 +17,7 @@ FAMILY='photographic_paper_v1'
 
 @dataclass(frozen=True)
 class PaperMaterial(support.PaperSupportMaterial):
+    preflash_dose: float = field(default=0., kw_only=True)
     paper_base: str=field(default='rc',kw_only=True)
     surface_gloss: float=field(default=.35,kw_only=True)
     kind: str='variable_contrast'
@@ -34,6 +35,7 @@ class PaperMaterial(support.PaperSupportMaterial):
 
     def __post_init__(self):
         super().__post_init__()
+        s.number(self.preflash_dose, 'preflash_dose', 0, 2)
         if self.kind not in ('graded','variable_contrast','direct_positive','color'):raise ValueError('Unknown paper emulsion')
         for key in ('half_exposure','maximum_density'):s.number(getattr(self,key),key,.001,20)
         s.number(self.response_contrast,'contrast',.2,8);s.number(self.paper_reflectance,'paper_reflectance',.01,1)
@@ -52,7 +54,8 @@ def expose(image,material=PaperMaterial(),*,group_id,seed=0,schema_version=2):
     cover,paper=(scaled.paper_structure((h,w),seed,material) if schema_version>=2 and ms.enabled(material) else
                  s.coating((h,w),seed,material.coating_variation,material.edge_loss,material.texture))
     pools=np.repeat(cover[...,None],3,axis=2)
-    return PaperState(group_id,seed,material,'exposed',0.,{'dose':image.copy(),'halide':pools,
+    dose = image + material.preflash_dose if material.preflash_dose else image.copy()
+    return PaperState(group_id,seed,material,'exposed',0.,{'dose':dose,'halide':pools,
         'silver':np.zeros_like(pools),'removed_silver':np.zeros_like(pools),'dye':np.zeros_like(pools),
         'coating':cover,'paper':paper*material.paper_reflectance,'residue':np.zeros_like(pools),
         **(support.initial_fields((h,w),material) if schema_version==2 else {})},schema_version=schema_version)

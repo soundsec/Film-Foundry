@@ -16,6 +16,9 @@ def advance_stencil(number,style,direction,height,max_width):
         points=np.array([(10,8),(55,32),(10,56)],np.int32)
         if style=='triangle':cv2.fillConvexPoly(symbol,points,255,cv2.LINE_AA)
         else:cv2.polylines(symbol,[points],True,255,4,cv2.LINE_AA)
+    elif style=='outline_pentagon':
+        points=np.array([(6,12),(34,12),(57,32),(34,52),(6,52)],np.int32)
+        cv2.polylines(symbol,[points],True,255,5,cv2.LINE_AA)
     if direction=='left':symbol=symbol[:,::-1].copy()
     parts=[]
     if number is not None:parts.append(render_display_text(str(number),'dot_matrix',h,640))

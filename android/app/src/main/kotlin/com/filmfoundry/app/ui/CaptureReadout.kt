@@ -17,6 +17,7 @@ class CaptureReadout(private val shell: MobileShell): LinearLayout(shell.root.co
         }
         for((key,label) in listOf("iso" to "ISO","ev" to "EV","shutter" to shell.copy("快门","SPEED"),"wb" to "WB","lock" to shell.copy("AE 锁","AE LOCK"),"frame" to shell.copy("进度","FRAME"),"multi" to shell.copy("多曝","MULTI"),"print" to shell.copy("打印","PRINT"))) {
             val cell=LinearLayout(context).apply { orientation=VERTICAL;gravity=android.view.Gravity.CENTER;setPadding(shell.dp(4),0,shell.dp(4),0) }
+            cell.tag="finder_readout_$key"
             cells[key]=cell
             cell.background=android.graphics.drawable.StateListDrawable().apply {
                 addState(intArrayOf(android.R.attr.state_selected),GradientDrawable().apply { setColor(0xFF384231.toInt());cornerRadius=shell.dp(8).toFloat() })

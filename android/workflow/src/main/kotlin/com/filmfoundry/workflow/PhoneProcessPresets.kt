@@ -1,5 +1,7 @@
 package com.filmfoundry.workflow
 
+import com.filmfoundry.interchange.PhoneFormationProfile
+
 /** Named creative routes; source material/base stays owned by the exposure roll. */
 data class PhoneProcessPreset(val id: String,val labelZh: String,val labelEn: String,val recipe: Map<String,Any?>)
 
@@ -26,4 +28,18 @@ object PhoneProcessPresets {
     )
     private val compatibility=setOf("phone_native_4","phone_native_12","phone_cross_8","phone_negative_reversal","phone_bw_negative_reversal","phone_slide_negative")
     fun visible(selected: String?=null)=entries.filter { it.id !in compatibility || it.id==selected }
+
+    data class RollRoutes(val matchingStandardId: String? = null, val noImageIds: Set<String> = emptySet())
+
+    fun routesForRoll(film: Map<String,Any?>, formationProfile: Any?): RollRoutes {
+        if (film.isEmpty() || !PhoneFormationProfile.hasBathDose(formationProfile)) return RollRoutes()
+        fun inspect(preset: PhoneProcessPreset) =
+            runCatching { RecipeDrafts.inspectProcess(film, preset.recipe, formationProfile) }.getOrNull()
+        val automatic = entries.first { it.id == "phone_native_8" }
+        val native = inspect(automatic) ?: return RollRoutes()
+        val noImage = if (native.colorMaterial) emptySet() else entries.filter {
+            it.recipe["program_key"] !in listOf(null, "auto") && inspect(it)?.variableImage == false
+        }.map { it.id }.toSet()
+        return RollRoutes("phone_${native.program}", noImage)
+    }
 }

@@ -7,9 +7,9 @@ import kotlin.math.*
 /** Pointwise ordered material-pool operators. Not a scanner look or desktop numerical port. */
 internal class PhoneProcessProgram private constructor(val key: String,val steps: List<Map<String,Any?>>,private val recipe: Map<String,Any?>,
     private val material: Map<String,Any?>,private val interactive: Boolean,private val mismatch: Boolean,
-    private val activationLedger: Boolean,private val spatialModel: Boolean) {
+    private val activationLedger: Boolean,private val spatialModel: Boolean,private val doseResponse: Boolean) {
     val model=if(spatialModel) PhoneProcessModels.CURRENT else if(activationLedger) PhoneProcessModels.LEDGER else if(interactive) PhoneProcessModels.PREVIOUS else MODEL
-    private val baths=steps.map { PhoneBathCharacter(recipe+it) }
+    private val baths=steps.map { PhoneBathCharacter(recipe+it,doseResponse) }
     private fun stock(key: String,default: Float=1f)=(material[key] as? Number)?.toFloat() ?: default
     private val firstDevelopment=steps.indexOfFirst { it["action"] in listOf("develop_silver","develop_color") }
     private val firstColor=steps.indexOfFirst { it["action"]=="develop_color" }
@@ -18,6 +18,7 @@ internal class PhoneProcessProgram private constructor(val key: String,val steps
     val hasColor get()=firstColor>=0
     val reversal get()=steps.any { it["action"]=="activate_remaining_halide" && ((it["strength"] as? Number)?.toDouble() ?: 1.0)>0 }
     private val balance=(material["cross_process_layer_balance"] as? List<*>)?.map { (it as Number).toFloat() }?.toFloatArray() ?: floatArrayOf(1f,1f,1f)
+    private val stockDevelopment=stock("cross_process_silver_development")
     private val dyeCoupling=if(interactive && mismatch) stock("cross_process_dye_coupling") else 1f
     private val localDyeDamage=FloatArray(steps.size) { (steps[it]["dye_damage_strength"] as? Number)?.toFloat() ?: 0f }
     /** Response probes classify the image carrier, not the stock's original color family. */
@@ -40,12 +41,13 @@ internal class PhoneProcessProgram private constructor(val key: String,val steps
         }
         return false
     }
-    fun positiveFor(color: Boolean,absorption: Array<FloatArray>,retained: FloatArray): Boolean {
+    fun positiveFor(color: Boolean,absorption: Array<FloatArray>,retained: FloatArray,
+                    silverScale: Float=PhoneReducedKernel.SILVER_DENSITY,saltScale: Float=.12f): Boolean {
         fun density(activation: Float): Float {
             var sum=0f;val layers=if(color) 3 else 1
             for(layer in 0 until layers) {
                 val p=Pools(1f,activation,0f,1f,0f,0f);apply(p,color,1f,layer)
-                sum+=p.silver*.85f/layers+(p.halide+p.bleached)*.12f*retained.average().toFloat()/layers
+                sum+=p.silver*silverScale/layers+(p.halide+p.bleached)*saltScale*retained.average().toFloat()/layers
                 if(color) for(c in 0..2) sum+=absorption[c][layer]*p.dye/3
             }
             return sum
@@ -60,9 +62,18 @@ internal class PhoneProcessProgram private constructor(val key: String,val steps
         val action=step["action"] as String
         val exposureDevelopment=action in listOf("develop_silver","develop_color")
         // Clearing is normalized to the standard bath; shorter/cooler/quieter baths can be incomplete.
-        val bath=PhoneBathCharacter(conditions)
-        val basic=completion(conditions)
-        val progress=if(interactive && exposureDevelopment) ((1-(1-basic).toDouble().pow(bath.activity))/completion(emptyMap())).toFloat().coerceAtMost(1f) else basic
+        val bath=baths[i]
+        val progress=if(doseResponse) {
+            // The template's development clock belongs to its developers. Short development
+            // does not implicitly shorten bleach, fixing or reversal activation. Custom baths
+            // each receive their own conditions and normalized completion.
+            if(exposureDevelopment || key=="custom" && step["label"] !in listOf("explicit_dye_damage","material_process_dye_loss"))
+                bath.progressRatio.coerceAtMost(1.0).toFloat() else 1f
+        } else {
+            val basic=completion(conditions)
+            if(interactive && exposureDevelopment) ((1-(1-basic).toDouble().pow(bath.activity))/completion(emptyMap())).toFloat().coerceAtMost(1f)
+            else if(exposureDevelopment) basic else (basic/completion(emptyMap())).coerceAtMost(1f)
+        }
         val stockFactor=if(!interactive || !mismatch) 1f else stock(when(action) {
             "develop_silver","develop_color"->"cross_process_silver_development";"activate_remaining_halide"->"cross_process_activation"
             "bleach_silver"->"cross_process_silver_bleach";"fix_halide"->"cross_process_halide_fixing";"remove_silver"->"cross_process_silver_removal"
@@ -72,13 +83,25 @@ internal class PhoneProcessProgram private constructor(val key: String,val steps
             "fix_halide"->bath.fixing.toFloat();"bleach_silver"->(1-bath.n("silver_retention")).toFloat()
             "bleach_mask_dye"->stock("experimental_mask_bleach_susceptibility");else->1f
         }
-        (strength*stockFactor*conditionFactor*(if(exposureDevelopment) progress else (progress/completion(emptyMap())).coerceAtMost(1f))).coerceIn(0f,1f)
+        (strength*stockFactor*conditionFactor*progress).coerceIn(0f,1f)
     }
     // Immutable bath coefficients: no map lookups or boxed fractions in the pixel loop.
     private val fog=FloatArray(steps.size) { baths[it].fog }
-    private val gamma=FloatArray(steps.size) { baths[it].gamma }
+    // In a standard reversal sequence the second developer converts the reactivated remainder.
+    private fun selective(i: Int) = !doseResponse || key == "custom" || i == firstDevelopment
+    private val fogSusceptibility = if(doseResponse && "chemical_fog_susceptibility" in material) {
+        val value=material["chemical_fog_susceptibility"]
+        require(value is Number && value.toDouble() in 0.0..10.0) { "chemical_fog_susceptibility must be between 0 and 10" }
+        value.toDouble()
+    } else 1.0
+    private val fogDose=FloatArray(steps.size) { i ->
+        if (doseResponse && actions[i]<=1) (baths[i].fogDose * fogSusceptibility *
+            ((steps[i]["strength"] as? Number)?.toDouble() ?: 1.0)).toFloat() else 0f
+    }
+    private val unitFog=FloatArray(steps.size) { -expm1(-fogDose[it].toDouble()).toFloat() }
+    private val gamma=FloatArray(steps.size) { if (selective(it)) baths[it].gamma else 1f }
     private val gammaExponent=FloatArray(steps.size) { gamma[it]-1f }
-    private val compensation=FloatArray(steps.size) { baths[it].compensation }
+    private val compensation=FloatArray(steps.size) { if (selective(it)) baths[it].compensation else 0f }
     private val maskDyeDamage=stock("experimental_mask_bleach_dye_damage",.16f)
     val maskRemaining=steps.indices.filter { steps[it]["action"]=="bleach_mask_dye" }.fold(1f) { n,i->n*(1-fractions[i]) }
     val auxiliaryRemaining=steps.indices.filter { steps[it]["action"]=="remove_auxiliary" }.fold(1f) { n,i->n*(1-fractions[i]) }
@@ -95,11 +118,13 @@ internal class PhoneProcessProgram private constructor(val key: String,val steps
         values[2]=if(activationLedger) 1f else 0f;values[3]=if(mismatch) 1f else 0f
         values[4]=firstDevelopment.toFloat();values[5]=dyeCoupling;values[6]=maskDyeDamage
         values[7]=if(color) 1f else 0f
+        values[11]=if(doseResponse) 1f else 0f
+        values[12]=stockDevelopment
         for(l in 0..2) values[8+l]=balance[l]
         for(i in steps.indices) {
             val k=16+i*8;values[k]=actions[i].toFloat();values[k+1]=fractions[i]
             values[k+2]=fog[i];values[k+3]=gamma[i];values[k+4]=gammaExponent[i]
-            values[k+5]=compensation[i];values[k+6]=localDyeDamage[i]
+            values[k+5]=compensation[i];values[k+6]=localDyeDamage[i];values[k+7]=fogDose[i]
         }
         return FilmDevelopmentPlan(this,color,values)
     }
@@ -117,18 +142,29 @@ internal class PhoneProcessProgram private constructor(val key: String,val steps
                     if(interactive) {
                         if(activationLedger) {
                             // Chemical fog explicitly activates previously inactive halide.
-                            a=(a+fog[i]*f*(1-a)).coerceIn(0f,1f)
+                            if (!doseResponse) a=(a+fog[i]*f*(1-a)).coerceIn(0f,1f)
                             // Contrast changes conversion kinetics, never the reactive inventory.
                             val exponent=gammaExponent[i]
-                            if(exponent!=0f) rate*=a.coerceAtLeast(1e-6f).pow(exponent)
+                            if(exponent!=0f) rate*=(a.coerceAtLeast(1e-6f)*(if(doseResponse) 2f else 1f)).pow(exponent)
                         } else if(i==firstDevelopment) a=(a+fog[i]*(1-a)).coerceIn(0f,1f).pow(gamma[i])
-                        rate=(rate*(1-compensation[i]*a)*(if(mismatch) balance[layer.coerceAtMost(2)] else 1f)).coerceIn(0f,1f)
+                        val highlight = if (doseResponse && compensation[i]>0f) {
+                            val t=((a-.35f)/.65f).coerceIn(0f,1f)
+                            .65f*t*t*(3f-2f*t)
+                        } else a
+                        rate=(rate*(1-compensation[i]*highlight)*(if(mismatch) balance[layer.coerceAtMost(2)] else 1f)).coerceIn(0f,1f)
                     }
                     val reactive=p.halide*a
-                    val n=reactive*rate;p.halide=max(0f,p.halide-n);p.silver+=n
+                    val signal=reactive*rate
+                    val n=if(doseResponse && fogDose[i]>0f) {
+                        val contact=localRate*(if(i==firstDevelopment) firstRate else 1f)*(if(i==firstColor) colorRate else 1f)*
+                            (if(mismatch) balance[layer.coerceAtMost(2)]*stockDevelopment else 1f)
+                        val fraction=if(contact==1f) unitFog[i] else -expm1((-fogDose[i]*contact).toDouble()).toFloat()
+                        signal+(p.halide-reactive)*fraction
+                    } else signal
+                    p.halide=max(0f,p.halide-n);p.silver+=n
                     if(i==firstDevelopment) projection?.firstSilver=n
                     if(activationLedger) {
-                        val remaining=max(0f,reactive-n)
+                        val remaining=max(0f,reactive-signal)
                         p.activation=if(p.halide>1e-8f) (remaining/p.halide).coerceIn(0f,1f) else 0f
                     }
                     if(action==1 && hasDye) { val c=min(p.coupler,n*dyeCoupling);p.coupler=max(0f,p.coupler-c);p.dye+=c }
@@ -147,9 +183,11 @@ internal class PhoneProcessProgram private constructor(val key: String,val steps
             }
         }
     }
-    fun record()=mapOf("model" to model,"program_key" to key,"process_steps" to steps,"effective_fractions" to fractions.toList(),
+    fun record()=mapOf("auxiliary_remaining" to auxiliaryRemaining,"model" to model,"program_key" to key,"process_steps" to steps,"effective_fractions" to fractions.toList(),
         "conditions" to recipe.filterKeys { it in listOf("time_min","temperature_c","concentration","agitation","agitation_time_s") },"agitation_time_unit" to "total_seconds_per_bath") +
-        (if(interactive) mapOf("material_mismatch" to mismatch,"material_layer_balance" to balance.toList(),"bath_character" to baths.map { it.record() },"development_reference" to "standard_bath_normalized") else emptyMap()) +
+        (if(interactive) mapOf("material_mismatch" to mismatch,"material_layer_balance" to balance.toList(),"bath_character" to baths.map { if(doseResponse) it.record()-"fog_activation" else it.record() },"development_reference" to "standard_bath_normalized") else emptyMap()) +
+        (if(doseResponse) mapOf("bath_time_response" to "phone_bath_dose_v1", "fog_dose" to fogDose.toList(),
+            "effective_gamma" to gamma.toList(), "effective_compensation" to compensation.toList()) else emptyMap()) +
         (if(activationLedger) mapOf("activation_ledger" to "remaining_developable_halide_v1") else emptyMap())
     /** Conditions feed formation effects before row execution; explicit incident values take priority. */
     fun effectsRecipe(original: Map<String,Any?>): Map<String,Any?> {
@@ -176,8 +214,27 @@ internal class PhoneProcessProgram private constructor(val key: String,val steps
             val activity=2.05.pow((n("temperature_c",20.0)-20)/10)*n("concentration",1.0).pow(.92)*(.62+.38*agitation)
             return (1-exp(-minutes/8*activity)).toFloat().coerceIn(0f,1f)
         }
+        private fun template(key: String, conditions: Map<String,Any?>, doseResponse: Boolean): List<Map<String,Any?>> {
+            val steps=ProcessSteps.template(key)
+            if(!doseResponse) return steps
+            return steps.mapIndexed { index, step ->
+                val control=when(step["action"]) {
+                    "develop_silver","develop_color" -> if(key.endsWith("_reversal"))
+                        (if(index==0) "first_development_completion" else "second_development_completion") else null
+                    "activate_remaining_halide" -> "reversal_activation"
+                    "remove_silver" -> "first_silver_removal"
+                    "bleach_silver" -> "silver_bleach_completion"
+                    "fix_halide" -> "halide_fixing_completion"
+                    "remove_auxiliary" -> "auxiliary_removal"
+                    else -> null
+                }
+                val fraction=control?.let { conditions[it] } ?: return@mapIndexed step
+                require(fraction is Number && fraction.toDouble() in 0.0..1.0) { "Invalid $control completion" }
+                step+("strength" to fraction.toDouble())
+            }
+        }
         fun from(develop: Map<String,Any?>,color: Boolean,sourcePositive: Boolean,material: Map<String,Any?> = emptyMap(),interactive: Boolean=false,
-            activationLedger: Boolean=interactive,spatialModel: Boolean=false): PhoneProcessProgram? {
+            activationLedger: Boolean=interactive,spatialModel: Boolean=false,doseResponse: Boolean=false): PhoneProcessProgram? {
             if("program_key" !in develop && develop["process_steps"]==null && develop["mask_bleach_completion"]==null && !activationLedger) return null
             ProcessSteps.validate(develop)
             if(interactive) ProcessSteps.validateMaterial(material)
@@ -186,7 +243,7 @@ internal class PhoneProcessProgram private constructor(val key: String,val steps
                 val positive=if(interactive && develop["chemistry"]=="cross") !sourcePositive else sourcePositive || color && develop["chemistry"]=="cross"
                 if(color) { if(positive) "color_reversal" else "color_negative" } else if(positive) "bw_reversal" else "bw_negative"
             } else requested
-            val steps=(ProcessSteps.read(develop["process_steps"]) ?: ProcessSteps.template(key)).toMutableList()
+            val steps=(ProcessSteps.read(develop["process_steps"]) ?: template(key,develop,doseResponse && interactive && activationLedger)).toMutableList()
             (develop["mask_bleach_completion"] as? Number)?.toDouble()?.takeIf { it>0.0 }?.let { strength ->
                 steps.add(mapOf("action" to "bleach_mask_dye","strength" to strength,"label" to "additional_mask_bleach"))
             }
@@ -201,7 +258,7 @@ internal class PhoneProcessProgram private constructor(val key: String,val steps
                 if(mismatch) damage(1-((material["cross_process_dye_stability"] as? Number)?.toDouble() ?: 1.0),"material_process_dye_loss")
                 damage((develop["dye_damage_strength"] as? Number)?.toDouble() ?: 0.0,"explicit_dye_damage")
             }
-            return PhoneProcessProgram(key,steps,develop,material,interactive,mismatch,activationLedger,spatialModel)
+            return PhoneProcessProgram(key,steps,develop,material,interactive,mismatch,activationLedger,spatialModel,doseResponse && interactive && activationLedger)
         }
     }
 }

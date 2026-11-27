@@ -1,104 +1,63 @@
-# 开发中源码快照 / Development source snapshot
+# 开发中源码快照
 
-## 2026-11-19 · 手机扫描与第三方翻译 / Mobile scanning and translation
+[English](DEVELOPMENT_SNAPSHOT.en.md) · [更新记录](CHANGELOG.md) · [项目首页](../README.md)
 
-- **手机。** 扫描默认显示大图。点按或滑动底部调整栏可收放工具，长按照片可看初始预览。刻度尺支持横滑、上移精调和双击复位，曲线面板按可用高度安排操作行。外观页提供四套配色。[手机指南](MOBILE_GUIDE.md)
-- **翻译。** 默认构建提供中文和英语。移植者可以生成手机词条模板，复用桌面 v1 语言包中的相同词条，在调试 APK 中先试译一页。[Android 翻译与移植](../android/TRANSLATING.md)
-- **桌面。** 首次导览在确认参数后自动刷新小样；特性曲线可在工作台调参后手动刷新；材料探针在图像上标出固定读数的位置。[桌面指南](DESKTOP_GUIDE.md)
-
-This source snapshot keeps the Desktop 0.4.0 and Android 0.1.0 display versions. In the Android scanner, open the drawer for fine adjustments and hold the photo to compare with the initial preview. Community translations can be tested in a debug build. Desktop material probes now label pinned points on the image. [Mobile guide](MOBILE_GUIDE.en.md) · [Translation and porting](../android/TRANSLATING.md)
-
-## 2026-11-18 · 非正式源码快照
-
-首次使用可在安装根目录依赖后运行 `python run_film_foundry_launcher.py`，从图库打开「第一次暗房工作」，用随附示例照片完成一次曝光、冲洗和扫描。本次沿用桌面 0.4.0、Android 0.1.0 的显示版本，已有 EXE 和 APK 对应此前发行的代码。[桌面安装与启动](DESKTOP_GUIDE.md#start) · [Android 源码与编译](../android/README.md)
-
-- **比较配方。** 胶片试条可用曝光和冲洗时间等两轴生成矩阵，并排同步缩放，直接采用选中的一格。密度探针支持多点和可选孔径，特性曲线使用当前配方形成的灰阶。局部正式尺度预览按设定尺寸整幅计算后裁出选区，切到 100% 可检查单个像素和颗粒。
-- **保存和续作。** 自动保险默认单槽，可选 3 或 5 份并设置轮转间隔。异常退出后可从图库恢复，直接开始新工作则先归档旧记录。保险记录保存来源引用和参数，移动工作请使用工作包。七类实验材料可保存工序检查点，在有完整曝光与工序记录时可从先前步骤另开分支。
-- **调整与观看。** 可钉住常用控件、按张调整批次曝光、沿边拉直并裁切扫描。去片基可用材料参考或手动滴管。印相支持局部遮挡、加光与纸面预估。图库按可见范围请求缩略图，试条窗口共用图像转换，连续调整时预览可取消。桌面可自定义配色并导入界面语言包。[桌面指南](DESKTOP_GUIDE.md) · [翻译指南](TRANSLATING.md)
-- **手机源码。** 轻量胶片更新感光响应和预设。连续药浴可在设备自检通过且计入传输仍有收益时使用 GLES 3.1。设置内的实验单张相机可试拍七类材料，使用独立流程；已有胶卷继续使用冻结的形成版本。设备端速度仍待实测。[Android 功能与试拍入口](../android/README.md)
-
-### English summary
-
-Install the root requirements and run `python run_film_foundry_launcher.py` to try the gallery’s guided sample. Compare recipes in a two-axis test strip, pin density readings, or inspect grain at 100% in a full-scale crop. Recovery keeps source references and parameters. Use a workspace to move a job or branch from a saved material checkpoint. Android adds updated film responses and an experimental one-shot camera for seven materials. The desktop and Android version displays still read 0.4.0 and 0.1.0. This snapshot is distributed as source. [Desktop guide](DESKTOP_GUIDE.md) · [Android build instructions](../android/README.md)
+> 本页记录源码状态。本次快照的显示版本为桌面 0.4.0、Android 0.1.0。历史发行包的功能见更新记录。
 
 ---
 
-## 历史快照 · 2026-11-10 / Previous checkpoint
+## 2026-11-28 · 从分层材料到冲洗成片
 
-**2026-11-10 · 中间留档，未发布新安装包。** 本页描述 0.4.0 之后的源码工作，不改写历史版本的发布说明。项目内显示版本暂时仍为桌面 0.4.0、Android 0.1.0；此前下载的 EXE／APK 不包含这里全部新增内容。
+- **曝光。** 可以对比乳剂朝前与片基朝前，也可以给各层乳剂指定不同的感色曲线，观察夹层如何改变下游乳剂的受光。[桌面操作指南](DESKTOP_GUIDE.md#coatings)
+- **冲洗对照。** 重开逐层潜影，固定药浴和扫描后切换颗粒方式。效果页提供同一区域的放大对照。[实验材料样张](SHOWCASE.md#coatings)
+- **安装译本。** 桌面从项目根目录或程序旁的 languages 文件夹读取语言包；手机可以从下载目录导入同格式的 JSON。[桌面译本](TRANSLATING.md) · [手机译本](../android/TRANSLATING.md)
 
-**2026-11-10 · Source checkpoint, no new binary release.** These changes follow the 0.4.0 baseline. Display versions remain Desktop 0.4.0 and Android 0.1.0; previously distributed binaries do not contain all features listed here.
+## 2026-11-24 · 桌面 DNG 解码、批处理入口与新样张
 
-[当前桌面指南](DESKTOP_GUIDE.md) · [更新记录](CHANGELOG.md) · [构建入口](../packaging/README.md)
+- 桌面源码支持将相机 DNG 解码为 16 位线性曝光输入，并在工作台实时展示当前处理工序；支持通过 CLI 批量处理目录或在 Python / IDE 参数脚本中复现已有配方（见[命令行与脚本](DESKTOP_GUIDE.md#cli)）。
+- 效果页与命令示例统一改用项目自摄红果绿叶样图，直观对照全色/正色/蓝敏三种银盐胶片、六种镜前滤镜在彩负与反转片上的表现，以及即时片、版材与纸面印相（见[效果展示](SHOWCASE.md)）。
 
-### 从图库开始，在同一窗口工作
+---
 
-- 图库索引来源文件夹和单独导入的图片；不需要复制原文件。双击进入只读浏览，缩略图之后加载高清原图，可查看关联底片、扫描与附属材料，评级和收藏独立保存。
-- 选择一张或多张图像，再选择材料进入工作区。普通图像可完整处理、只曝光、只冲洗或只扫描；潜影、已冲洗介质按已有阶段继续。执行时选择输出位置，默认工作区下的 `outputs/日期/`。
-- 单侧布局适合小屏，双侧布局把材料／冲洗和扫描控制分开。完整工作区与预设编辑器同窗切换，必要的小配置使用弹窗；切换不清空当前草稿。
-- 预览可原图并列、拖动切分或仅结果；仅结果时按住鼠标查看原图。提供旋转、撤回／重做、直方图、影调与 RGB 曲线、分色 HSL、参数和分组恢复。
-- 全局设置管理工作区、图像来源、缓存、新工作默认值和离开工作区时的保存行为。工作存档与参数预设分开；尚无周期自动保存或崩溃恢复。
+## 2026-11-19 · 手机扫描交互与第三方翻译工具
 
-The gallery is the entry point. Select images to create work; double-click to browse without opening an editor. Workspaces and full editors share one window, while small configuration dialogs remain available. Output location is chosen when execution begins. Single- and dual-sidebar layouts, comparison views, rotation, undo/redo, curves and HSL support daily editing. Persistent automatic recovery is not yet implemented.
+- **手机端**：扫描页改为预览优先的大图布局，支持自由停靠的底部调整抽屉、长按预览对照、直接定位/长按精调滑钮与双击复位，并新增四套外观配色（见[手机指南](MOBILE_GUIDE.md)）。
+- **社区翻译**：Android 新增词条模板与打包脚本，支持复用桌面 v1 语言包并在调试 APK 中即时验证局部译本（见[Android 翻译与移植](../android/TRANSLATING.md)）。
+- **桌面端**：首次导览在确认参数后自动刷新示例；特性曲线窗口支持调参后手动重测；材料密度探针在画布上标出固定测点编号（见[桌面指南](DESKTOP_GUIDE.md)）。
 
-### 胶片：曝光、冲洗与扫描继续分开
+---
 
-普通、期望、原理三种控制方式共用胶片形成管线。期望模式将已支持的目标映射到材料与工艺条件；原理模式直接编辑药浴、时间、温度、搅拌与操作。效果可能耦合，界面提供关联影响说明，不承诺所有滑块只改变一种外观。
+## 2026-11-18 · 桌面暗房分析工具、自动保险与手机轻量更新
 
-现有扩展覆盖逐浴药水能力、条件灰雾、局部形成与颗粒响应、留银、接触不均、贴边滚浸液面与残留、污染／清洗／硬化、有限表面银与染料损伤，以及材料储存、潜影等待和冲洗后受光。它们是保留因果关系的降阶模型，不是任意化学配方求解或完整流体、逐晶粒仿真。
+首次从源码体验可安装根目录依赖后运行 `python run_film_foundry_launcher.py`，在图库打开「第一次暗房工作」体验完整流程。[桌面安装与启动](DESKTOP_GUIDE.md#start) · [Android 源码与编译](../android/README.md)
 
-电子胶卷可保留来源顺序、材料和曝光身份；未拍满封卷时补未曝光格。冲洗结果可以按条带查看、上灯台并反复扫描。分阶段冲洗档保存真实已执行状态，只允许调整尚未进入的受支持药浴；普通工作文件不等同于浴内检查点。
+- **比较与分析**：新增胶片二维试条矩阵（并排同步缩放与一键采用）、多点可选孔径密度探针、实测灰阶特性曲线，以及按正式工作尺寸整幅计算并 100% 物理像素检查颗粒的局部正式尺度预览。
+- **保存与续作**：新增每 5 秒检查的轻量自动保险（可选 1 / 3 / 5 槽及异常退出冻结归档，仅存参数与来源引用）；实验材料支持保存 `.ffworkspace` 工序检查点并从早期步骤另开分支。
+- **效率与定制**：支持按材料族钉选常用参数、批量逐片曝光 EV 偏移、扫描沿边拉直与片基滴管、印相遮挡/加光与 240 px 纸面预估；优化图库可见区缩略图加载与磁盘缓存；支持自定义配色与桌面社区语言包（见[桌面翻译指南](TRANSLATING.md)）。
+- **手机端**：更新轻量胶片感光响应与预设，轻量连续药浴支持经精度/耗时校验的 GLES 3.1 加速；设置页新增七类实验材料单张试拍入口（独立于胶卷库；旧卷保持冻结版本）。
 
-片边厂标、条码、片序、方向与画面打印分别配置。厂标通过同材料、同药浴的均匀参考响应形成并冻结到介质中；上卷偏移和局部位置可调整。规整双轨条纹借鉴真实片边结构，装饰数据不冒充注册 DX／KEYKODE；Code 128 自有编号另列。片边目前不包含完整空间事故和局部颗粒。
+---
 
-扫描只观察最终介质，不改写形成结果。自动成片按实际极性和片基选择反相／去罩，并校正亮度黑白位，不自动改用户色彩偏好。材料与配套扫描可以联动；既有配方不会仅因打开文件而自动升级。
+## 2026-11-10 · 历史快照：同窗工作台、选择性 FFC2 与七类实验材料
 
-Film exposure, processing and scanning remain separate. Normal, expected-effect and principle controls use the same film pipeline. Processes retain ordered baths, embedded solution capabilities and supported physical interactions. Scanning is read-only. Film-edge marks are formed and frozen with the medium, using a uniform reference response rather than full spatial simulation of the rebate.
+[当前桌面指南](DESKTOP_GUIDE.md) · [更新记录](CHANGELOG.md) · [构建与打包](../packaging/README.md)
 
-### 预设管理与 FFC2
+### 同窗工作台与图库起点
 
-入口：**材料与预设 → 预设管理**。按类型、来源和名称筛选，支持多选分享、编辑副本和移除用户项。
+- 从图库索引文件夹或导入照片，双击只读浏览，选图选材后进入同一窗口内的单/双侧工作台与完整编辑器（切换保留草稿）；正式执行时才确认输出目录。
+- 预览支持单图/并列/切分、按住看原图、旋转、撤回/重做、直方图、影调与 RGB 曲线及分色 HSL。
 
-| 类别 | 分享内容 | 接收后的用法 |
-| --- | --- | --- |
-| 材料 | 胶片材料定义 | 保存到材料库或应用于新曝光 |
-| 药水 | 独立反应能力、活性及适用的颗粒／灰雾响应 | 保存到药水库，在匹配处理类型的药浴中载入 |
-| 冲洗流程 | 步骤、逐浴条件、内嵌药水、操作与形成控制 | 保存或应用于允许重新冲洗的工作 |
-| 扫描 | 解释、影调、颜色和观察配置 | 保存或应用到当前扫描 |
-| 曝光与片边 | 曝光时间、厂标、齿孔与画面打印 | 用于后续新曝光，不能修改已有潜影 |
+### 胶片工艺扩展与选择性预设管理
 
-接收者逐项选择“保留”和“应用”。默认只保存；同名另存，不覆盖旧文件。流程自带药水，即使不把药水另存进库，仍能保留原流程。分享自动标准工艺时会固定发送时的程序。
+- 普通、按效果、按药浴三种控制方式共用同一形成管线，覆盖逐浴药水能力、局部形成与颗粒响应、留银、贴边滚浸液面、污染清洗、表面银/染料损伤及材料储存与时间历史。
+- 新增电子胶卷、分阶段冲洗检查点及随材料形成的片边厂标/画面打印。
+- **材料与预设 → 预设管理**支持材料、独立药水、冲洗流程、扫描与曝光/片边五类资源的筛选与选择性 `FFC2:` 合集分享；接收端逐项选择“保留”与“应用”，流程自带内嵌药水不依赖本地文件名（Android 与 CLI 继续兼容单配置旧版 FFC2 码）。
 
 ![同窗预设管理](images/desktop-dev-2026-11-10/preset-library.png)
 
 ![逐项选择保留与应用](images/desktop-dev-2026-11-10/preset-receive.png)
 
-旧 FFC2 配方码继续可读。新合集可包含同类多个预设，但需要支持合集的客户端；Android 与 CLI 尚未接合集选择，仍可使用旧兼容配方码。兼容编码不会补齐手机未实现的桌面工艺。FFC2 不带图像、输出路径或运行质量；外部漏光遮罩需要另行提供，含该依赖的流程不能直接生成便携参数码。本轮预设合集范围是胶片，其他七族未接此入口。
+### 七类实验材料、输入格式与硬件计算
 
-The preset library separates materials, solutions, processes, scanners and exposure/edge settings. Receivers independently choose what to keep and what to apply. Processes embed their solutions and do not depend on matching local filenames. Old recipe codes remain readable; new collections require updated consumers. Android and CLI do not yet select from collections. Legacy-compatible codes remain available, without extending mobile processing capabilities. External mask images are not embedded.
-
-### 七类实验材料
-
-一体式即显、撕拉片、达盖尔银版、相纸、湿版、蓝晒、铂钯已有各自的形成、观看与保存流程，可从同一主窗口进入。共享任务、保存、扫描输出等接口，不要求各族使用同一个内部反应程序。
-
-它们仍标为实验中，默认启用 1600 长边形成，可关闭尺寸限制。现阶段不套用胶片低／中／高和降阶开关。仅材料声明可用时，撕拉片供体才可清理为负像；不默认所有撕拉材料都会留下完整负片。已有介质可以作为受支持后续光学曝光的来源，起点和终点由用户选择。
-
-Integral instant, peel-apart, daguerreotype, photographic paper, wet plate, cyanotype and platinum/palladium are experimental. They retain family-specific processes, with shared workspace and delivery interfaces. Their default formation limit is 1600 pixels and can be disabled. A usable peel-apart negative depends on the declared donor material.
-
-### 输入、保存与性能
-
-- JPEG、PNG、TIFF 等普通图像继续支持；DNG 经 rawpy／LibRaw 解码，Ultra HDR JPEG 经真实增益图解码后进入共通管线。当前证据包含合成验证，不保证所有相机 DNG 或厂商 HDR 变体。
-- 中间介质仍使用标准 NPZ／NPY 和图像格式。按字段用途与胶片档位分配保存精度，权威光学和化学状态保留所需精度；可明确选择全高精度保存。保存量化不能恢复已经丢失的信息。
-- 缩放加速、减少机制的快速模式、处理质量三者分开；扫描沿共通观察逻辑。快速模式明确省略复杂形成机制，以效果完整度换速度。
-- 共用准备、重复遍历、线程调度、保存与编码已有优化。部分算子接 CUDA／OpenCL，失败回退 CPU；GPU 没有承包全部形成计算，OpenCL 跨设备覆盖仍待验证，Vulkan 未实现。
-- 24MP 非降阶中档仍是性能目标。历史耗时受图像、事故组合、后端及机器负载影响，本留档不提供新的速度承诺。
-
-Standard image formats remain supported, with DNG and Ultra HDR JPEG ingestion added to the common pipeline. Intermediates use standard formats. Scaling, reduced mechanisms and processing quality are separate controls. Shared computation and encoding have been optimized; selected GPU operators retain CPU fallbacks. This checkpoint makes no new timing or device-coverage claim.
-
-### 手机与验证边界
-
-Android 源码同时保留到本快照：轻量形成保留随明暗变化的颗粒和主要显影反应，简化细碎空间机制；新增中性自动扫描，并减少扫描暂存读写。旧卷与任务按其冻结版本处理。手机仍是独立降阶运行时，未搬入七类实验材料，也未接新版桌面 FFC2 合集。
-
-这些阶段已有定向数值、存读及界面检查。最近预设分享的 11 项检查包含两种控制模式的实际小图结果一致、逐浴依赖保留、选择合并、存盘再用和冻结阶段保护；截图使用隔离演示配置。中间留档没有重跑全量测试、重新测量 24MP 或构建 EXE／APK，不能据此宣称完整发行验收。
-
-Android source changes are included, but no new APK is built. It remains an independent reduced implementation; experimental families and desktop preset collections are not ported. Targeted checks exist for the included work; this checkpoint is not a full release qualification or a new performance benchmark.
+- 一体式即时片、撕拉片、达盖尔银版、相纸、湿版、蓝晒、铂钯以实验状态接入主窗口（默认形成长边 1600 px，可关闭），共享工作区、保存、观察与光学级联入口；撕拉片供体是否可清理为可用负片取决于材料声明。
+- 新增桌面 DNG（`rawpy` / LibRaw）与 Ultra HDR JPEG 增益图解码入口，并引入按字段分级保存精度（权威光学与化学库存保持 FP32，可选全高精度保留）以及部分算子的可选 CUDA / OpenCL 加速（保留 CPU 回退；Vulkan 未实现）。

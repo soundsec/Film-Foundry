@@ -36,7 +36,7 @@ internal class FactoryMarkExposure(width: Int,height: Int,private val rebate: In
         }
     }
     /** Interpolate both the footprint and formed material table; no stepped palette. */
-    fun writePixel(x: Int,outward: Int,top: Boolean,source: FloatArray,channels: Int,target: FloatArray,offset: Int) {
+    fun writePixel(x: Int,outward: Int,top: Boolean,source: FloatArray,channels: Int,target: FloatArray,offset: Int,tableStart: Int=0) {
         val field=fields[if(top) 0 else 1]
         val u=((x+.5f)*w/fullWidth-.5f).coerceIn(0f,(w-1).toFloat())
         val v=((outward+.5f)*h/rebate-.5f).coerceIn(0f,(h-1).toFloat())
@@ -56,8 +56,8 @@ internal class FactoryMarkExposure(width: Int,height: Int,private val rebate: In
         val a=(b0*levels+g0)*channels;val b=(b1*levels+g0)*channels
         val c=(b0*levels+g1)*channels;val d=(b1*levels+g1)*channels
         for(channel in 0 until channels) {
-            val low=source[a+channel]*(1-db)+source[b+channel]*db
-            val high=source[c+channel]*(1-db)+source[d+channel]*db
+            val low=source[tableStart+a+channel]*(1-db)+source[tableStart+b+channel]*db
+            val high=source[tableStart+c+channel]*(1-db)+source[tableStart+d+channel]*db
             target[offset+channel]=low*(1-dg)+high*dg
         }
     }

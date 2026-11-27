@@ -11,9 +11,15 @@ import shutil
 
 
 PUBLIC_DOCS = (
-    "README.md", "DESKTOP_GUIDE.md", "REFERENCE.md", "SHOWCASE.md", "CHANGELOG.md",
-    "MOBILE_GUIDE.md", "MOBILE_GUIDE.en.md", "MOBILE_SHOWCASE.md", "MOBILE_SHOWCASE.en.md",
-    "DEVELOPMENT_SNAPSHOT.md", "TRANSLATING.md",
+    "README.md", "README.en.md",
+    "DESKTOP_GUIDE.md", "DESKTOP_GUIDE.en.md",
+    "REFERENCE.md", "REFERENCE.en.md",
+    "SHOWCASE.md", "SHOWCASE.en.md",
+    "CHANGELOG.md", "CHANGELOG.en.md",
+    "MOBILE_GUIDE.md", "MOBILE_GUIDE.en.md",
+    "MOBILE_SHOWCASE.md", "MOBILE_SHOWCASE.en.md",
+    "DEVELOPMENT_SNAPSHOT.md", "DEVELOPMENT_SNAPSHOT.en.md",
+    "TRANSLATING.md", "TRANSLATING.en.md",
 )
 ROOT_FILES = (
     ".gitignore", ".gitattributes", "README.md", "README.en.md", "LICENSE", "COPYING",
@@ -44,9 +50,10 @@ def public_links(content: str) -> str:
     content=content.replace("(../../third_party_licenses/", "(../third_party_licenses/")
     content=content.replace("(../../android/", "(../android/")
     content=content.replace("(../../packaging/", "(../packaging/")
+    content=content.replace("(../../film_foundry/", "(../film_foundry/")
     for name in PUBLIC_DOCS:
-        if name == "README.md":
-            continue  # ../README.md is the project homepage, not the docs index.
+        if name in {"README.md", "README.en.md"}:
+            continue  # ../README*.md is the project homepage, not the docs index.
         content=content.replace(f"(../{name})",f"({name})")
     for name in ("README.md", "README.en.md"):
         content=content.replace(f"(../../{name})",f"(../{name})")
@@ -64,7 +71,7 @@ def copy_public_docs(source: Path, target: Path, *, include_root: bool = True) -
             if not include_root:
                 content=content.replace("(../README.md)", "(../README.txt)").replace("(../README.en.md)", "(../README.txt)")
                 content=content.replace("(../THIRD_PARTY_NOTICES.md)", "(../licenses/THIRD_PARTY_NOTICES.md)")
-                for folder in ("third_party_licenses", "packaging", "android"):
+                for folder in ("third_party_licenses", "packaging", "android", "film_foundry"):
                     content=content.replace(f"(../{folder}/", f"(https://github.com/soundsec/Film-Foundry/blob/main/{folder}/")
             (destination/name).write_text(content,encoding="utf-8",newline="\n")
             count+=1
@@ -81,7 +88,10 @@ def copy_public_docs(source: Path, target: Path, *, include_root: bool = True) -
         for image in sorted(path for path in image_source.iterdir() if path.suffix.lower() in {".png", ".jpg", ".svg"} and path.is_file()):
             shutil.copy2(image,image_target/image.name);count+=1
     # Project overview pictures have stable names independent of a release.
-    for name in ("showcase.jpg", "shared-process.jpg", "material-details.jpg"):
+    for name in ("showcase.jpg", "shared-process.jpg", "material-details.jpg",
+                 "fruit-and-leaves.jpg", "film-stocks.jpg", "seven-materials.jpg",
+                 "color-film-filters.jpg", "reversal-filters.jpg", "silver-film-filters.jpg",
+                 "coating-workspace.png", "coating-experiment.jpg", "coating-grain.png"):
         image=source/"docs"/"images"/name
         if image.is_file():
             (destination/"images").mkdir(parents=True,exist_ok=True)
@@ -131,6 +141,12 @@ def prepare(source: Path, target: Path, *, include_packaging: bool = True,
         path=source/name
         if not path.is_file():raise FileNotFoundError(path)
         copy_source_file(path,target/name);copied+=1
+    # Export installation instructions, not locally installed translation packs.
+    language_guide = Path("languages/README.md")
+    (target/language_guide).parent.mkdir()
+    (target/language_guide).write_text(public_links((source/language_guide).read_text(encoding="utf-8-sig")),
+                                       encoding="utf-8",newline="\n")
+    copied += 1
     source_folders = [
         ("film_foundry",{".py",".json",".svg",".png",".ico",".npz",".txt",".md"}),
         ("third_party_licenses",{".txt",".md",".json",".pom"}),

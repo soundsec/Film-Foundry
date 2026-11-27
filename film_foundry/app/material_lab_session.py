@@ -8,7 +8,8 @@ import numpy as np
 from film_foundry.app import material_families as api
 from film_foundry.core import peel_apart, integral_instant, silver_plate
 from film_foundry.core import photographic_paper,wet_plate,cyanotype,platinum_palladium
-from film_foundry.core.material_family import ProductGroup, ViewingConditions
+from film_foundry.core.material_family import ProductGroup
+from film_foundry.app.material_reference import reference_view
 from film_foundry.core.color import linear_to_srgb
 from film_foundry.app.material_image_io import load_exposure_image,save_observation
 from film_foundry.contracts.material_recipe import KEY as RECIPE_KEY,validate_recipe
@@ -178,7 +179,8 @@ class MaterialLabSession:
         # current image, state and result group intact.
         self.state=temporary.state;self.group=temporary.group
 
-    def preview(self,view=ViewingConditions(),body_index=0):
+    def preview(self,view=None,body_index=0):
+        if view is None:view=reference_view(self.kind)
         if self.group is not None:
             if not 0<=body_index<len(self.group.bodies):raise ValueError("Invalid product selection")
             image=api.observe(self.group.bodies[body_index],view)
@@ -196,15 +198,18 @@ class MaterialLabSession:
             if self.kind!='plate':border=observation_border(body,next(iter(body.fields.values())).shape,view)
         return render_material_scan(image,self.scan_adjustments,border=border)
 
-    def run_standard(self,material=None,seed=0,overrides=None,*,control=None):
+    def run_standard(self,material=None,seed=0,overrides=None,*,control=None,on_step=None):
         """A fresh sheet follows the shared family reference sequence."""
         if self.image is None or self.state is not None or self.group is not None:
             raise ValueError('Standard processing requires a fresh sheet source')
         from film_foundry.app.material_reference import reference_operations
         definition=self.material_type(**(material or {}))
-        for operation,parameters in reference_operations(self.kind,self.module,definition):
+        steps = reference_operations(self.kind,self.module,definition)
+        for index, (operation,parameters) in enumerate(steps, 1):
             if control:control.check_cancel()
             if operation=='stabilize' and self.state.stage=='stable':continue
+            if on_step is not None:
+                on_step(index, len(steps), operation)
             self.process(operation,{**parameters,**(overrides or {}).get(operation,{})},material,seed)
         if control:control.check_cancel()
 
@@ -224,11 +229,12 @@ class MaterialLabSession:
         if self.group is None:raise ValueError("尚未形成最终介质")
         api.save(path,self.group,precision=precision)
 
-    def export_png(self,path,view=ViewingConditions(),body_index=0):
+    def export_png(self,path,view=None,body_index=0):
         if Path(path).suffix.lower()!='.png':raise ValueError('PNG output requires a .png path')
         return self.export_image(path,view,body_index)
 
-    def export_image(self,path,view=ViewingConditions(),body_index=0,*,bit_depth=8,quality=100):
+    def export_image(self,path,view=None,body_index=0,*,bit_depth=8,quality=100):
+        if view is None:view=reference_view(self.kind)
         self._protect_bundle_member(path)
         if self.state is None and self.group is None:raise ValueError("先形成材料再导出观察结果")
         image=self.preview(view,body_index)

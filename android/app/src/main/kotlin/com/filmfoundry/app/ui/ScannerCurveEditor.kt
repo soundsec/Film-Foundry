@@ -226,6 +226,7 @@ internal class CurveGraph(context: android.content.Context,private val shell: Mo
         if(event.actionMasked==MotionEvent.ACTION_DOWN) editStarted()
         gestures.onTouchEvent(event)
         when(event.actionMasked) {
+            MotionEvent.ACTION_POINTER_DOWN -> { dragging=false;invalidate() }
             MotionEvent.ACTION_DOWN -> { nearest(event)?.let { selected=it;dragging=true
                 grabX=px(curve.points[it].x)-event.x;grabY=py(curve.points[it].y)-event.y
                 selectionChanged();invalidate()

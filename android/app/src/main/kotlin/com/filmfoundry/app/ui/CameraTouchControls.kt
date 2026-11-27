@@ -17,7 +17,8 @@ import com.filmfoundry.platform.CameraXCameraAdapter
 @SuppressLint("ClickableViewAccessibility")
 class CameraTouchControls(private val preview: PreviewView,private val shell: MobileShell,
     private val allowed: ()->Boolean,private val message: (String)->Unit,private val selectLens: (View)->Unit={},
-    private val selectFlash: (View)->Unit={},private val flashAvailable: ()->Boolean={false},private val expert: FinderExpertPort?=null): FrameLayout(preview.context) {
+    private val selectFlash: (View)->Unit, private val flashAvailable: ()->Boolean,
+    private val formatOptions: ()->List<String>, private val selectFormat: (String)->Unit): FrameLayout(preview.context) {
     private var camera: CameraXCameraAdapter?=null
     private var ratio=1f
     private var focusSerial=0
@@ -34,6 +35,7 @@ class CameraTouchControls(private val preview: PreviewView,private val shell: Mo
         }
     }
     private val zoom=Button(context).apply {
+        id=com.filmfoundry.mobile.R.id.finder_zoom
         tag="camera_action";text="1.0×";contentDescription=shell.copy("缩放倍率；按住左右滑动，双击恢复1倍；取景内可双指缩放","Zoom ratio; press and slide horizontally, double tap to reset to 1x; or pinch in the viewfinder")
         setOnClickListener {
             val state=camera?.nativeZoom()
@@ -49,9 +51,20 @@ class CameraTouchControls(private val preview: PreviewView,private val shell: Mo
     }
     private val lens=Button(context).apply { tag="camera_action";text=shell.copy("镜头","Lenses");contentDescription=shell.copy("快捷选择原生镜头","Quick native lens selection");setOnClickListener { if(allowed()) selectLens(this) } }
     private val flash=Button(context).apply { tag="camera_action";text=shell.copy("闪光 --","Flash --");setOnClickListener { if(allowed()) selectFlash(this) } }
-    private val focus=Button(context).apply {
-        tag="camera_action";text="AF";isEnabled=false
-        contentDescription=shell.copy("自动对焦；点按取景画面对焦测光。手动对焦暂不可用。","Autofocus; tap the viewfinder to focus and meter. Manual focus is temporarily unavailable.")
+    private val format=Button(context).apply {
+        id=com.filmfoundry.mobile.R.id.finder_format
+        tag="camera_action";text="—";isEnabled=false
+        setOnClickListener {
+            val adapter=camera ?: return@setOnClickListener
+            if (!allowed()) return@setOnClickListener
+            val options=formatOptions()
+            val current=adapter.nativeRequests().format
+            shell.quickControls.choices("format",this,shell.copy("采集格式","Capture format"),
+                shell.copy("从下一次曝光起生效。","Applies from the next exposure."),
+                options.map(::captureFormatLabel),options.indexOf(current)) { index ->
+                if (camera===adapter && allowed() && options[index]!=current) selectFormat(options[index])
+            }
+        }
     }
     private val scale=ScaleGestureDetector(context,object: ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean { scaleSequence=true;return allowed() && camera != null }
@@ -80,10 +93,10 @@ class CameraTouchControls(private val preview: PreviewView,private val shell: Mo
         val row=android.widget.LinearLayout(context)
         row.addView(lens,android.widget.LinearLayout.LayoutParams(0,shell.dp(48),1f))
         row.addView(zoom,android.widget.LinearLayout.LayoutParams(shell.dp(72),shell.dp(48)))
-        row.addView(focus,android.widget.LinearLayout.LayoutParams(shell.dp(68),shell.dp(48)))
+        row.addView(format,android.widget.LinearLayout.LayoutParams(shell.dp(68),shell.dp(48)))
         row.addView(flash,android.widget.LinearLayout.LayoutParams(shell.dp(104),shell.dp(48)))
         shell.mountLensControls(row)
-        for(button in listOf(zoom,lens,focus,flash)) { shell.styleButton(button);button.textSize=13f;button.setSingleLine(true);button.ellipsize=android.text.TextUtils.TruncateAt.END;shell.quickControls.bindPress(button) }
+        for(button in listOf(zoom,lens,format,flash)) { shell.styleButton(button);button.textSize=13f;button.setSingleLine(true);button.ellipsize=android.text.TextUtils.TruncateAt.END;shell.quickControls.bindPress(button) }
         shell.quickControls.bindPress(zoom) {
             val range=camera?.nativeZoom()
             if(allowed() && range!=null) requestZoom(1f.coerceIn(range.minimum,range.maximum),true)
@@ -103,8 +116,10 @@ class CameraTouchControls(private val preview: PreviewView,private val shell: Mo
         lens.text=adapter?.lensLabel(shell.copy("zh","en")=="zh") ?: shell.copy("镜头","Lenses");lens.isEnabled=adapter!=null
         lens.tooltipText=lens.text
         val settings=adapter?.nativeRequests()
-        focus.isEnabled=false;focus.text=if(settings==null) "--" else "AF"
-        focus.tooltipText=shell.copy("点按画面对焦；MF 暂不可用","Tap the viewfinder to focus; MF temporarily unavailable")
+        format.text=when(settings?.format) { "jpeg"->"JPEG"; "raw"->"RAW"; "ultra_hdr"->"HDR"; else->"—" }
+        format.isEnabled=settings!=null && formatOptions().size>1
+        format.contentDescription=shell.copy("采集格式","Capture format")+" · "+format.text
+        format.tooltipText=format.contentDescription
         flash.isEnabled=adapter!=null && flashAvailable()
         flash.text=when { settings==null->shell.copy("闪光 --","Flash --");!flashAvailable()->shell.copy("闪光不可用","No flash");settings.torch->shell.copy("补光开","Torch on");settings.flash=="auto"->shell.copy("闪光自动","Flash auto");settings.flash=="on"->shell.copy("闪光开","Flash on");else->shell.copy("闪光关","Flash off") }
         flash.contentDescription=flash.text.toString()+shell.copy("；点按切换原生闪光或补光","; tap for native flash or torch")

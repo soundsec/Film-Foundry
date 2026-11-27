@@ -72,7 +72,7 @@ def test_thumbnail_cache_and_failures_are_bounded(desktop,monkeypatch):
             d.results.setCurrentRow(row);wait(lambda:row in d.preview.cache)
         assert len(d.preview.cache)<=24
         assert len({d.results.item(i).sizeHint().height() for i in range(28)})==1
-        assert sum(not d.results.item(i).icon().isNull() for i in range(28))<=24
+        assert sum(d.results.item(i).icon().cacheKey() != d.preview.placeholder.cacheKey() for i in range(28)) == len(d.preview.cache)
         d.results.setCurrentRow(27);wait(lambda:27 in d.preview.failed)
         for _ in range(5):d.preview.tick()
         assert calls.count('bad')==1
@@ -128,7 +128,8 @@ def test_preset_preview_snapshot_and_units_do_not_scale_values(desktop,tmp_path)
     p=desktop;p._open_catalog_source(photos(tmp_path)[0],'film');before=deepcopy(p._config())
     p._browse_presets(p.scanner_preset_combo,'Scanner')
     d=p.root.qt._inline_editor_host.frames[-1][1]
-    assert d.preview.session.base==before and d.preview.target.count()==2
+    assert d.preview.session.base==before
+    assert [d.preview.target.itemData(i) for i in range(d.preview.target.count())] == [False, True, 'color24']
     d.results.setCurrentRow(min(1,d.results.count()-1));d.reject();assert p._config()==before
     for name,suffix,value in (('develop_time',' min',12.5),('develop_temperature',' °C',21),('developer_concentration',' ×',1.25),('exposure_ev',' EV',.5)):
         spin=p.fields[name][1].qt

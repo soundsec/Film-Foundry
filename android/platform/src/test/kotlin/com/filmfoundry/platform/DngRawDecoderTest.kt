@@ -55,7 +55,7 @@ class DngRawDecoderTest {
                 override fun saveStill(target: java.io.File): StoredStillInfo {
                     calls++;target.writeBytes(original)
                     val dimensions=DngRawDecoder.storedDimensions(target)
-                    return StoredStillInfo(dimensions.first,dimensions.second,CaptureRecord(CaptureKind.SENSOR_RAW_DNG,false,sourceEncoding="stored_sensor_dng_v1"))
+                    return StoredStillInfo(dimensions.first,dimensions.second,CaptureRecord(CaptureKind.SENSOR_RAW_DNG,false,sourceEncoding="stored_sensor_dng_v2"))
                 }
             }
             val receipt=store.append(path,"roll",1,"frame",emptyMap(),true,0.0,camera,com.filmfoundry.workflow.WorkflowControl())
@@ -69,6 +69,12 @@ class DngRawDecoderTest {
                 assertThrows(CaptureRejected::class.java) { rows.encodedRows(0,1) }
             }
             assertArrayEquals(original,file.readBytes())
+            DngStoredExposurePixels(file).use { rows ->
+                rows.configureCapture(mapOf("source_encoding" to "stored_sensor_dng_v1"))
+                assertEquals(DngRawDecoder.MODEL,rows.decodedRawMetadata()["source_encoding"])
+                // The previous model divides each site by its local white-minus-black.
+                assertTrue(rows.linearWindowRows(0,0,2,2,CaptureKind.SENSOR_RAW_DNG).any { kotlin.math.abs(it-2f) > .001f })
+            }
             val bad=java.io.File(root,"unsupported.dng").apply { writeBytes(fixture(compression=7)) }
             assertEquals(6 to 8,DngRawDecoder.storedDimensions(bad))
             assertThrows(CaptureNotReady::class.java) { DngStoredExposurePixels(bad) }
@@ -86,7 +92,7 @@ class DngRawDecoderTest {
         } finally { root.deleteRecursively() }
     }
     private fun fixture(order: ByteOrder=ByteOrder.LITTLE_ENDIAN,pattern: IntArray=intArrayOf(0,1,1,2),
-        compression: Int=1,reduced: Boolean=false,requiredOpcode: Boolean=false,orientation: Int=1,gradient: Boolean=false): ByteArray {
+        compression: Int=1,reduced: Boolean=false,requiredOpcode: Boolean=false,orientation: Int=1,gradient: Boolean=false,linearRaw: Boolean=false, oddOrigin: Boolean=false): ByteArray {
         fun shorts(vararg v: Int)=ByteBuffer.allocate(v.size*2).order(order).also { b -> v.forEach { b.putShort(it.toShort()) } }.array()
         fun longs(vararg v: Int)=ByteBuffer.allocate(v.size*4).order(order).also { b -> v.forEach { b.putInt(it) } }.array()
         fun rational(v: DoubleArray)=ByteBuffer.allocate(v.size*8).order(order).also { b -> v.forEach { b.putInt(kotlin.math.round(it*1000000).toInt());b.putInt(1000000) } }.array()
@@ -103,10 +109,20 @@ class DngRawDecoderTest {
         tags[50721]=10 to rational(doubleArrayOf(1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0))
         tags[50728]=5 to rational(doubleArrayOf(.95047*.25,.25,1.08883*.25))
         if(requiredOpcode) tags[51008]=7 to ByteBuffer.allocate(20).order(ByteOrder.BIG_ENDIAN).putInt(1).putInt(1).putInt(0x01030000).putInt(0).putInt(0).array()
+        val channels = if (linearRaw) 3 else 1
+        val whites = intArrayOf(65535,50000,32000)
+        if (linearRaw) {
+            tags[258]=3 to shorts(16,16,16);tags[262]=3 to shorts(34892);tags[277]=3 to shorts(3)
+            tags[279]=4 to longs(6*8*channels*2)
+            tags.remove(33421);tags.remove(33422)
+            tags[50713]=3 to shorts(1,1);tags[50714]=3 to shorts(64,128,192)
+            tags[50717]=4 to longs(*whites)
+        }
+        if (oddOrigin) tags[50829] = 4 to longs(1,1,8,6)
         val base=8+2+tags.size*12+4
         val imageOffset=base+tags.values.sumOf { if(it.second.size > 4) it.second.size else 0 }
         tags[273]=4 to longs(imageOffset)
-        val output=ByteBuffer.allocate(imageOffset+6*8*2).order(order)
+        val output=ByteBuffer.allocate(imageOffset+6*8*channels*2).order(order)
         output.put(if(order == ByteOrder.LITTLE_ENDIAN) byteArrayOf(73,73) else byteArrayOf(77,77))
         output.putShort(42);output.putInt(8);output.putShort(tags.size.toShort())
         var payload=base
@@ -120,10 +136,15 @@ class DngRawDecoderTest {
         output.putInt(0);output.position(imageOffset)
         val neutral=doubleArrayOf(.95047,1.0,1.08883)
         for(y in 0 until 8) for(x in 0 until 6) {
-            val index=(y%2)*2+x%2
+            val phase = if (oddOrigin) 1 else 0
+            val index=((y+phase)%2)*2+(x+phase)%2
             val black=64.0*(index+1)
             val exposure=if(gradient) .05+.02*x+.04*y else .5
-            output.putShort(kotlin.math.round(black+exposure*neutral[pattern[index]]*(65535-black)).toInt().toShort())
+            for (sample in 0 until channels) {
+                val channel = if (linearRaw) sample else pattern[index]
+                val zero = if (linearRaw) 64.0*(sample+1) else black
+                output.putShort(kotlin.math.round(zero+exposure*neutral[channel]*(whites[sample]-(if (linearRaw) zero else 256.0))).toInt().toShort())
+            }
         }
         return output.array()
     }
@@ -138,7 +159,7 @@ class DngRawDecoderTest {
             assertEquals(6,working.width);assertEquals(8,working.height)
             assertEquals(CaptureKind.SENSOR_RAW_DNG,working.record.kind)
             assertFalse(working.record.ispProcessed)
-            assertEquals(DngRawDecoder.MODEL,working.record.sourceEncoding)
+            assertEquals(DngRawDecoder.BAYER_MODEL,working.record.sourceEncoding)
             assertTrue(working.linearRgb.all { kotlin.math.abs(it-2f) < .001f })
             for(start in 0 until rows.height step 3) {
                 val n=minOf(3,rows.height-start)
@@ -146,6 +167,33 @@ class DngRawDecoderTest {
             }
             assertArrayEquals(before,bytes)
         }
+    }
+
+    @Test fun linearRawNormalizesEachChannelAndRetainsEachPixelWithoutInterpolation() {
+        val original = fixture(linearRaw=true,gradient=true,orientation=6)
+        val image = DefaultCaptureNormalizer().normalize(DngCapture(original))
+        assertEquals(DngRawDecoder.LINEAR_MODEL,image.record.sourceEncoding)
+        for (y in 0 until 8) for (x in 0 until 6) for (c in 0..2)
+            assertEquals(4*(.05+.02*x+.04*y), image.linearRgb[(y*6+x)*3+c].toDouble(), .001)
+        val file = kotlin.io.path.createTempFile(suffix=".DNG").toFile()
+        try {
+            file.writeBytes(original)
+            openStoredExposurePixels(file).use { rows ->
+                rows.configureCapture(mapOf("stored_pixel_orientation" to "dng_exif_v1"))
+                assertEquals(DngRawDecoder.LINEAR_MODEL,rows.decodedRawMetadata()["source_encoding"])
+                assertEquals(16,rows.decodedRawMetadata()["bit_depth"])
+                assertEquals(8,rows.width)
+                val crop=rows.linearWindowRows(2,1,2,1,CaptureKind.SENSOR_RAW_DNG)
+                assertArrayEquals(image.linearRgb.copyOfRange((5*6+1)*3,(5*6+2)*3),crop.copyOfRange(0,3),0f)
+            }
+            assertArrayEquals(original,file.readBytes())
+        } finally { file.delete() }
+    }
+
+    @Test fun bayerPhaseStartsAtTheActiveArea() {
+        val image = DngRawDecoder.decode(DngCapture(fixture(oddOrigin=true)))
+        assertEquals(5,image.width); assertEquals(7,image.height)
+        assertTrue(image.linearRgb.all { kotlin.math.abs(it-2f) < .001f })
     }
 
     @Test fun unsupportedStorageAndPreviewOnlyDngFailWithoutJpegFallback() {

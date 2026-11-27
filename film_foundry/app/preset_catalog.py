@@ -3,6 +3,7 @@
 This is a presentation catalog, not a migration or an alias table. Variants
 remain separate recipes: loading an old key must retain its original values.
 """
+from pathlib import Path
 
 CORE_FILM_PRESETS = frozenset({
     "clear_modern_negative",
@@ -23,7 +24,6 @@ CORE_SCANNER_PRESETS = frozenset({
     "neutral_scan",
     "bw_neutral_scan",
     "warm_consumer_scan",
-    "color_restored_scan",
     "positive_transparency_scan",
     "chrome_saturated_scan",
     "amber_cyan_scan",
@@ -47,3 +47,22 @@ REFERENCE_TONE_PRESETS = (
     "reference_soft_tone_scan",
     "reference_deep_tone_scan",
 )
+
+
+def is_internal_preset_name(name: str) -> bool:
+    return name.lower().startswith(("diagnostic_", "accident_", "experimental_"))
+
+
+def is_listed_builtin(kind: str, key: str) -> bool:
+    if kind == "develop" and key in CORE_DEVELOP_PRESETS:
+        return True
+    # high_contrast_push represents this pair in the extended picker.
+    # Both original grain structures remain addressable by key.
+    if kind == "film" and key == "deep_shadow_negative":
+        return False
+    return not is_internal_preset_name(key)
+
+
+def public_builtin_preset_names(directory: Path, kind: str | None = None) -> set[str]:
+    return {path.stem for path in directory.glob("*.json")
+            if is_listed_builtin(kind or directory.name, path.stem)}

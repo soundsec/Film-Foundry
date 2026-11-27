@@ -13,7 +13,7 @@ def bind_recipe(value):
     match=next(((kind,module,definition) for kind,(module,definition) in FAMILIES.items() if module.FAMILY==recipe['family']),None)
     if match is None:raise ValueError('Unsupported recipe material family')
     kind,module,definition=match
-    replay_versions=(1,2) if kind=='paper' else (2,3,4,5) if kind=='peel' else (2,3,4) if kind in ('integral','wet','plate') else (2,3)
+    replay_versions=(1,2) if kind=='paper' else (2,3,4,5) if kind in ('peel','wet') else (2,3,4) if kind in ('integral','plate') else (2,3)
     if recipe['material_version'] not in replay_versions:raise ValueError('Recipe material version cannot be recreated by this runtime')
     try:recipe['material']=asdict(from_record(definition,recipe['material']))
     except TypeError as exc:raise ValueError(f'Invalid recipe material: {exc}') from exc
@@ -38,7 +38,6 @@ def run_recipe_file(input_path,recipe_path,output_path,*,stop='medium',long_edge
     """Reference frontend: explicit image input, independent formation and output."""
     from film_foundry.app.material_lab_session import MaterialLabSession
     from film_foundry.core.atomic_io import atomic_path_set
-    from film_foundry.core.material_family import ViewingConditions
     recipe=load_recipe(recipe_path);kind,_=bind_recipe(recipe)
     source=Path(input_path).resolve();target=Path(output_path).resolve()
     if stop not in ('state','medium','image'):raise ValueError('Unknown recipe endpoint')
@@ -63,6 +62,6 @@ def run_recipe_file(input_path,recipe_path,output_path,*,stop='medium',long_edge
         if stop=='state':session.save(target)
         elif stop=='medium':session.save_products(target)
         else:
-            session.save_products(medium);session.export_image(target,ViewingConditions(),indices[0],bit_depth=bit_depth)
+            session.save_products(medium);session.export_image(target,body_index=indices[0],bit_depth=bit_depth)
         if control:control.report('material-replay','completed',1.)
     return {'output_path':str(target),'medium_path':str(medium if stop=='image' else target) if stop!='state' else None}

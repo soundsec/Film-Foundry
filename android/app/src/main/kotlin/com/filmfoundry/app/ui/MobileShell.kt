@@ -124,9 +124,10 @@ class MobileShell(private val activity: ComponentActivity, val palette: MobilePa
         val frame=target.parent as? View ?: return
         if(!finderGuidesEnabled || selected!=Page.CAPTURE || !frame.isShown || frame.width<=frame.height) return
         val prefs=activity.getSharedPreferences("mobile_ui",android.content.Context.MODE_PRIVATE)
-        if(!finderGuideRequested && prefs.getBoolean("finder_gesture_guide_v1",false)) return
-        closeCaptureMenu();closeQuickControls();target.reveal(autoDismiss=!finderGuideRequested);finderGuideRequested=false
-        prefs.edit().putBoolean("finder_gesture_guide_v1",true).apply()
+        if(!finderGuideRequested && prefs.getBoolean("finder_target_guide_v2",false)) return
+        closeCaptureMenu();closeQuickControls();if (!target.reveal()) return
+        finderGuideRequested=false
+        prefs.edit().putBoolean("finder_target_guide_v2",true).apply()
     }
     fun scrollToTop(page: Page) { (when(page) { Page.SCAN->scanScroller;Page.DEVELOP->developScroller;else->scrolls[page] as? ScrollView })?.let { scroll -> scroll.post { scroll.scrollTo(0,0) } } }
     fun copy(zh: String,en: String)=words.text(zh,en)
@@ -323,13 +324,15 @@ class MobileShell(private val activity: ComponentActivity, val palette: MobilePa
             }
             nav[page]=item;navigation.addView(item,LinearLayout.LayoutParams(0,-2,1f))
         }
-        root.addView(navigation);select(selected)
+        root.addView(navigation)
+        if(selected==Page.SCAN) scanDrawer.enter()
+        select(selected)
     }
     fun select(page: Page,remember: Boolean=true) {
         closeQuickControls()
         if(page!=Page.CAPTURE) { finderGuideRequested=false;finderCoach?.stop() }
         if(page != selected) {
-            if(page == Page.SCAN) scanDrawer.settle(false)
+            if(page == Page.SCAN) scanDrawer.enter()
             if(page.parent != page && remember) history.add(selected) else if(page.parent == page) history.clear()
         }
         selected=page
@@ -369,6 +372,7 @@ class MobileShell(private val activity: ComponentActivity, val palette: MobilePa
         navigationIcon(it,icon)
         scanActions.addView(it,scanActions.indexOfChild(scanUndo),LinearLayout.LayoutParams(dp(48),dp(48)))
     }
+    internal fun mountScanSample(view: View) { scanDrawer.controls.addView(view,1) }
     internal fun showScanTool(label: CharSequence, large: Boolean) = scanDrawer.selectTool(label, large)
 
     internal fun parameterRuler() = ParameterRuler(activity, muted, accent, copy("精调", "Fine"))

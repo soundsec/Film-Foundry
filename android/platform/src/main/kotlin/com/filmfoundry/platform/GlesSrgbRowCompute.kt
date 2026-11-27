@@ -247,7 +247,7 @@ void main() {
         uint k=i*8u;float h=encoded[k],a=encoded[k+1u],s=encoded[k+2u];
         float c=encoded[k+3u],d=encoded[k+4u],b=encoded[k+5u];
         float localRate=encoded[k+6u];int layer=int(encoded[k+7u]);
-        bool interactive=coefficients[1]>0.0,ledger=coefficients[2]>0.0;
+        bool interactive=coefficients[1]>0.0,ledger=coefficients[2]>0.0,doseResponse=coefficients[11]>0.0;
         for(int step=0;step<int(coefficients[0]);step++) {
             int z=16+step*8;int action=int(coefficients[z]);
             float f=clamp(coefficients[z+1]*(action<=1 ? localRate : 1.0),0.0,1.0);
@@ -255,13 +255,19 @@ void main() {
                 float activated=clamp(a,0.0,1.0),rate=f;
                 if(interactive) {
                     if(ledger) {
-                        activated=clamp(activated+coefficients[z+2]*f*(1.0-activated),0.0,1.0);
-                        if(coefficients[z+4]!=0.0) rate*=pow(max(activated,0.000001),coefficients[z+4]);
+                        if(!doseResponse) activated=clamp(activated+coefficients[z+2]*f*(1.0-activated),0.0,1.0);
+                        if(coefficients[z+4]!=0.0) rate*=pow(max(activated,0.000001)*(doseResponse ? 2.0 : 1.0),coefficients[z+4]);
                     } else if(step==int(coefficients[4])) activated=pow(clamp(activated+coefficients[z+2]*(1.0-activated),0.0,1.0),coefficients[z+3]);
-                    rate=clamp(rate*(1.0-coefficients[z+5]*activated)*(coefficients[3]>0.0 ? coefficients[8+min(layer,2)] : 1.0),0.0,1.0);
+                    float highlight=doseResponse ? 0.65*smoothstep(0.35,1.0,activated) : activated;
+                    rate=clamp(rate*(1.0-coefficients[z+5]*highlight)*(coefficients[3]>0.0 ? coefficients[8+min(layer,2)] : 1.0),0.0,1.0);
                 }
-                float reactive=h*activated,amount=reactive*rate;h=max(0.0,h-amount);s+=amount;
-                if(ledger) a=h>0.00000001 ? clamp(max(0.0,reactive-amount)/h,0.0,1.0) : 0.0;
+                float reactive=h*activated,signal=reactive*rate,amount=signal;
+                if(doseResponse && coefficients[z+7]>0.0) {
+                    float contact=localRate*(coefficients[3]>0.0 ? coefficients[8+min(layer,2)]*coefficients[12] : 1.0);
+                    amount+=(h-reactive)*(1.0-exp(-coefficients[z+7]*contact));
+                }
+                h=max(0.0,h-amount);s+=amount;
+                if(ledger) a=h>0.00000001 ? clamp(max(0.0,reactive-signal)/h,0.0,1.0) : 0.0;
                 if(action==1 && coefficients[7]>0.0) { float dye=min(c,amount*coefficients[5]);c=max(0.0,c-dye);d+=dye; }
             } else if(action==2) a+=(1.0-a)*f;
             else if(action==3) { float amount=s*f;s=max(0.0,s-amount);b+=amount; }

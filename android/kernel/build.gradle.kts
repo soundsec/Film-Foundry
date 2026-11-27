@@ -25,3 +25,8 @@ dependencies {
 tasks.test {
     useJUnitPlatform()
 }
+
+// Both implementations check their emitted fields against the same interchange vocabulary.
+tasks.processTestResources {
+    from(rootProject.file("../film_foundry/contracts/material_state_fields.json"))
+}

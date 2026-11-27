@@ -23,7 +23,8 @@ def main(argv=None):
     parser.add_argument("--family",choices=("peel","integral","plate"),default="peel")
     parser.add_argument("--gilding",type=float,default=0)
     parser.add_argument("--roughness",type=float,default=.12)
-    parser.add_argument("--view-angle",type=float,default=25,help="Plate viewing angle in degrees")
+    from film_foundry.app.material_reference import PLATE_VIEW_ANGLE
+    parser.add_argument("--view-angle",type=float,default=PLATE_VIEW_ANGLE,help="Plate viewing angle in degrees")
     parser.add_argument("--transfer",choices=("dye","silver_compound"),default="dye")
     parser.add_argument("--seconds",type=float,default=60,help="Peel/development time; integral intermediate snapshot before stabilization")
     parser.add_argument("--stabilization-seconds",type=float,default=300,help="Integral neutralization/completion time")

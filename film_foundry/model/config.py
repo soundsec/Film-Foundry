@@ -14,7 +14,7 @@ from_dict() 会迁移旧 preset 中混放在 film/output/top-level 的字段。
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 import copy
@@ -32,6 +32,32 @@ from film_foundry.contracts.spectral_optics import SpectralMaterialProfile, Spec
 Matrix3 = tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
 Vector3 = tuple[float, float, float]
 SCANNER_COLOR_RESPONSE_MODELS = ("simple_channel_adjust_v1",)
+MONO_RGB_EXPOSURE = "rgb_layer_projection_v1"
+MONO_LEGACY_EXPOSURE = "legacy_luminance_v1"
+
+
+def _unversioned_monochrome_exposure(film):
+    """Resolve the exposure behaviour of an older serialized film definition."""
+    process = str(film.get("color_process", "")).strip().lower().replace("-", "_").replace(" ", "_")
+    if process in {"bw", "black_white", "monochrome"} and film.get("spectral_exposure_profile") is None:
+        return MONO_LEGACY_EXPOSURE
+    return MONO_RGB_EXPOSURE
+
+
+def portable_film_parameters(parameters):
+    """Omit the version when older readers already imply the same behaviour."""
+    if parameters.get("coating_stack") is None:
+        parameters = {k: v for k, v in parameters.items() if k != "coating_stack"}
+    elif "independent_grain" in parameters["coating_stack"]:
+        parameters = {**parameters, "coating_stack": {k:v for k,v in parameters["coating_stack"].items() if k != "independent_grain"}}
+    if parameters.get("monochrome_exposure_model") == _unversioned_monochrome_exposure(parameters):
+        return {key: value for key, value in parameters.items() if key != "monochrome_exposure_model"}
+    return parameters
+
+
+def validate_monochrome_exposure_model(value):
+    if value not in (MONO_RGB_EXPOSURE, MONO_LEGACY_EXPOSURE):
+        raise ValueError("Unknown monochrome exposure model")
 
 
 def normalize_scanner_tone_curve(value: object, *, field_name: str = "scanner.tone_curve") -> tuple[tuple[float, float], ...] | None:
@@ -116,6 +142,7 @@ class FilmStockConfig:
     name: str = "Generic Color Negative"
     process_response: dict[str, object] | None = None
     carbon_backing: dict[str, object] | None = field(default=None, kw_only=True)
+    coating_stack: dict | None = field(default=None, kw_only=True)
     emulsion_integrity: dict[str, object] | None = field(default=None, kw_only=True)
     chemical_fog_susceptibility: float = field(default=1.0, kw_only=True)
     time_response: dict[str, object] | None = field(default=None, kw_only=True)
@@ -125,6 +152,7 @@ class FilmStockConfig:
     medium_process: str = "negative"
     image_polarity: str = "negative"
     color_process: str = "color"
+    monochrome_exposure_model: str = field(default=MONO_RGB_EXPOSURE, kw_only=True)
 
     # None preserves historical radii relative to the digital short edge.
     # A positive reference length opts into material-space projection at
@@ -135,7 +163,40 @@ class FilmStockConfig:
     spectral_exposure_profile: SpectralExposureProfile | None = None
     spectral_material_profile: SpectralMaterialProfile | None = None
 
+    @property
+    def ordered_coatings(self):
+        return self.coating_stack is not None and self.coating_stack.get("mode", "ordered") == "ordered"
+
+    @property
+    def physical_coating_optics(self):
+        return self.ordered_coatings and self.coating_stack.get("exposure_basis", "physical") == "physical"
+
+    @property
+    def effective_record_count(self):
+        color = str(self.color_process).strip().lower().replace("-", "_").replace(" ", "_")
+        return 1 if color in {"bw", "black_white", "monochrome"} else 3
+
+    @property
+    def supports_ordered_coatings(self):
+        from film_foundry.contracts.coating_stack import has_layer_separation
+        return self.medium_family in ("", "film") and has_layer_separation(
+            self.coating_stack, silver_only=self.effective_record_count == 1)
+
+    def require_separated_coatings(self):
+        if not self.supports_ordered_coatings:
+            raise ValueError("Layered processing requires separate coating responses or optical densities. "
+                             "Use effective records for this material.")
+
+    def editable_coatings(self):
+        """Return an independent copy of the stock's declared structure."""
+        from film_foundry.contracts.coating_stack import validate_stack
+        self.require_separated_coatings()
+        return validate_stack(self.coating_stack)
+
     def __post_init__(self) -> None:
+        validate_monochrome_exposure_model(self.monochrome_exposure_model)
+        from film_foundry.contracts.coating_stack import validate_stack
+        self.coating_stack = validate_stack(self.coating_stack)
         if self.spectral_material_profile is not None:
             self.spectral_material_profile = SpectralMaterialProfile.from_value(self.spectral_material_profile)
         if self.spectral_exposure_profile is not None:
@@ -406,6 +467,8 @@ class DevelopRecipeConfig:
     # defects. None preserves legacy array-level random streams; application
     # batches freeze this once. Grain/sensor noise remain frame-specific.
     incident_identity_seed: int | None = None
+    incident_frame_seed: int | None = None
+    incident_pattern_scope: str = "frame"
     chemical_stain: float = 0.0
     uneven_development: float = 0.0
     # Explicit gelatin/emulsion damage severity caused by abrupt bath
@@ -564,6 +627,9 @@ class ExposureConfig:
     """Explicit capture conditions; source RGB is already integrated dose."""
 
     duration_seconds: float | None = None
+    lens_filter: dict | None = None
+    film_side: str = "emulsion"
+    rear_optics: dict | None = None
 
 
 @dataclass(slots=True)
@@ -648,6 +714,8 @@ class ProcessingConfig:
     # Native FP32 wet-front arithmetic in draft/standard; high keeps FP64.
     # Independent of archive precision. 'float64' explicitly opts out.
     contact_precision: str = "auto"
+    layered_response: bool = field(default=True, kw_only=True)
+    independent_coating_grain: bool = field(default=False, kw_only=True)
     # A formation-only model choice, independent of scanner interpretation.
     reduced_profile: str = "builtin_reduced_fast_v4"
     # Larger working frames remain enabled as best-effort support.
@@ -712,6 +780,8 @@ class FilmBorderConfig:
     factory_barcode: str = "legacy"
     factory_barcode_seed: int = 0
     loading_offset: float = 0.0
+    strip_layout: str = "registered_strip_v2"
+    strip_frame_index: int | None = None  # batch slot, independent of visible numbering
     factory_offset_top: tuple[float, float] = (0.0, 0.0)
     factory_offset_bottom: tuple[float, float] = (0.0, 0.0)
     advance_marker_offset: tuple[float, float] = (0.0, 0.0)
@@ -731,6 +801,8 @@ class FilmBorderConfig:
     factory_flip_bottom: bool = False
     factory_mark_type: str = "hard"
     factory_mark_spread: float = 1.0
+    rebate_glow: float = 0.0  # Relative warm stray exposure at the physical strip edges.
+    factory_ink_transmission_rgb: tuple[float, float, float] = (.18, .18, .18)
     imprint_style: str = "none"
     imprint_side: str = "bottom"
     imprint_text: str = ""
@@ -740,7 +812,12 @@ class FilmBorderConfig:
     imprint_scale: float = 1.0
     # None preserves the selected historical lamp's colour and strength.
     imprint_light_color_rgb: tuple[float, float, float] | None = None
-    imprint_exposure_ev: float = 0.0
+    imprint_exposure_ev: float = 1.25
+    factory_composition: dict | None = None
+    formation_mode: str = "attached"
+    lettering_size: str = "format_mm"
+    transport_axis: str = "format"
+    factory_repeat: str = "stock_frame"
 
 
 @dataclass(slots=True)
@@ -814,6 +891,23 @@ class DarkroomConfig:
     def develop(self, value: DevelopRecipeConfig) -> None:
         self.chemistry = value
 
+    def formation_film(self, *, frozen_mode=None):
+        """Bind task choices to a private film for the existing numerical operators."""
+        from film_foundry.contracts.coating_stack import validate_stack
+        settings = self.processing
+        if type(settings.layered_response) is not bool or type(settings.independent_coating_grain) is not bool:
+            raise ValueError("Coating response and grain switches must be boolean")
+        stack = validate_stack(self.film.coating_stack)
+        if stack is None:
+            return self.film
+        ordered = (settings.layered_response and self.film.supports_ordered_coatings
+                   if frozen_mode is None else frozen_mode == "ordered")
+        stack["mode"] = "ordered" if ordered else "reduced"
+        stack.pop("independent_grain", None)
+        if ordered and settings.independent_coating_grain:
+            stack["independent_grain"] = True
+        return replace(self.film, coating_stack=stack)
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DarkroomConfig":
         if not isinstance(data, dict):
@@ -828,6 +922,9 @@ class DarkroomConfig:
             return dict(value)
 
         film_data = section("film")
+        # Unversioned mono recipes without spectra predate RGB silver exposure.
+        # A fresh stock can use its RGB sensitivity matrix without a spectrum.
+        film_data.setdefault("monochrome_exposure_model", _unversioned_monochrome_exposure(film_data))
         chemistry_data = section("chemistry")
         chemistry_data.update(section("develop"))
         # An absent version in a saved recipe means the historical global
@@ -852,6 +949,15 @@ class DarkroomConfig:
         if 'reciprocity_response' in film_data:
             film_data['reciprocity_response'] = validate_reciprocity(film_data['reciprocity_response'])
         exposure_data = section('exposure')
+        if exposure_data.get('rear_optics') is not None:
+            from film_foundry.contracts.film_exposure import rear_optics
+            exposure_data['rear_optics'] = rear_optics(exposure_data['rear_optics'])
+        if 'film_side' in exposure_data:
+            from film_foundry.contracts.film_exposure import validate_film_side
+            validate_film_side(exposure_data['film_side'])
+        if 'lens_filter' in exposure_data:
+            from film_foundry.contracts.lens_filters import validate_filter
+            exposure_data['lens_filter'] = validate_filter(exposure_data['lens_filter'])
         if 'duration_seconds' in exposure_data:
             exposure_data['duration_seconds'] = validate_duration(exposure_data['duration_seconds'])
         if 'chemical_fog_susceptibility' in film_data:
@@ -860,7 +966,27 @@ class DarkroomConfig:
         scanner_data = section("scanner")
         output_data = section("output")
         processing_data = section("processing")
+        if film_data.get("coating_stack") is not None:
+            from film_foundry.contracts.coating_stack import validate_stack
+            stack = validate_stack(film_data["coating_stack"])
+            processing_data.setdefault("layered_response", stack.pop("mode", "ordered") == "ordered")
+            processing_data.setdefault("independent_coating_grain", stack.pop("independent_grain", False))
+            film_data["coating_stack"] = stack
+        for switch in ("layered_response", "independent_coating_grain"):
+            if switch in processing_data and type(processing_data[switch]) is not bool:
+                raise ValueError(f"processing.{switch} must be boolean")
         film_border_data = section("film_border")
+        if film_border_data:
+            for key in ("factory_offset_top", "factory_offset_bottom", "advance_marker_offset",
+                        "factory_light_color_rgb", "factory_ink_transmission_rgb", "imprint_position_xy", "imprint_light_color_rgb"):
+                if isinstance(film_border_data.get(key), list):
+                    film_border_data[key] = tuple(film_border_data[key])
+            if film_border_data.get("imprint_style", "none") != "none":
+                film_border_data.setdefault("imprint_exposure_ev", 0.0)
+            film_border_data.setdefault("factory_repeat", "stock_frame" if "formation_mode" in film_border_data else "per_gate")
+            film_border_data.setdefault("transport_axis", "format" if "formation_mode" in film_border_data else "horizontal")
+            film_border_data.setdefault("lettering_size", "legacy" if "formation_mode" not in film_border_data else "format_mm")
+            film_border_data.setdefault("strip_layout", "registered_strip_v2" if film_border_data.get("factory_composition") is not None else "frame_layout_v1")
         processing_data.setdefault(
             "execution_mode",
             "reduced_fast" if bool(data.get("fast_mode", False)) else "quality",
@@ -992,14 +1118,16 @@ class DarkroomConfig:
                 chemistry_data["exposure_occlusion_identity_seed"] = None
             else:
                 chemistry_data["exposure_occlusion_identity_seed"] = int(occlusion_seed)
-        if "incident_identity_seed" in chemistry_data:
-            seed = chemistry_data["incident_identity_seed"]
+        for key in ("incident_identity_seed", "incident_frame_seed"):
+            if key not in chemistry_data:
+                continue
+            seed = chemistry_data[key]
             if seed is None or str(seed).strip() == "":
-                chemistry_data["incident_identity_seed"] = None
+                chemistry_data[key] = None
             elif isinstance(seed, bool) or str(int(seed)) != str(seed).strip() or not 0 <= int(seed) <= 0xFFFFFFFF:
-                raise ValueError("develop.incident_identity_seed must be an unsigned 32-bit integer or null")
+                raise ValueError(f"develop.{key} must be an unsigned 32-bit integer or null")
             else:
-                chemistry_data["incident_identity_seed"] = int(seed)
+                chemistry_data[key] = int(seed)
         if "sprocket_count" in film_border_data:
             sprocket_count = film_border_data["sprocket_count"]
             if sprocket_count is None or str(sprocket_count).strip() == "":

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from PySide6 import QtGui, QtWidgets
-from film_foundry.ui.color_schemes import Theme, THEMES, THEME_KEYS, custom_theme, text_on
+from film_foundry.ui.color_schemes import Theme, THEMES, THEME_KEYS, custom_theme, selection_rule, text_on
 from film_foundry.ui.preferences import load_preferences
 
 
@@ -31,6 +31,9 @@ def colors() -> Theme:
 def stylesheet(t: Theme) -> str:
     assets = (Path(__file__).resolve().parents[1] / "assets").as_posix()
     accent_hover = QtGui.QColor(t.accent).lighter(110).name()
+    mark = "black" if text_on(t.accent) == "#000000" else "white"
+    disabled_mark = "black" if text_on(t.disabled) == "#000000" else "white"
+    edge = selection_rule(t.accent, t.background)
     return f"""
         QWidget {{background:{t.background}; color:{t.text};}}
         QWidget:disabled {{color:{t.disabled};}}
@@ -51,8 +54,17 @@ def stylesheet(t: Theme) -> str:
         QComboBox::down-arrow, QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
             image:url("{assets}/chevron_down.svg"); width:9px; height:6px;
         }}
-        QCheckBox::indicator:unchecked {{border:1px solid {t.muted}; background:{t.input}; color:{text_on(t.input)};}}
-        QCheckBox::indicator:unchecked:disabled {{border-color:{t.border};}}
+        QCheckBox {{spacing:6px;}}
+        QCheckBox::indicator {{width:15px; height:15px; border:1px solid {t.muted}; background:{t.input};}}
+        QCheckBox::indicator:checked, QCheckBox::indicator:indeterminate {{
+            background:{t.accent}; border-color:{edge};
+        }}
+        QCheckBox::indicator:checked {{image:url("{assets}/check_{mark}.svg");}}
+        QCheckBox::indicator:indeterminate {{image:url("{assets}/partial_{mark}.svg");}}
+        QCheckBox::indicator:enabled:hover, QCheckBox::indicator:enabled:focus {{border-color:{t.text};}}
+        QCheckBox::indicator:disabled {{border-color:{t.disabled}; background:{t.surface};}}
+        QCheckBox::indicator:checked:disabled {{background:{t.disabled}; image:url("{assets}/check_{disabled_mark}.svg");}}
+        QCheckBox::indicator:indeterminate:disabled {{background:{t.disabled}; image:url("{assets}/partial_{disabled_mark}.svg");}}
         QPushButton {{background:{t.button}; color:{text_on(t.button)}; border:1px solid {t.border}; padding:5px 9px;}}
         QToolButton, QWidget#commandBar QPushButton, QPushButton[toolbarAction="true"] {{
             background:transparent; color:{t.text}; border:1px solid transparent; padding:4px 6px;

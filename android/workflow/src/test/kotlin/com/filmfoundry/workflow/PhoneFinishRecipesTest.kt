@@ -7,6 +7,15 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class PhoneFinishRecipesTest {
+    @Test fun neutralPrintMapsReferenceDensityBeforeNormalization() {
+        val base=floatArrayOf(.15f,.35f,.60f)
+        val density=FloatNd(intArrayOf(1,1,3),FloatArray(3){base[it]+1.54f})
+        val medium=OpticalMaster(density,mapOf("image_polarity" to "negative"),base)
+        val scanner=PhoneFinishRecipes.scanner(PhoneFinishRecipes.AUTO)+("scan_normalize" to false)
+        val output=PhoneReducedKernel().observe(medium,mapOf("scanner" to scanner))
+        // D - Dbase = Dref gives unit print dose and linear reflectance 1 - exp(-1).
+        for(value in output.outputRgb.values) assertEquals(.81647f,value,.0001f)
+    }
     @Test fun automaticFinishPreservesColourAndUsesActualMediumPolarityAndBase() {
         val curve=listOf(listOf(0.0,0.0),listOf(.4,.5),listOf(1.0,1.0))
         val colors=mapOf("scan_saturation" to 1.37,"tone_curve" to curve,"color_curve_rgb" to List(3) { curve },
@@ -27,7 +36,13 @@ class PhoneFinishRecipesTest {
             // Original stock says the opposite: only the formed image controls interpretation.
             val output=k.observe(master,mapOf("film" to mapOf("image_polarity" to if(positive) "negative" else "positive"),"scanner" to auto))
             assertEquals(!positive,output.metadata["invert_transmission"])
-            assertEquals(!positive || masked,output.metadata["remove_base_mask"])
+            assertEquals(!positive,output.metadata["remove_base_mask"])
+            val live=mapOf("scanner" to auto)
+            assertEquals(ObservationImplementation.DESKTOP_PRINT,ObservationImplementation.forRecipe(live))
+            val archived=ObservationImplementation.frozenRuntime(live,ObservationImplementation.RANGE_FIRST)
+            assertEquals(!positive || masked,k.observe(master,archived).metadata["remove_base_mask"])
+            assertArrayEquals(k.observe(master,live).outputRgb.values,k.observe(master,
+                ObservationImplementation.frozenRuntime(live,ObservationImplementation.DESKTOP_PRINT)).outputRgb.values,0f)
             assertTrue(output.outputRgb.values.all { it.isFinite() })
             assertArrayEquals(before,d.values,0f)
         }

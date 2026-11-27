@@ -71,7 +71,7 @@ class ShootSession(
         val exposed = facade.run(
             WorkflowRequests.expose(
                 outputPath = outputPath,
-                recipe = mapOf("film" to roll.filmRecipe),
+                recipe = mapOf("film" to roll.filmRecipe)+roll.captureSettings.filterKeys { it=="film_border" },
                 width = working.width,
                 height = working.height,
                 linearRgb = working.linearRgb,

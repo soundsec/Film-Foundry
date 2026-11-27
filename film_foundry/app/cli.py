@@ -55,6 +55,7 @@ from film_foundry.model.config import (
     normalize_scanner_tone_curve,
 )
 from film_foundry.model.session import config_from_session
+from film_foundry.app.workspace_jobs import numbered_photo_config
 from film_foundry.app.source_seed import normalize_offsets, offset_for
 from film_foundry.app import workflow as _workflow
 from film_foundry.app.api import WorkflowError, WorkflowRequest, run_request
@@ -232,7 +233,7 @@ def _cli_control(args: argparse.Namespace) -> tuple[CancelFlag, WorkflowControl]
     flag = _cli_cancel_flag(args)
 
     def on_progress(progress) -> None:
-        print(f"[{progress.command}:{progress.stage}]", file=sys.stderr)
+        print(progress.terminal_line(), file=sys.stderr, flush=True)
 
     return flag, WorkflowControl(
         cancel_requested=flag.requested,
@@ -361,7 +362,7 @@ def _add_common_config_args(
     parser.add_argument(
         "--progress",
         action="store_true",
-        help="Print coarse workflow stages to stderr. Uses the same control contract as cancel.",
+        help="Print the current file stage and any reported progress to stderr.",
     )
     parser.add_argument(
         "--resume",
@@ -423,6 +424,18 @@ def _add_develop_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--develop-preset", help="Darkroom process preset name or JSON path.")
     parser.add_argument("--exposure-ev", type=float, help="Input exposure proxy EV before negative formation.")
     parser.add_argument("--exposure-seconds", type=float, help="Explicit film exposure duration for material reciprocity; input dose is not multiplied again.")
+    parser.add_argument("--film-side", choices=("emulsion", "base"), help="Film side facing the camera lens at exposure.")
+    parser.add_argument("--rear-profile", choices=("generic", "harman_red_125"))
+    parser.add_argument("--rear-mirror", choices=("horizontal", "vertical", "none"))
+    parser.add_argument("--rear-f-number", type=float)
+    parser.add_argument("--rear-thickness-um", type=float)
+    parser.add_argument("--rear-index", type=float)
+    parser.add_argument("--rear-focus-shift-um", type=float)
+    parser.add_argument("--rear-auto-refocus", action=argparse.BooleanOptionalAction,default=None)
+    from film_foundry.contracts.lens_filters import TRANSMISSION
+    parser.add_argument("--lens-filter", choices=("none", *TRANSMISSION), help="Visible lens filter for new exposures")
+    parser.add_argument("--filter-compensation", action=argparse.BooleanOptionalAction, default=None,
+                        help="Compensate the filter's estimated neutral-light loss")
     parser.add_argument("--negative-contrast", type=float, help="H-D gamma multiplier.")
     parser.add_argument("--dye-selectivity", type=float, help="Film dye absorption selectivity multiplier.")
     parser.add_argument("--halation", type=float, help="Halation multiplier.")
@@ -519,7 +532,6 @@ def _add_scan_config_args(parser: argparse.ArgumentParser) -> None:
 def _apply_common_config(args: argparse.Namespace) -> DarkroomConfig:
     session_path = getattr(args, "session", None)
     from film_foundry.model.session import load_session
-    args.path_seed_offsets = normalize_offsets(load_session(session_path).get('path_seed_offsets')) if session_path else {}
     preset = _preset_path(getattr(args, "preset", None))
     share_text = getattr(args, "config_share", None)
     film_value = getattr(args, "film_preset", None)
@@ -532,6 +544,7 @@ def _apply_common_config(args: argparse.Namespace) -> DarkroomConfig:
             "--config-share already carries parameter values; "
             "do not combine it with preset files. Share the JSON file instead."
         )
+    args.path_seed_offsets = normalize_offsets(load_session(session_path).get('path_seed_offsets')) if session_path else {}
     if preset is not None:
         config = DarkroomConfig.from_json(preset)
     elif session_path is not None:
@@ -620,6 +633,23 @@ def _apply_common_config(args: argparse.Namespace) -> DarkroomConfig:
         config.look.exposure_ev = args.exposure_ev
     if getattr(args, "exposure_seconds", None) is not None:
         config.exposure.duration_seconds = args.exposure_seconds
+    if getattr(args, "film_side", None) is not None:
+        config.exposure.film_side = args.film_side
+    rear = {key: getattr(args, "rear_" + key) for key in
+            ("profile","mirror","f_number","thickness_um","index","focus_shift_um","auto_refocus")
+            if getattr(args, "rear_" + key, None) is not None}
+    if rear:
+        from film_foundry.contracts.film_exposure import rear_optics
+        if config.exposure.film_side != "base":
+            raise ValueError("Reverse optics require --film-side base or a base-first recipe")
+        config.exposure.rear_optics = rear_optics({**(config.exposure.rear_optics or {}), **rear})
+    if getattr(args, "lens_filter", None) is not None or getattr(args, "filter_compensation", None) is not None:
+        from film_foundry.contracts.lens_filters import lens_filter
+        current = config.exposure.lens_filter or {}
+        key = args.lens_filter or current.get("key", "none")
+        compensate = args.filter_compensation if args.filter_compensation is not None else current.get("compensate", False)
+        config.exposure.lens_filter = None if key == "none" else lens_filter(
+            key, compensate, current.get("transmission") if key == "custom" else None)
     if getattr(args, "material_degradation", None) is not None:
         config.film.material_degradation = args.material_degradation
     if getattr(args, "negative_contrast", None) is not None:
@@ -748,6 +778,16 @@ def build_parser() -> argparse.ArgumentParser:
     add_material_batch_parser(subparsers)
     from film_foundry.app.film_process_cli import add_parser as add_film_process_parser
     add_film_process_parser(subparsers)
+
+    separation = subparsers.add_parser("separations", help="Register three monochrome scans into one RGB observation.")
+    separation.add_argument("sources", type=Path, nargs="+", help="One photo or three developed NPZs, in R G B order.")
+    separation.add_argument("--output", type=Path, required=True, help="New output folder.")
+    separation.add_argument("--preset", type=Path, help="Full darkroom configuration JSON.")
+    separation.add_argument("--seed", type=int, help="Repeatable exposure seed.")
+    separation.add_argument("--compensate", action=argparse.BooleanOptionalAction, default=True)
+    for channel in ("red", "green", "blue"):
+        separation.add_argument("--" + channel + "-offset", type=int, nargs=2, default=(0, 0), metavar=("X", "Y"))
+    separation.add_argument("--channel-ev", type=float, nargs=3, default=(0., 0., 0.), metavar=("R", "G", "B"))
 
     for name,help_text in (
         ('movie-expose','Import video into a timestamped latent material master.'),
@@ -957,7 +997,7 @@ def _run_full(args: argparse.Namespace, config: DarkroomConfig) -> int:
                     input_path=input_path,
                     path_seed_offset=offset_for(input_path, getattr(args, 'path_seed_offsets', None)),
                     output_path=output_path,
-                    config=config,
+                    config=numbered_photo_config(config,item_index+1),
                     scaled_override=bool(args.preview),
                     control=control,
                 )
@@ -1024,6 +1064,7 @@ def _run_develop(args: argparse.Namespace, config: DarkroomConfig) -> int:
             estimate = estimate_pipeline_memory(
                 width,
                 height,
+                film_border=config.film_border,
                 long_edge=long_edge,
                 retain_development_stages=True,
                 comfort_zone_megapixels=config.processing.comfort_zone_megapixels,
@@ -1047,7 +1088,7 @@ def _run_develop(args: argparse.Namespace, config: DarkroomConfig) -> int:
                     input_path=input_path,
                     path_seed_offset=offset_for(input_path, getattr(args, 'path_seed_offsets', None)),
                     output_path=args.negative_output,
-                    config=config,
+                    config=numbered_photo_config(config,item_index+1),
                     scaled_override=bool(args.preview),
                     control=control,
                     frame_identity=_frame_identity_for_cli_item(
@@ -1108,7 +1149,7 @@ def _run_expose(args: argparse.Namespace, config: DarkroomConfig) -> int:
                     input_path=input_path,
                     path_seed_offset=offset_for(input_path, getattr(args, 'path_seed_offsets', None)),
                     output_path=args.latent_output,
-                    config=config,
+                    config=numbered_photo_config(config,item_index+1),
                     scaled_override=bool(args.preview),
                     control=control,
                     frame_identity=_frame_identity_for_cli_item(
@@ -1241,9 +1282,9 @@ def _run_scan(args: argparse.Namespace, config: DarkroomConfig) -> int:
             scanned, scan_source, source_path = _scan_from_file(
                 negative_path,
                 config,
-                control=control,
+                control=control.before_export(),
             )
-            control.check_cancel()
+            control.report('scan', 'saving')
             sidecar = (
                 final_positive_sidecar(
                         negative_path=negative_path,
@@ -1263,6 +1304,7 @@ def _run_scan(args: argparse.Namespace, config: DarkroomConfig) -> int:
                 sidecar,
                 protected_paths=(negative_path, source_path),
             )
+            control.output_saved('scan')
             print(f"[scan:{scan_source}] {negative_path} -> {output_path}")
             completed += 1
         except Exception as exc:
@@ -1310,6 +1352,7 @@ def main(argv: list[str] | None = None) -> int:
         "film-work",
         "material-batch",
         "film-process",
+        "separations",
         "develop_latent",
         "scan",
         "share-config",
@@ -1319,6 +1362,20 @@ def main(argv: list[str] | None = None) -> int:
     }:
         argv = ["full", *argv]
     args = parser.parse_args(argv)
+    if args.command == "separations":
+        from film_foundry.app.separations import export_separations, separation_config
+        import secrets
+        try:
+            config = DarkroomConfig.from_json(args.preset) if args.preset else separation_config(DarkroomConfig())
+            seed = args.seed if args.seed is not None else config.random_seed
+            path = export_separations(args.output, args.sources, config, seed=secrets.randbits(63) if seed is None else seed,
+                                      compensate=args.compensate, offsets=[args.red_offset, args.green_offset, args.blue_offset],
+                                      gains=args.channel_ev)
+            print(path)
+            return 0
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
     if args.command == 'film-process':
         from film_foundry.app.film_process_cli import execute
         try:return execute(args)

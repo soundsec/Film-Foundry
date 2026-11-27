@@ -54,16 +54,21 @@ object CameraEffectsPreview {
             val values=sample.copyOf()
             val gain=2.0.pow(exposureEv).toFloat()
             for(i in values.indices) values[i]*=gain
-            PhoneCaptureConditions(w,h,mapOf("model" to PHONE_CAPTURE_CONDITIONS_MODEL,"camera" to settings)).apply(values,0,h)
+            val conditions=mapOf("model" to PHONE_CAPTURE_CONDITIONS_MODEL,"camera" to settings,"film" to capture)
+            PhoneCaptureConditions(w,h,conditions).apply(values,0,h)
             PhoneFilmStorageConditions(capture).apply(values)
             check()
             val source=RgbVolume(w,h,linearRgb=values)
-            val latent=if(reuse) preparedExposure.exposeRows(source) else kernel.expose(source,recipe)
+            val record=mapOf("exposure_conditions" to conditions)
+            val strip=NativeFilmStrip.from(kernel,recipe,w,h,record)
+            val latent=strip?.expose(kernel,source,recipe) ?: if(reuse) preparedExposure.exposeRows(source) else kernel.expose(source,recipe)
             check()
             val formed=kernel.develop(latent,recipe)
             check()
-            val border=if(reuse) preparedBorder else FormedFilmBorder.prepare(kernel,recipe,w,h)
-            val output=kernel.observe(border?.surround(formed) ?: formed,recipe).outputRgb
+            val hasLeak=((settings["leak"] as? Number)?.toFloat() ?: 0f)>0f
+            val border=if(strip!=null) null else if(reuse && !hasLeak) preparedBorder
+                else FormedFilmBorder.prepare(kernel,recipe,w,h,mapOf("exposure_conditions" to conditions))
+            val output=kernel.observe(strip?.finish(formed,0) ?: border?.surround(formed) ?: formed,recipe).outputRgb
             check();return output
         }
     }

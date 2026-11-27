@@ -47,14 +47,18 @@ class LocalGrainCollector:
     def __init__(self,shape,products):
         self.shape=tuple(shape[:2]);self.products=tuple(dict.fromkeys(products));self.fields={};self.masses={};self.next_row=0
 
-    def capture(self,state,*,row_offset=0):
+    def capture(self,state,*,row_offset=0,coating_records=None):
         stop=row_offset+state.halide.shape[0]
         if state.halide.shape[1]!=self.shape[1] or row_offset!=self.next_row or not 0<=row_offset<stop<=self.shape[0]:
             raise ValueError('Local formation response lies outside its frame')
         for product in self.products:
             pool=getattr(state,POOLS[product]);scalar=product=='silver'
             mass=None if pool is None else (np.sum(pool,axis=-1,dtype=np.float32) if scalar else pool)
-            channels=() if scalar else (state.halide.shape[-1],)
+            if coating_records is not None and not scalar:
+                from .coatings import sum_by_record
+                indices, count = coating_records
+                mass = sum_by_record(mass, indices, count)
+            channels=() if scalar else (state.halide.shape[-1] if coating_records is None else count,)
             if product not in self.fields:
                 self.fields[product]=[np.empty((*self.shape,*channels),np.float32) for _ in NAMES[:3]]
                 self.masses[product]=np.empty((*self.shape,*channels),np.float32)
@@ -66,6 +70,7 @@ class LocalGrainCollector:
                 # assigned by ensure_history; an empty product has zero gain.
                 moment=(state.formation_history[f'{product}_{key}'] if state.formation_history is not None else pool)
                 if scalar:moment=np.sum(moment,axis=-1,dtype=np.float32)
+                elif coating_records is not None:moment=sum_by_record(moment, indices, count)
                 np.divide(moment,mass,out=output,where=mass>1e-12)
         self.next_row=stop
 

@@ -1,12 +1,14 @@
 # 构建与打包 / Building Film Foundry
 
-普通使用无需阅读本目录。这里集中保留从公开源码生成 Windows EXE 与 Android APK 所需的入口；不包含发布私钥、密码或开发机配置。
+日常使用无需阅读本目录。此处集中保留从公开源码构建 **Windows 便携版 EXE** 与 **Android APK** 所需的脚本与配置，不含签名私钥、密码或开发机路径。
 
-**2026-11-18 非正式源码快照沿用桌面 0.4.0 和 Android 0.1.0。** 显示版本未递增，现有 0.4.0 构建锁与原生依赖清单属于历史二进制记录；重建当前源码须同时安装根目录 `requirements.txt`，重新收集实际依赖。具体变化见[源码快照](../docs/DEVELOPMENT_SNAPSHOT.md)。
+> **源码快照构建提示**：当前开发源码沿用桌面 0.4.0 与 Android 0.1.0 显示版本。旧版 `packaging/requirements-build.txt` 与原生依赖清单对应历史 0.4.0 安装包；若从当前最新源码打包桌面版，需额外安装根目录 `requirements.txt`（包含 DNG 解码 `rawpy` / LibRaw 与 Ultra HDR 解码 `imagecodecs` / libultrahdr），并在打包时由脚本重新收集实际依赖与许可。详见[开发中源码快照](../docs/DEVELOPMENT_SNAPSHOT.md)。
 
-## Windows x64 · 桌面 0.4.0
+---
 
-在 Windows 的 PowerShell 中，从仓库根目录执行。需要 Conda；下面创建独立构建环境，不修改原有环境：
+## Windows x64 · 桌面便携版
+
+在 Windows PowerShell 中，从仓库根目录运行（需已安装 Conda；以下命令会创建独立构建环境，不影响现有环境）：
 
 ```powershell
 conda env create -f packaging/environment-build.yml
@@ -16,61 +18,56 @@ python -m pip install -r requirements.txt
 .\packaging\build_windows_exe.ps1 -Python (Get-Command python).Source
 ```
 
-产物为 `portable_build/FilmFoundry/FilmFoundry.exe`。**分发时保留整个 FilmFoundry 文件夹**，其中 `_internal` 是运行库；`docs/` 是使用说明，`licenses/` 是此次实际依赖的通知与清单。
+- **产物位置**：`portable_build/FilmFoundry/FilmFoundry.exe`。分发时请**保留整个 `FilmFoundry` 文件夹**（包含 `_internal/` 运行库、`docs/` 文档与 `licenses/` 依赖许可清单）。
+- **防覆盖保护**：若 `portable_build/FilmFoundry` 已存在，脚本会直接停止；重新构建请指定新目录：
+  ```powershell
+  .\packaging\build_windows_exe.ps1 -Python (Get-Command python).Source -OutputRoot .\portable_build\next-build
+  ```
+- **内置校验**：脚本自动检查 Qt 平台插件、收集第三方原始许可、限制 DLL 搜索范围，并运行冻结程序的 `--self-check`（`-SkipFrozenSelfCheck` 仅供排障）。脚本不自动打包 ZIP、不签名、不上传。
+- **Conda 许可缓存**：请保持构建环境的 Conda 包缓存中含有 `info/licenses` 以便收集器读取原始许可；若因清理缓存导致失败，重新安装对应包即可恢复。
 
-已有 `portable_build/FilmFoundry` 时脚本会停止，避免覆盖应用或用户图片。再次构建可指定新的输出根目录：
+---
 
-```powershell
-.\packaging\build_windows_exe.ps1 -Python (Get-Command python).Source -OutputRoot .\portable_build\next-build
-```
+## Android · APK 构建
 
-脚本自动检查 Qt 平台插件、收集原始许可、限制 DLL 搜索来源并运行冻结程序的 `--self-check`。临时构建文件放在输出根目录的 `.build/`；不会把它们打进应用，不自动压缩、不签名 EXE、不上传或安装。`-SkipFrozenSelfCheck` 仅供排障，正常发行请保留自检。
-
-`environment-build.yml` 固定本次 Python 和匹配的 Conda 原生包构建；`requirements-build.txt` 固定主要 Python 依赖和 PyInstaller 版本。完整原生文件记录见[原生依赖清单](../third_party_licenses/windows-native/README.md)。这些文件用于重建功能相同的程序，不承诺跨系统补丁、缓存和依赖解析得到逐字节相同的 EXE。
-
-构建环境的 Conda 包缓存需保留 `info/licenses`，收集器从这些原始文件取得许可。若清理过缓存导致收集失败，重新安装对应包恢复其缓存；不要直接跳过许可证收集。首次安装环境和依赖需要联网。
-
-## Android · 手机 0.1.0
-
-已有完整的 Gradle 构建入口，无需额外打包器。使用 JDK 17 和 Android SDK 37：
+Android 使用仓库自带的 Gradle Wrapper，要求 **JDK 17** 与 **Android SDK 37**：
 
 ```powershell
 cd android
 .\gradlew.bat :app:assembleDebug -PsplitApks=true
 ```
 
-输出为四个 ABI 独立 APK 和一个通用 APK。正式签名通过四个 `FILM_RELEASE_*` 环境变量传入，详见 [Android 构建与签名说明](../android/README.md)。每位构建者使用自己的密钥；缺少密钥时 release 构建明确失败，不会使用作者的密钥或自动改成调试签名。
+产物为 4 个分架构 APK 与 1 个 `universal` 通用 APK。正式 Release 包从四个 `FILM_RELEASE_*` 环境变量读取本地签名凭据（缺失则明确报错，绝不回退调试签名），详见[Android 构建与签名说明](../android/README.md)：
 
 ```powershell
 .\gradlew.bat --no-daemon --no-configuration-cache :app:assembleRelease -PsplitApks=true
 ```
 
-运行时依赖及原始通知见 [Android 许可清单](../third_party_licenses/android/README.md)。Gradle 会检查清单是否与解析依赖匹配；更新流程见 Android 说明。
+运行时依赖及许可清单见[Android 许可目录](../third_party_licenses/android/README.md)，Gradle 会在构建时校验清单与解析依赖是否一致。
 
-## 本目录包含什么
+---
+
+## 本目录文件清单
 
 | 文件 | 用途 |
 | --- | --- |
-| `build_windows_exe.ps1` / `FilmFoundry.spec` | 构建桌面 EXE、打包资源和运行库 |
-| `environment-build.yml` / `requirements-build.txt` | 独立环境与版本固定 |
-| `collect_windows_licenses.ps1` / `collect_native_notices.py` | 收集实际随包依赖的原始通知与来源清单 |
-| `prepare_source_release.py` | 复制公开文档，或准备白名单源码目录 |
-| `PORTABLE_README.txt` | 随便携包附带的简短使用说明 |
+| `build_windows_exe.ps1` / `FilmFoundry.spec` | 构建 Windows 便携 EXE、打包资源与运行库 |
+| `environment-build.yml` / `requirements-build.txt` | 固定 Conda 原生包与主要 Python 构建依赖版本 |
+| `collect_windows_licenses.ps1` / `collect_native_notices.py` | 收集随包原生库与 Python 依赖的原始许可通知 |
+| `prepare_source_release.py` | 复制公开文档或按白名单生成干净的公开源码目录 |
+| `PORTABLE_README.txt` | 随便携包附带的简短入门说明 |
 
-准备一份新的公开源码副本（目标目录必须不存在）：
+按白名单导出干净的公开源码副本（目标目录必须不存在）：
 
 ```powershell
 python packaging/prepare_source_release.py portable_build/source-release --include-android
 ```
 
-默认保留脚本白名单中的公开构建文件、当前源码入口和公开文档。图标生成工具、本机签名管理助手、签名目录、日志、用户照片与开发记录不在白名单中。构建脚本与项目一起按 [GPL-3.0-or-later](../LICENSE) 提供；上游依赖保留自己的许可。这些脚本提供项目构建方法，不代替第三方依赖的对应源码。
+脚本仅包含公开源码、构建脚本与公开文档，自动排除开发记录、签名目录、日志与用户照片。构建脚本随项目按 [GPL-3.0-or-later](../LICENSE) 提供，上游依赖沿用各自许可。
+
+---
 
 ## English quick reference
 
-On Windows x64, create and activate the Conda environment above, install the pinned pip requirements, then run `packaging/build_windows_exe.ps1` from the repository root. Ship the complete output folder, including `_internal`, `docs` and `licenses`. Existing app folders are refused; select a fresh `-OutputRoot` to rebuild. The script performs a frozen self-check by default and never publishes, installs or creates a ZIP.
-
-Android uses its existing Gradle wrapper with JDK 17 and SDK 37. See [Android instructions](../android/README.md) for the four release-signing environment variables; no private signing identity is distributed. Dependency notices and build instructions are separate from the corresponding source of third-party components.
-
-## 当前开发源码新增输入依赖（尚未重新发布）
-
-DNG 使用 rawpy/LibRaw；Ultra HDR JPEG 使用 imagecodecs/libultrahdr。重建当前源码须在旧发布构建依赖之后安装根目录 `requirements.txt`；本次验证 rawpy 0.28.0、imagecodecs 2026.3.6。旧 `requirements-build.txt` 和原生清单仍是 0.4.0 历史产物的记录，不能当作新构建已完成的证明。spec 已收集两个解码模块和原始许可；重新发布前须由现有构建脚本重新收集实际二进制许可与依赖。
+- **Windows x64**: Create and activate the Conda build environment above, install both `packaging/requirements-build.txt` and root `requirements.txt` (needed for current DNG / Ultra HDR codecs), then run `packaging/build_windows_exe.ps1` from the repository root. Ship the complete output folder (`_internal`, `docs`, and `licenses`). Existing target folders are refused—pass a fresh `-OutputRoot` to rebuild. The script runs `--self-check` by default and never signs, zips, installs, or uploads artifacts.
+- **Android**: Build with the bundled Gradle wrapper using **JDK 17** and **Android SDK 37** (`-PsplitApks=true` for per-ABI and universal APKs). See [Android build instructions](../android/README.md) for the four `FILM_RELEASE_*` signing environment variables.

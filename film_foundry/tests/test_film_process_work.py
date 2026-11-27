@@ -26,6 +26,7 @@ def config(kind='color_negative'):
     c=DarkroomConfig(enable_halation=False,enable_mtf=False,seed_strategy='fixed',random_seed=19)
     c.process_control_mode='principle';c.chemistry.program_key=kind
     if kind.startswith('bw'):c.film.color_process='bw'
+    c.output.material_storage_precision='full'  # Compare continuous and resumed formation before storage rounding.
     c.output.save_scanner_raw=False;c.output.export_transparent_plate=False
     c.output.export_plate_set=False;c.output.export_layer_pack=False
     c.chemistry.uneven_development=.24
@@ -54,7 +55,8 @@ def same_medium(a,b):
 
 @pytest.mark.parametrize('kind',['bw_negative','bw_reversal','color_negative','color_reversal'])
 def test_all_paths_roundtrip_move_resume_without_repeating_completed_steps(tmp_path,monkeypatch,kind):
-    c=config(kind);path=source(tmp_path,c)
+    c=config(kind)
+    path=source(tmp_path,c)
     original,_=load_exposed_latent(path)
     expected_rng=np.random.default_rng(19)
     expected=develop_negative_from_latent(original.copy(),c,rng=expected_rng)

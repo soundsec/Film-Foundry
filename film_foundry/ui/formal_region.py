@@ -178,6 +178,8 @@ def open_formal_region(owner):
         else:path=owner._first_input_image()
         if path is None:raise ValueError(text('先选择来源。','Select a source first.'))
         config=owner._freeze_incident_config(owner._config())
+        if mode in ("full","expose","develop"):
+            config=owner._focused_incident_config(config,path)
         session=FilmStripSession(path,mode,config,path_seed_offset=offset_for(path,owner._path_seed_offsets))
         session.frame_settings=owner._focused_frame_settings(path)
         dialog=FormalRegion(owner.film_workspace,session,[(path.name,config)],bool(owner.run_as_preview.get()))

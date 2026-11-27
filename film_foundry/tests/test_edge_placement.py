@@ -22,14 +22,14 @@ def test_block_sequences_and_direction_symbols_are_stable():
             assert [pattern.ink(x,0) for x in range(16,112)]==[True,True,False,False]*24
         else:
             for x in range(pattern.width):assert all(pattern.ink(x,y)==pattern.ink(x,0) for y in range(12))
-    for style in ('arrow','double_arrow','chevron','triangle','outline_triangle'):
+    for style in ('arrow','double_arrow','chevron','triangle','outline_triangle','outline_pentagon'):
         right=advance_stencil(None,style,'right',64,64)
         np.testing.assert_array_equal(advance_stencil(None,style,'left',64,64),right[:,::-1])
         assert right.max()==1
 
 
 def test_loading_offset_uses_adjacent_frame_and_clips_each_rebate():
-    cfg=FilmBorderConfig(enabled=True,factory_layout='text_code',factory_barcode='staggered_blocks',
+    cfg=FilmBorderConfig(enabled=True,strip_layout='frame_layout_v1',factory_layout='text_code',factory_barcode='staggered_blocks',
         factory_barcode_seed=42,frame_number=8,advance_marker_style='triangle')
     layout=resolve_film_border_layout(cfg,(160,800,3))
     base,holes=_strip_masks(cfg,layout,'FF 400')
@@ -80,9 +80,38 @@ def test_dialog_drag_and_shuffle_keep_configuration_local():
         QtGui.QMouseEvent(QtCore.QEvent.Type.MouseButtonRelease,start,start,QtCore.Qt.MouseButton.LeftButton,QtCore.Qt.MouseButton.NoButton,QtCore.Qt.KeyboardModifier.NoModifier),
     ):app.sendEvent(preview,event)
     assert dialog.value().loading_offset>0
-    dialog.drag_target.setCurrentIndex(dialog.drag_target.findData('factory_offset_top'))
-    dialog.drag_selected(.1,-.2)
-    assert dialog.value().factory_offset_top==(.1,-.2)
+    dialog.align.click()
+    assert dialog.value().loading_offset==0
     dialog.shuffle_blocks();assert dialog.value().factory_barcode_seed!=0
     dialog.reject()
     assert original.loading_offset==0 and original.factory_barcode_seed==0
+
+
+def test_registered_strip_joins_the_adjacent_code_with_printed_number_off():
+    from film_foundry.app.workspace_jobs import numbered_photo_config
+    config = DarkroomConfig()
+    config.film_border = FilmBorderConfig(enabled=True, factory_layout="text_code",
+        factory_barcode="code128c", factory_batch=123)
+    numbered = replace(config.film_border, frame_number=12, advance_marker_style="outline_pentagon")
+    layout = resolve_film_border_layout(numbered,(180,640))
+    base, _ = _strip_masks(numbered,layout,"FF 400")
+    displaced = replace(numbered, factory_offset_bottom=(.8,0), advance_marker_offset=(-.5,0))
+    np.testing.assert_array_equal(base,_strip_masks(displaced,layout,"FF 400")[0])
+    bottom = base[layout.image_rect[1]:]
+    assert bottom[:,:525].any() and not bottom[:,525:537].any() and bottom[:,537:].any()
+    def strips(slot, dx):
+        border = numbered_photo_config(config, slot).film_border
+        assert border.frame_number is None and border.strip_frame_index == slot
+        moved = replace(border, loading_offset=dx, factory_offset_bottom=(.65,0.))
+        layout = resolve_film_border_layout(moved,(180,640))
+        return _strip_masks(moved,layout,"FF 400")[0][layout.image_rect[1]:]
+    for dx, neighbour in ((-.25,3),(.25,1)):
+        baseline = strips(2,0.)
+        adjacent = strips(neighbour,0.)
+        reference = np.concatenate((baseline,adjacent) if dx<0 else (adjacent,baseline), axis=1)
+        start = round(((-dx) if dx<0 else (1-dx)) * 640)
+        np.testing.assert_array_equal(strips(2,dx),reference[:,start:start+640])
+    for fmt,count in (("135",16),("half_frame",8),("120",0),("110",1)):
+        assert len(resolve_film_border_layout(replace(config.film_border,format_key=fmt),(200,640)).sprocket_holes) == count
+    old = DarkroomConfig.from_dict({"film_border":{"enabled":True,"format_key":"110"}})
+    assert len(resolve_film_border_layout(old.film_border,(200,640)).sprocket_holes)==12

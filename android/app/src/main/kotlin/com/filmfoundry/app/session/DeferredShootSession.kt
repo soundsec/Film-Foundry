@@ -109,9 +109,8 @@ class DeferredShootSession(private val library: FilmLibrary,private val medium: 
                 val path=cameraLatentPath(rollId,frame.frameIndex)
                 val identity=FrameIdentity(rollId,frame.frameId,frame.frameIndex)
                 if(!medium.hasRecoverableCameraLatent(path,identity,control)) {
-                    withExposureRows(frame.capturePath!!,receipt,control) { rows ->
+                    withExposureRows(frame.capturePath!!,receipt,control) { rows, captureRecord ->
                         val io=rowIo ?: medium.rowExecutionIo() ?: error("deferred capture requires row storage")
-                        val captureRecord=record(receipt)
                         val exposure=PhoneMaterialDefaults.withCaptureDuration(PhoneMaterialDefaults.exposureRecipe(receipt.film,roll.captureSettings)+
                             (grainModel?.let { mapOf(PhoneGrainModels.EXPOSURE_OPTION to it) } ?: emptyMap()),captureRecord)
                         val request=WorkflowRequest(Command.EXPOSE,MediumRef("stored_camera"),MediumRef(path),
@@ -125,7 +124,7 @@ class DeferredShootSession(private val library: FilmLibrary,private val medium: 
     }
 
     private suspend fun withExposureRows(path: String,receipt: CaptureReceipt,control: WorkflowControl,
-        work: suspend (RgbRows)->Unit) {
+        work: suspend (RgbRows,Map<String,Any?>)->Unit) {
         val first=receipt.sources.first()
         val aperture=StillFrameFormat.read(first.record["frame_format"],first.width,first.height)
         val apertures=receipt.sources.associate { source ->
@@ -139,7 +138,10 @@ class DeferredShootSession(private val library: FilmLibrary,private val medium: 
             source.path to settings?.let { prepareCaptureConditions(width,height,it) }
         }
         @Suppress("UNCHECKED_CAST") val frozen=(first.record["exposure_conditions"] as? Map<String,Any?>)?.get("film") as? Map<String,Any?> ?: emptyMap()
-        suspend fun finish(rows: RgbRows) { work(filmStorageRgbRows(rows,frozen)) }
+        val rawMetadata = mutableMapOf<String,Map<String,Any?>>()
+        suspend fun finish(rows: RgbRows) {
+            work(filmStorageRgbRows(rows,frozen), record(receipt,rawMetadata))
+        }
         fun linear(source: StoredExposure,pixels: StoredExposurePixels,start: Int,count: Int): FloatArray {
             control.checkCancel()
             val rgb=pixels.linearWindowRows(aperture.left,aperture.top+start,width,count,CaptureKind.fromWire(source.record["kind"] as String))
@@ -159,6 +161,7 @@ class DeferredShootSession(private val library: FilmLibrary,private val medium: 
         if(receipt.sources.size == 1) {
             openPixels(captures.sourceFile(path,first)).use { pixels ->
                 pixels.configureCapture(first.record)
+                rawMetadata[first.path] = pixels.decodedRawMetadata()
                 require(pixels.width == first.width && pixels.height == first.height)
                 finish(workingRgbRows(width,height) { start,count -> linear(first,pixels,start,count) })
             }
@@ -174,6 +177,7 @@ class DeferredShootSession(private val library: FilmLibrary,private val medium: 
                 for((index,source) in receipt.sources.withIndex()) {
                     openPixels(captures.sourceFile(path,source)).use { pixels ->
                         pixels.configureCapture(source.record)
+                        rawMetadata[source.path] = pixels.decodedRawMetadata()
                         require(pixels.width == first.width && pixels.height == first.height)
                         for(start in 0 until height step step) {
                             val count=minOf(step,height-start)
@@ -200,8 +204,9 @@ class DeferredShootSession(private val library: FilmLibrary,private val medium: 
             }
         } finally { lease.close() }
     }
-    private fun record(receipt: CaptureReceipt): Map<String,Any?> {
+    private fun record(receipt: CaptureReceipt,decoded: Map<String,Map<String,Any?>>): Map<String,Any?> {
         val first=receipt.sources[0].record
+        val firstRaw=decoded[receipt.sources[0].path].orEmpty()
         val gates=receipt.sources.map { StillFrameFormat.read(it.record["frame_format"],it.width,it.height) }
         val mixedGate=gates.any { it.panorama!=gates.first().panorama }
         val frameFormat=if(mixedGate) mapOf("frame_format" to gates.first().copy(panorama=false).metadata(),"gate_application" to "per_exposure_v1")
@@ -212,11 +217,16 @@ class DeferredShootSession(private val library: FilmLibrary,private val medium: 
         return CaptureRecord(if(stacked) CaptureKind.EXPOSURE_STACK else if(raw) CaptureKind.SENSOR_RAW_DNG else if(hdr) CaptureKind.ULTRA_HDR_GAINMAP else CaptureKind.DISPLAY_REFERRED_SRGB,
             receipt.sources.any { it.record["isp_processed"]==true },
             sourceEncoding=if(stacked) "linear_sum_relative_ev" else if(raw) {
-                if(first["stored_pixel_orientation"]=="dng_exif_v1") DngRawDecoder.ORIENTED_MODEL else DngRawDecoder.MODEL
-            } else if(hdr) "ultra_hdr_gainmap_full_linear_srgb_v1" else "iec61966_2_1_srgb",bitDepth=if(raw) (first["bit_depth"] as? Number)?.toInt() else 8,hdrGainmap=if(hdr) "applied" else "absent",
+                firstRaw["source_encoding"] as? String ?: if(first["stored_pixel_orientation"]=="dng_exif_v1") DngRawDecoder.ORIENTED_MODEL else DngRawDecoder.MODEL
+            } else if(hdr) "ultra_hdr_gainmap_full_linear_srgb_v1" else "iec61966_2_1_srgb",bitDepth=if(raw) ((firstRaw["bit_depth"] ?: first["bit_depth"]) as? Number)?.toInt() else 8,hdrGainmap=if(hdr) "applied" else "absent",
             exposureTimeNs=(first["exposure_time_ns"] as? Number)?.toLong(),iso=(first["iso"] as? Number)?.toInt(),
             frameCount=receipt.sources.size).toMetadata()+frameFormat+mapOf("stored_exposures" to receipt.sources.map {
-                mapOf("relative_ev" to it.ev,"capture" to it.record)
+                buildMap {
+                    put("relative_ev",it.ev)
+                    put("capture",it.record)
+                    val fields = decoded[it.path].orEmpty()
+                    if (fields.isNotEmpty()) put("decoded_raw",fields)
+                }
             })
     }
 }

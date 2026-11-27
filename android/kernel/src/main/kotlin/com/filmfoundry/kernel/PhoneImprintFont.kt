@@ -32,8 +32,21 @@ object PhoneImprintFont {
     private val ascii=Font(5,7,(' '..'~').associateWith { ch -> IntArray(7) { y ->
         (0..4).fold(0) { bits,x -> if(com.filmfoundry.interchange.ExposureGlyphs.lit(ch,x,y)) bits or (1 shl (4-x)) else bits }
     } })
-    fun forText(text: String): Font {
+    private val segments=listOf("abcdef","bc","abdeg","abcdg","bcfg","acdfg","acdefg","abc","abcdefg","abcdfg")
+    private val digital=Font(7,11,(' '..'~').associateWith { ch -> IntArray(11) { y ->
+        (0..6).fold(0) { bits,x ->
+            val seg=when { x in 1..5 && y==0 -> 'a'; x==6 && y in 1..4 -> 'b'
+                x==6 && y in 6..9 -> 'c'; x in 1..5 && y==10 -> 'd'; x==0 && y in 6..9 -> 'e'
+                x==0 && y in 1..4 -> 'f'; x in 1..5 && y==5 -> 'g'; else -> ' ' }
+            val on=if(ch in '0'..'9') seg in segments[ch-'0'] else ascii.lit(ch,x*5/7,y*7/11)
+            if(on) bits or (1 shl (6-x)) else bits
+        }
+    } })
+    fun forText(text: String, style: String="legacy"): Font {
         require(valid(text)) { "Use up to 24 English letters, digits, spaces or ASCII punctuation" }
+        if(style=="seven_segment" || style=="seven_segment_open" || style=="seven_segment_narrow") return digital
+        if(style=="dot_matrix") return ascii
+        require(style=="legacy")
         return if(text.all { it in "0123456789 -:/." }) legacy else ascii
     }
 }

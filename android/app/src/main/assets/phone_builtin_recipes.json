@@ -31,6 +31,11 @@
             0.72,
             0.72
           ],
+          "density_min": [
+            0.08,
+            0.08,
+            0.08
+          ],
           "density_max": [
             1.88,
             1.88,
@@ -46,6 +51,8 @@
             0.5,
             0.5
           ],
+          "hd_toe_width": 0.17,
+          "hd_shoulder_width": 0.24,
           "layer_sensitivity_matrix": [
             [
               0.94,
@@ -142,6 +149,11 @@
             0.704,
             0.638
           ],
+          "density_min": [
+            0.1,
+            0.11,
+            0.1
+          ],
           "density_max": [
             1.78,
             1.9,
@@ -157,6 +169,8 @@
             0.46,
             0.4
           ],
+          "hd_toe_width": 0.19,
+          "hd_shoulder_width": 0.24,
           "layer_sensitivity_matrix": [
             [
               0.896,
@@ -255,6 +269,11 @@
             0.726,
             0.704
           ],
+          "density_min": [
+            0.07,
+            0.07,
+            0.07
+          ],
           "density_max": [
             1.96,
             1.96,
@@ -270,6 +289,8 @@
             0.56,
             0.56
           ],
+          "hd_toe_width": 0.18,
+          "hd_shoulder_width": 0.22,
           "layer_sensitivity_matrix": [
             [
               0.961,
@@ -360,6 +381,11 @@
             0.78,
             0.78
           ],
+          "density_min": [
+            0.12,
+            0.12,
+            0.12
+          ],
           "density_max": [
             2.1,
             2.1,
@@ -375,6 +401,8 @@
             0.36,
             0.36
           ],
+          "hd_toe_width": 0.15,
+          "hd_shoulder_width": 0.2,
           "film_base_density_rgb": [
             0.12,
             0.12,
@@ -420,6 +448,11 @@
             0.826,
             0.814
           ],
+          "density_min": [
+            0.0514,
+            0.0514,
+            0.0522
+          ],
           "density_max": [
             2.15,
             2.165,
@@ -435,6 +468,8 @@
             0.223,
             0.217
           ],
+          "hd_toe_width": 0.12,
+          "hd_shoulder_width": 0.16,
           "layer_sensitivity_matrix": [
             [
               0.86,
@@ -483,7 +518,18 @@
             0.7,
             0.23,
             0.07
-          ]
+          ],
+          "positive_density_contrast": 1.18,
+          "positive_density_bias": 0.025,
+          "positive_latitude_compression": 0.42,
+          "positive_dye_saturation": 1.06,
+          "positive_midtone_density": 0.2,
+          "positive_shadow_toe": 0.24,
+          "positive_shadow_toe_width": 0.26,
+          "positive_highlight_shoulder": 0.42,
+          "positive_highlight_shoulder_width": 0.24,
+          "positive_highlight_chroma_retention": 0.18,
+          "positive_shadow_chroma_retention": 0.24
         }
       }
     },
@@ -514,6 +560,11 @@
             0.82,
             0.82
           ],
+          "density_min": [
+            0.045,
+            0.045,
+            0.045
+          ],
           "density_max": [
             2.25,
             2.25,
@@ -529,6 +580,8 @@
             0.22,
             0.22
           ],
+          "hd_toe_width": 0.13,
+          "hd_shoulder_width": 0.17,
           "film_base_density_rgb": [
             0.03,
             0.03,
@@ -539,6 +592,15 @@
             1.0,
             1.0
           ],
+          "positive_density_contrast": 1.14,
+          "positive_density_bias": 0.02,
+          "positive_latitude_compression": 0.44,
+          "positive_dye_saturation": 0.0,
+          "positive_midtone_density": 0.18,
+          "positive_shadow_toe": 0.25,
+          "positive_shadow_toe_width": 0.27,
+          "positive_highlight_shoulder": 0.4,
+          "positive_highlight_shoulder_width": 0.24,
           "silver_grain_strength": 0.018,
           "silver_grain_radius": 0.00065,
           "silver_grain_clump_mix": 0.16
@@ -575,6 +637,11 @@
             0.682,
             0.814
           ],
+          "density_min": [
+            0.08,
+            0.09,
+            0.08
+          ],
           "density_max": [
             1.84,
             1.9,
@@ -590,6 +657,8 @@
             0.52,
             0.3
           ],
+          "hd_toe_width": 0.24,
+          "hd_shoulder_width": 0.18,
           "layer_sensitivity_matrix": [
             [
               0.9025,
@@ -688,6 +757,11 @@
             0.682,
             0.55
           ],
+          "density_min": [
+            0.08,
+            0.09,
+            0.08
+          ],
           "density_max": [
             1.9,
             1.8,
@@ -703,6 +777,8 @@
             0.2,
             -0.2
           ],
+          "hd_toe_width": 0.25,
+          "hd_shoulder_width": 0.08,
           "layer_sensitivity_matrix": [
             [
               0.909,
@@ -798,6 +874,11 @@
             0.737,
             0.66
           ],
+          "density_min": [
+            0.1,
+            0.11,
+            0.1
+          ],
           "density_max": [
             1.84,
             1.94,
@@ -813,6 +894,8 @@
             0.48,
             0.4
           ],
+          "hd_toe_width": 0.18,
+          "hd_shoulder_width": 0.24,
           "layer_sensitivity_matrix": [
             [
               0.922,
@@ -908,6 +991,11 @@
             0.76,
             0.7
           ],
+          "density_min": [
+            0.11,
+            0.12,
+            0.11
+          ],
           "density_max": [
             1.9,
             2.02,
@@ -923,6 +1011,8 @@
             0.38,
             0.32
           ],
+          "hd_toe_width": 0.16,
+          "hd_shoulder_width": 0.2,
           "film_base_density_rgb": [
             0.19,
             0.57,
@@ -984,6 +1074,11 @@
             0.906,
             0.894
           ],
+          "density_min": [
+            0.0514,
+            0.0514,
+            0.0522
+          ],
           "density_max": [
             2.3057,
             2.3207,
@@ -999,6 +1094,8 @@
             0.183,
             0.177
           ],
+          "hd_toe_width": 0.11,
+          "hd_shoulder_width": 0.14,
           "layer_sensitivity_matrix": [
             [
               0.88,
@@ -1048,6 +1145,17 @@
             0.25,
             0.09
           ],
+          "positive_density_contrast": 1.3,
+          "positive_density_bias": 0.03,
+          "positive_latitude_compression": 0.32,
+          "positive_dye_saturation": 1.18,
+          "positive_midtone_density": 0.24,
+          "positive_shadow_toe": 0.18,
+          "positive_shadow_toe_width": 0.22,
+          "positive_highlight_shoulder": 0.32,
+          "positive_highlight_shoulder_width": 0.2,
+          "positive_highlight_chroma_retention": 0.14,
+          "positive_shadow_chroma_retention": 0.2,
           "cross_process_layer_balance": [
             0.76,
             1.19,
@@ -1089,6 +1197,11 @@
             0.58,
             0.58
           ],
+          "density_min": [
+            0.12,
+            0.12,
+            0.12
+          ],
           "density_max": [
             1.8,
             1.8,
@@ -1104,6 +1217,8 @@
             0.36,
             0.36
           ],
+          "hd_toe_width": 0.15,
+          "hd_shoulder_width": 0.2,
           "film_base_density_rgb": [
             0.06,
             0.06,
@@ -1166,6 +1281,11 @@
             0.82,
             0.69
           ],
+          "density_min": [
+            0.0514,
+            0.0514,
+            0.0522
+          ],
           "density_max": [
             2.35,
             2.15,
@@ -1181,6 +1301,8 @@
             0.223,
             0.217
           ],
+          "hd_toe_width": 0.12,
+          "hd_shoulder_width": 0.16,
           "layer_sensitivity_matrix": [
             [
               0.95,
@@ -1230,6 +1352,17 @@
             0.23,
             0.07
           ],
+          "positive_density_contrast": 1.18,
+          "positive_density_bias": 0.025,
+          "positive_latitude_compression": 0.42,
+          "positive_dye_saturation": 1.06,
+          "positive_midtone_density": 0.2,
+          "positive_shadow_toe": 0.24,
+          "positive_shadow_toe_width": 0.26,
+          "positive_highlight_shoulder": 0.42,
+          "positive_highlight_shoulder_width": 0.24,
+          "positive_highlight_chroma_retention": 0.18,
+          "positive_shadow_chroma_retention": 0.24,
           "clear_support_density_rgb": [
             0.025,
             0.045,
@@ -1272,6 +1405,11 @@
             1.05,
             0.92
           ],
+          "density_min": [
+            0.0514,
+            0.0514,
+            0.0522
+          ],
           "density_max": [
             2.45,
             2.55,
@@ -1287,6 +1425,8 @@
             0.183,
             0.177
           ],
+          "hd_toe_width": 0.11,
+          "hd_shoulder_width": 0.14,
           "layer_sensitivity_matrix": [
             [
               0.73,
@@ -1336,6 +1476,17 @@
             0.25,
             0.09
           ],
+          "positive_density_contrast": 1.3,
+          "positive_density_bias": 0.03,
+          "positive_latitude_compression": 0.32,
+          "positive_dye_saturation": 1.18,
+          "positive_midtone_density": 0.24,
+          "positive_shadow_toe": 0.18,
+          "positive_shadow_toe_width": 0.22,
+          "positive_highlight_shoulder": 0.32,
+          "positive_highlight_shoulder_width": 0.2,
+          "positive_highlight_chroma_retention": 0.14,
+          "positive_shadow_chroma_retention": 0.2,
           "cross_process_layer_balance": [
             0.78,
             1.12,
@@ -1388,6 +1539,11 @@
             1.65,
             1.65
           ],
+          "density_min": [
+            0.045,
+            0.045,
+            0.045
+          ],
           "density_max": [
             3.0,
             3.0,
@@ -1403,6 +1559,8 @@
             0.0,
             0.0
           ],
+          "hd_toe_width": 0.13,
+          "hd_shoulder_width": 0.17,
           "film_base_density_rgb": [
             0.045,
             0.045,
@@ -1413,6 +1571,15 @@
             1.0,
             1.0
           ],
+          "positive_density_contrast": 1.55,
+          "positive_density_bias": 0.02,
+          "positive_latitude_compression": 0.44,
+          "positive_dye_saturation": 0.0,
+          "positive_midtone_density": 0.18,
+          "positive_shadow_toe": 0.25,
+          "positive_shadow_toe_width": 0.27,
+          "positive_highlight_shoulder": 0.4,
+          "positive_highlight_shoulder_width": 0.24,
           "contrast": 1.35,
           "grain_strength": 0.045,
           "silver_grain_strength": 0.055,
@@ -1443,6 +1610,11 @@
             0.58,
             0.58
           ],
+          "density_min": [
+            0.12,
+            0.12,
+            0.12
+          ],
           "density_max": [
             1.8,
             1.8,
@@ -1458,6 +1630,8 @@
             0.36,
             0.36
           ],
+          "hd_toe_width": 0.15,
+          "hd_shoulder_width": 0.2,
           "film_base_density_rgb": [
             0.06,
             0.06,
@@ -1530,6 +1704,11 @@
             0.58,
             0.58
           ],
+          "density_min": [
+            0.12,
+            0.12,
+            0.12
+          ],
           "density_max": [
             1.8,
             1.8,
@@ -1545,6 +1724,8 @@
             0.36,
             0.36
           ],
+          "hd_toe_width": 0.15,
+          "hd_shoulder_width": 0.2,
           "film_base_density_rgb": [
             0.06,
             0.06,
@@ -1626,10 +1807,16 @@
               1.0
             ]
           ],
-          "print_mapping_mode": "sigmoid",
+          "print_reference_density": [
+            1.54,
+            1.54,
+            1.54
+          ],
+          "print_gamma": 1.0,
+          "print_mapping_mode": "printlike",
           "scan_saturation": 1.0,
           "scan_normalize": true,
-          "scan_normalize_strength": 1.0,
+          "scan_normalize_strength": 0.65,
           "scan_normalize_mode": "luma",
           "scan_black_percentile": 0.25,
           "scan_white_percentile": 99.7
@@ -1643,10 +1830,16 @@
       "source": "film_foundry/presets/scanner/bw_neutral_scan.json",
       "recipe": {
         "scanner": {
-          "print_mapping_mode": "sigmoid",
+          "print_reference_density": [
+            1.55,
+            1.55,
+            1.55
+          ],
+          "print_gamma": 1.08,
+          "print_mapping_mode": "printlike",
           "scan_saturation": 1.04,
           "scan_normalize": true,
-          "scan_normalize_strength": 1.0,
+          "scan_normalize_strength": 0.45,
           "scan_normalize_mode": "luma",
           "scan_black_percentile": 0.3,
           "scan_white_percentile": 99.7
@@ -1682,10 +1875,16 @@
               1.0
             ]
           ],
-          "print_mapping_mode": "sigmoid",
+          "print_reference_density": [
+            1.52,
+            1.56,
+            1.5
+          ],
+          "print_gamma": 0.92,
+          "print_mapping_mode": "printlike",
           "scan_saturation": 1.1,
           "scan_normalize": true,
-          "scan_normalize_strength": 1.0,
+          "scan_normalize_strength": 0.45,
           "scan_normalize_mode": "luma",
           "scan_black_percentile": 0.25,
           "scan_white_percentile": 99.7,
@@ -1775,10 +1974,16 @@
               1.0
             ]
           ],
-          "print_mapping_mode": "sigmoid",
+          "print_reference_density": [
+            1.52,
+            1.56,
+            1.5
+          ],
+          "print_gamma": 0.92,
+          "print_mapping_mode": "printlike",
           "scan_saturation": 1.1,
           "scan_normalize": true,
-          "scan_normalize_strength": 1.0,
+          "scan_normalize_strength": 0.45,
           "scan_normalize_mode": "luma",
           "scan_black_percentile": 0.25,
           "scan_white_percentile": 99.7,
@@ -1847,7 +2052,7 @@
       "recipe": {
         "scanner": {
           "remove_base_mask": true,
-          "print_mapping_mode": "sigmoid",
+          "print_mapping_mode": "printlike",
           "scan_normalize": true,
           "scan_normalize_strength": 1.0,
           "scan_normalize_mode": "luma",
@@ -1887,7 +2092,7 @@
       "recipe": {
         "scanner": {
           "remove_base_mask": true,
-          "print_mapping_mode": "sigmoid",
+          "print_mapping_mode": "printlike",
           "scan_normalize": true,
           "scan_normalize_strength": 1.0,
           "scan_normalize_mode": "luma",
@@ -1995,7 +2200,7 @@
       "recipe": {
         "scanner": {
           "remove_base_mask": true,
-          "print_mapping_mode": "sigmoid",
+          "print_mapping_mode": "printlike",
           "scan_normalize": true,
           "scan_normalize_strength": 1.0,
           "scan_normalize_mode": "luma",
@@ -2103,7 +2308,7 @@
       "recipe": {
         "scanner": {
           "remove_base_mask": true,
-          "print_mapping_mode": "sigmoid",
+          "print_mapping_mode": "printlike",
           "scan_normalize": true,
           "scan_normalize_strength": 1.0,
           "scan_normalize_mode": "luma",
@@ -2211,7 +2416,7 @@
       "recipe": {
         "scanner": {
           "remove_base_mask": true,
-          "print_mapping_mode": "sigmoid",
+          "print_mapping_mode": "printlike",
           "scan_normalize": true,
           "scan_normalize_strength": 1.0,
           "scan_normalize_mode": "luma",
@@ -2328,5 +2533,5 @@
     "monochrome_ortho_negative",
     "monochrome_blue_sensitive_negative"
   ],
-  "revision": "phone_reduced_materials_v3"
+  "revision": "phone_reduced_materials_v4"
 }

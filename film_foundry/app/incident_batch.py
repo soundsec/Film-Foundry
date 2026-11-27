@@ -10,6 +10,13 @@ import zlib
 from pathlib import Path
 
 
+def restore_incident_scope(config, frozen):
+    """An unfinished batch keeps the numerical policy of its first frame."""
+    if "incident_pattern_scope" not in frozen.get("chemistry", frozen.get("develop", {})):
+        config.chemistry.incident_pattern_scope = "roll"
+    return config
+
+
 def new_incident_seed():
     return secrets.randbits(32)
 

@@ -31,6 +31,7 @@ def source(shape):return np.full((*shape,3),.18,np.float32)
 def start(kind,shape):
     session=MaterialLabSession(kind);session.image=source(shape)
     material={'material_long_edge_mm':80.,'texture_scale_mm':1.3,'process_scale_mm':6.}
+    if kind == 'wet':material['pour_rest_seconds'] = 0.  # Inspect the deposited coating before fluid retraction.
     if kind in ('wet','paper','cyanotype','platinum'):material.update(coating_variation=.6,texture=.6,edge_loss=.3)
     session.process('prepare' if kind in ('plate','wet') else 'expose',material=material,seed=17)
     if kind=='plate':session.process('polish',{'streaks':.8,'angle_degrees':30})
@@ -73,16 +74,18 @@ def test_new_structure_archive_recipe_and_workpage(kind,tmp_path):
         assert session.state.material.structure_model==ms.CURRENT
         assert session.state.material.material_long_edge_mm==80
         assert not controls['texture_scale_mm'].isEnabled()
-        path=tmp_path/'state.npz';api.save(path,session.state);session.state=api.load(path)
+        path=tmp_path/'state.npz';api.save(path,session.state,precision='full');session.state=api.load(path)
         if kind=='plate':session.process('polish',{'streaks':.7})
         for op,params in FINISH[kind]:session.process(op,params)
+        if kind == 'integral' and session.state.stage == 'reacting':
+            session.process('finish')
         if kind in ('peel','integral'):
             f=session.state.fields
             np.testing.assert_allclose(f['received']+f['remaining']+f['immobile']+f['transfer_loss'],1,atol=2e-6)
             assert float((f['reagent']+f['escaped_reagent']).mean())==pytest.approx(1,abs=2e-6)
         replay=MaterialLabSession(kind);replay.image=session.image;replay.replay_recipe(session.recipe())
         for key,value in session.state.fields.items():np.testing.assert_array_equal(value,replay.state.fields[key],err_msg=key)
-        api.save(path,session.group);group=api.load(path)
+        api.save(path,session.group,precision='full');group=api.load(path)
         info=session.capabilities()
         assert info['structure']['model']==ms.CURRENT
         before={key:value.copy() for key,value in group.bodies[0].fields.items()}

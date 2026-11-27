@@ -12,7 +12,7 @@ from film_foundry.core.process_operations import (
 from film_foundry.contracts.process_events import (
     validate_process_response, SURFACE_FIELDS, SURFACE_FIELDS_V2,
     SURFACE_MODEL, SURFACE_MODEL_V2, SURFACE_MODEL_V3, SURFACE_MODEL_V4, SURFACE_MODEL_V5,
-    EVENT_MODEL_V7, EVENT_MODEL_V8, EVENT_MODEL_V9, EVENT_MODEL_V10, EVENT_MODEL_V11, EVENT_MODEL_V12, EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15)
+    EVENT_MODEL_V7, EVENT_MODEL_V8, EVENT_MODEL_V9, EVENT_MODEL_V10, EVENT_MODEL_V11, EVENT_MODEL_V12, EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,EVENT_MODEL_V16)
 from film_foundry.contracts.emulsion_integrity import validate_emulsion_integrity, OWNED_POOLS
 from film_foundry.contracts.carbon_backing import validate_carbon_backing
 from film_foundry.core import carbon_backing
@@ -45,7 +45,7 @@ class SurfaceProcessSession:
         if basic:
             # Standard clearing is assumed; no transported residue/backing fields.
             self.backing=None;self.has_backing=False
-        self.lifecycle=(config.chemistry.process_events or {}).get('model') in (EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15) and any(e['kind']=='silver_bath' for e in events_for(config))
+        self.lifecycle=(config.chemistry.process_events or {}).get('model') in (EVENT_MODEL_V7,EVENT_MODEL_V8,EVENT_MODEL_V9,EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,EVENT_MODEL_V16) and any(e['kind']=='silver_bath' for e in events_for(config))
         self.events=[e for e in self.all_events if e['kind'] not in (*CONTACT_KINDS,'developer_inhibitor') and (self.lifecycle or e['kind']!='fixer_contact')]
         # Deposited at withdrawal, before any user handling/wash at that bath
         # boundary. The declaration stays in the original contact operation.
@@ -352,7 +352,7 @@ class SurfaceProcessSession:
             'balance':self.ledger,'final_temperature_c':self.temperature,'wet_seconds':self.wet_seconds,'final_hardening_fraction':float(np.mean(self.hardening)),
             'hardening_fraction_range':[float(np.min(self.hardening)),float(np.max(self.hardening))],
             'observation':'density_proxy_not_dichroic_reflection','implicit_final_stage':'dry_remaining_solute'}
-        if (config.chemistry.process_events or {}).get('model') in (EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15):audit['primary_emulsion_model']='ordered_pool_removal_v1'
+        if (config.chemistry.process_events or {}).get('model') in (EVENT_MODEL_V10,EVENT_MODEL_V11,EVENT_MODEL_V12,EVENT_MODEL_V13,EVENT_MODEL_V14,EVENT_MODEL_V15,EVENT_MODEL_V16):audit['primary_emulsion_model']='ordered_pool_removal_v1'
         if self.has_shear:audit['deformation']={'model':'horizontal_emulsion_shear_v1','units':'millimetres','axis':'frame_x','domain':'emulsion_owned','surface_sampling':'control_grid_cell_overlap','primary_sampling':'full_width_cell_overlap','outside_policy':'discard_with_inventory'}
         if self.has_backing:audit['carbon_backing']=self.backing
         if self.has_integrity:

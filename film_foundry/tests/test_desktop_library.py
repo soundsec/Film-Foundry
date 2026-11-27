@@ -163,8 +163,10 @@ def test_library_material_windows_independent_and_reopen_after_close(tmp_path):
             window.set_workspace_layout('studio')
             assert window.workspace_splitter.widget(1) is window.preview_surface
         assert len({id(window.session) for window in panel._material_windows.values()})==3
-        old=panel._material_windows['peel'];old.close()
-        assert 'peel' not in panel._material_windows
+        panel.work_sessions.mark_saved('material')
+        old=panel._material_windows['peel']
+        panel.workspace_host.close_page(panel.workspace_host.indexOf(old))
+        wait(lambda: 'peel' not in panel._material_windows)
         panel._open_catalog_source(str(path),'peel')
         new=panel._material_windows['peel'];wait(lambda:not new.busy)
         _application().sendPostedEvents(None,QtCore.QEvent.Type.DeferredDelete)

@@ -3,7 +3,7 @@ package com.filmfoundry.app.session
 /** Editing overrides only. Absent fields keep the recipe and bath-derived effects authoritative. */
 class ProcessingIncidentDraft(initial: Map<String,Any?> = emptyMap()) {
     companion object {
-        val keys=listOf("uneven_development","chemical_stain","reticulation_strength")
+        val keys=listOf("uneven_development","chemical_stain","reticulation_strength","silver_plating")
         fun legacy(style: Int,strength: Int): ProcessingIncidentDraft {
             val values=if(style in 1..4) keys.associateWith { 0.0 }.toMutableMap() else mutableMapOf()
             if(style in 2..4) values[keys[style-2]]=strength.coerceIn(0,100)/100.0

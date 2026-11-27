@@ -34,7 +34,7 @@ class PhoneCaptureConditions(private val width: Int,private val height: Int,val 
         val value=(camera[key] as? Number)?.toFloat() ?: error("Invalid $key")
         require(value.isFinite() && value in 0f..max) { "Invalid $key" };return value
     }
-    private val printBrightness=printNumber("imprint_brightness",1f,2f)
+    private val printBrightness=printNumber("imprint_brightness",1f,4f)
     private val printX=printNumber("imprint_x",0f,1f)
     private val printY=printNumber("imprint_y",if(imprintSide=="top") 0f else 1f,1f)
     // These are relative exposure additions, not display colours. Keep the core below the
@@ -86,18 +86,41 @@ class PhoneCaptureConditions(private val width: Int,private val height: Int,val 
             dirt.add(Mark(cx,cy-r,cx+2*r,cy+r,true))
         }
         val text=camera["imprint"]?.toString().orEmpty()
-        val font=PhoneImprintFont.forText(text)
-        val unit=if(font.width==5) max(1,min(width/300,height/126)) else if(modern) max(1,min(width/220,height/90)) else max(1,min(width/160,height/70))
+        val fontStyle=if(modern) camera["imprint_font"]?.toString() ?: "legacy" else "legacy"
+        val font=PhoneImprintFont.forText(text,fontStyle)
+        val unit=if(font.width==7) max(1,min(width/420,height/198)) else if(font.width==5) max(1,min(width/300,height/126)) else if(modern) max(1,min(width/220,height/90)) else max(1,min(width/160,height/70))
         // Normalized placement spans the available space for the entire string, with the
         // original margins. Missing coordinates reproduce existing receipts exactly.
         val textWidth=max(0,(text.length*(font.width+1)-1)*unit)
         val left=if(modern) 3*unit+(max(0,width-6*unit-textWidth)*printX).toInt() else 3*unit
         val y0=if(modern && camera.containsKey("imprint_y")) 4*unit+(max(0,height-(font.height+8)*unit)*printY).toInt() else if(imprintSide=="top") 4*unit else height-(font.height+4)*unit
+        val segmented=fontStyle=="seven_segment_open" || fontStyle=="seven_segment_narrow"
+        val openDigits=mutableMapOf<Char,ByteArray>()
         for((index,ch) in text.withIndex()) {
+            if(segmented && (ch in '0'..'9' || ch=='-') && imprintStyle!="none") {
+                val w=font.width*unit;val h=font.height*unit
+                val stamp=openDigits.getOrPut(ch) { DateSegmentPlate.stamp(ch,w,h,narrow=fontStyle=="seven_segment_narrow") }
+                val origin=left+index*(font.width+1)*unit
+                for(y in 0 until h) {
+                    var x=0
+                    while(x<w) {
+                        val level=stamp[y*w+x]
+                        val first=x++
+                        while(x<w && stamp[y*w+x]==level) x++
+                        if(level>0) {
+                            val dose=level/16f
+                            if(imprintStyle=="optical_amber") print.add(Mark(origin+first-1,y0+y-1,origin+x+1,y0+y+2,true,.045f*dose))
+                            print.add(Mark(origin+first,y0+y,origin+x,y0+y+1,false,dose))
+                        }
+                    }
+                }
+                continue
+            }
             for(y in 0 until font.height) for(x in 0 until font.width) if(font.lit(ch,x,y) && imprintStyle!="none") {
                 val x0=left+index*(font.width+1)*unit+x*unit
                 if(modern && imprintStyle=="optical_amber") print.add(Mark(x0-1,y0+y*unit-1,x0+unit+1,y0+(y+1)*unit+1,true,.045f))
-                print.add(Mark(x0,y0+y*unit,x0+unit,y0+(y+1)*unit,modern && imprintStyle=="laser_dot"))
+                val gap=if(fontStyle=="dot_matrix" && unit>=3) 1 else 0
+                print.add(Mark(x0,y0+y*unit,x0+unit-gap,y0+(y+1)*unit-gap,fontStyle=="dot_matrix" || modern && imprintStyle=="laser_dot"))
             }
         }
     }
@@ -120,11 +143,17 @@ class PhoneCaptureConditions(private val width: Int,private val height: Int,val 
             }
         }
         for(mark in dirt) paint(mark,false)
+        addLeaks(rgb,start,count)
+        for(mark in print) paint(mark,true)
+    }
+
+    internal fun addLeaks(rgb: FloatArray,start: Int,count: Int, firstX: Int=0, lastX: Int=width) {
+        val stride=lastX-firstX
         if(leak > 0f && modern) {
             for(component in components) {
                 val vertical=component.side in listOf("top","bottom");val reverse=component.side in listOf("right","bottom")
                 val center=(((seed xor component.offset) ushr 8) and 255).toFloat()/255f
-                for(y in start until start+count) for(x in 0 until width) {
+                for(y in start until start+count) for(x in firstX until lastX) {
                     val nx=(x+.5f)/width;val ny=(y+.5f)/height
                     val axis=if(vertical) ny else nx;val distance=if(reverse) 1-axis else axis;val across=if(vertical) nx else ny
                     var a=when(component.shape) {
@@ -134,7 +163,7 @@ class PhoneCaptureConditions(private val width: Int,private val height: Int,val 
                     }
                     if(component.shape=="corner") a*=max(0f,1-kotlin.math.abs(across-center)/.4f)
                     a=a*a*leak*.9f*component.strength
-                    val i=((y-start)*width+x)*3;rgb[i]+=a;rgb[i+1]+=a*.22f;rgb[i+2]+=a*.06f
+                    val i=((y-start)*stride+x-firstX)*3;rgb[i]+=a;rgb[i+1]+=a*LEAK_RGB[1];rgb[i+2]+=a*LEAK_RGB[2]
                 }
             }
         } else if(leak > 0f) {
@@ -142,7 +171,7 @@ class PhoneCaptureConditions(private val width: Int,private val height: Int,val 
             val center=((seed ushr 8) and 255).toFloat()/255f
             for(y in start until start+count) {
               val ny=(y+.5f)/height
-              for(x in 0 until width) {
+              for(x in firstX until lastX) {
                 val nx=(x+.5f)/width
                 val axis=if(vertical) ny else nx
                 val distance=if(reverse) 1f-axis else axis
@@ -150,14 +179,14 @@ class PhoneCaptureConditions(private val width: Int,private val height: Int,val 
                 if(a == 0f) continue
                 if(shape == "corner") a*=max(0f,1f-kotlin.math.abs((if(vertical) nx else ny)-center)/.4f)
                 a=a*a*leak*.9f
-                val i=((y-start)*width+x)*3
-                rgb[i]+=a;rgb[i+1]+=a*.22f;rgb[i+2]+=a*.06f
+                val i=((y-start)*stride+x-firstX)*3
+                rgb[i]+=a;rgb[i+1]+=a*LEAK_RGB[1];rgb[i+2]+=a*LEAK_RGB[2]
               }
             }
         }
-        for(mark in print) paint(mark,true)
     }
     companion object {
+        internal val LEAK_RGB = floatArrayOf(1f,.22f,.06f)
         const val MODEL="phone_capture_conditions_v3"
         const val PREVIOUS_MODEL="phone_capture_conditions_v2"
         const val LEGACY_MODEL="phone_capture_conditions_v1"
@@ -171,5 +200,6 @@ class PhoneCaptureConditions(private val width: Int,private val height: Int,val 
 /** Storage degradation belongs to the film: sensitivity loss plus one base fog per frame. */
 class PhoneFilmStorageConditions(settings: Map<String,Any?>) {
     private val age=(settings["age"] as? Number)?.toFloat()?.also { require(it.isFinite() && it in 0f..1f) } ?: 0f
-    fun apply(rgb: FloatArray) { if(age > 0f) for(i in rgb.indices) rgb[i]=rgb[i]*(1f-age*.55f)+age*.018f }
+    val incidentTransmission get() = 1f-age*.55f
+    fun apply(rgb: FloatArray) { if(age > 0f) for(i in rgb.indices) rgb[i]=rgb[i]*incidentTransmission+age*.018f }
 }

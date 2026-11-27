@@ -10,6 +10,7 @@ import com.filmfoundry.workflow.RecipeDrafts
 
 /** Transactional bath workbench. No roll or material is changed until the caller applies its draft. */
 class ProcessProgramEditor(private val activity: ComponentActivity,private val shell: MobileShell) {
+    internal var samplePanel: SamplePanel?=null
     var onPreviewRecipe: (Map<String,Any?>)->Unit={}
     var applyToDevelopment=false
     private fun c(zh: String,en: String)=shell.copy(zh,en)
@@ -32,36 +33,24 @@ class ProcessProgramEditor(private val activity: ComponentActivity,private val s
         inputType=InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
         setText(source?.toString().orEmpty())
     }
-    private class Sections(val panels: List<LinearLayout>,val entrances: LinearLayout?,val atRoot: ()->Boolean,val up: ()->Boolean) {
-        operator fun get(index: Int)=panels[index]
-    }
-    private fun sections(root: LinearLayout,labels: List<Pair<String,String>>,hierarchical: Boolean=false): Sections {
+    private fun sections(root: LinearLayout,labels: List<Pair<String,String>>,sample: View?=null): List<LinearLayout> {
         val bar=LinearLayout(activity).apply { gravity=android.view.Gravity.CENTER_VERTICAL }
         root.addView(HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled=false;addView(bar) })
         val scroll=ScrollView(activity).apply { isFillViewport=true };val content=column();scroll.addView(content);root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
+        sample?.let(content::addView)
         val panels=labels.map { column().apply { setPadding(shell.dp(16),shell.dp(8),shell.dp(16),shell.dp(12));content.addView(this) } }
-        val tabs=mutableListOf<Button>();var selected=0
-        val path=TextView(activity).apply { textSize=14f;setPadding(shell.dp(8),0,shell.dp(8),0) }
-        lateinit var up: Button
+        val tabs=mutableListOf<Button>()
         fun select(index: Int) {
-            selected=index
             panels.forEachIndexed { i,panel->panel.visibility=if(i==index) View.VISIBLE else View.GONE }
-            tabs.forEachIndexed { i,tab->tab.isSelected=i==index };scroll.scrollTo(0,0)
-            if(hierarchical) {
-                up.visibility=if(index==0) View.GONE else View.VISIBLE
-                path.text=if(index==0) c(labels[0].first,labels[0].second) else "› "+c(labels[index].first,labels[index].second)
-            }
+            tabs.forEachIndexed { i,tab->tab.isSelected=i==index }
+            scroll.scrollTo(0,0)
         }
-        val entrances=if(hierarchical) column().also { links ->
-            up=shell.action(bar,"‹ 工序","‹ Sequence") { select(0) };bar.addView(path)
-            labels.drop(1).forEachIndexed { n,label -> shell.shortcut(links,label.first,label.second) { select(n+1) } }
-        } else null
-        if(!hierarchical) labels.forEachIndexed { index,label->tabs+=shell.editorTab(bar,label.first,label.second) { select(index) } }
+        labels.forEachIndexed { index,label->tabs+=shell.editorTab(bar,label.first,label.second) { select(index) } }
         select(0)
-        return Sections(panels,entrances,{selected==0},{if(selected==0) false else {select(0);true}})
+        return panels
     }
-    private fun hierarchicalBack(dialog: AlertDialog,pages: Sections,leave: ()->Unit) {
-        fun back() { if(!pages.up()) leave() }
+
+    private fun handleBack(dialog: AlertDialog,back: ()->Unit) {
         dialog.setCanceledOnTouchOutside(false)
         if(android.os.Build.VERSION.SDK_INT>=33) {
             val callback=android.window.OnBackInvokedCallback { back() }
@@ -135,19 +124,23 @@ class ProcessProgramEditor(private val activity: ComponentActivity,private val s
         shell.decorate(root);it.show();it.window?.setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT,android.view.ViewGroup.LayoutParams.MATCH_PARENT)
         it.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
     }
-    fun open(source: Map<String,Any?>,material: Map<String,Any?> = emptyMap(),apply: (Map<String,Any?>)->Unit) {
+    fun open(source: Map<String,Any?>,material: Map<String,Any?> = emptyMap(),formationProfile: Any?=com.filmfoundry.interchange.PhoneFormationProfile.LIGHTWEIGHT,apply: (Map<String,Any?>)->Unit) {
         // Ask the real process resolver; do not duplicate auto/cross material rules in the UI.
-        val inspected=RecipeDrafts.inspectProcess(material,source)
+        val inspected=RecipeDrafts.inspectProcess(material,source,formationProfile)
         val suggested=if(inspected.program!="custom") inspected.program else
-            RecipeDrafts.inspectProcess(material,(source-"process_steps")+("program_key" to "auto")).program
+            RecipeDrafts.inspectProcess(material,(source-"process_steps")+("program_key" to "auto"),formationProfile).program
         val draft=ProcessProgramDraft(source,suggested)
         val root=column().apply { setPadding(shell.dp(12),shell.dp(12),shell.dp(12),shell.dp(8)) }
         shell.note(root,"自由冲洗台 · 调整药浴顺序与条件","Free processing · arrange baths and conditions")
         val draftStatus=shell.note(root,"草稿尚无修改","Draft unchanged")
         var refreshDraftStatus: ()->Unit={}
         lateinit var dialog: AlertDialog
-        shell.resetSection(root,c("冲洗草稿","Process draft")) { dialog.dismiss();open(source,material,apply) }
-        val pages=sections(root,listOf("工序" to "Sequence","共用药液与条件" to "Shared chemistry & conditions","共用摇晃" to "Shared agitation","共用反应设置" to "Shared reactions","邻接与 DIR" to "Adjacency & DIR","工艺说明" to "Process guide"),hierarchical=true)
+        var editingBath=false
+        fun returnToSequence() { (root.parent as? android.view.ViewGroup)?.removeView(root); dialog.setContentView(root); editingBath=false }
+        shell.resetSection(root,c("冲洗草稿","Process draft")) { dialog.dismiss();open(source,material,formationProfile,apply) }
+        lateinit var snapshot: SampleRecipe
+        val sample=samplePanel?.invoke { mapOf("film" to material,"develop" to snapshot()) }
+        val pages=sections(root,listOf("工序" to "Sequence","共用药液与条件" to "Shared chemistry & conditions","共用摇晃" to "Shared agitation","共用反应设置" to "Shared reactions","邻接与 DIR" to "Adjacency & DIR","工艺说明" to "Process guide"),sample)
         val free=CheckBox(activity).apply { text=c("自由组合药浴","Custom bath sequence");isChecked=draft.free };pages[0].addView(free)
         val chemistry=Spinner(activity).apply { adapter=ArrayAdapter(activity,android.R.layout.simple_spinner_dropdown_item,listOf(c("常规药液适配","Native chemistry"),c("交叉药液适配（自动程序）","Cross chemistry (automatic program)")));setSelection(if(source["chemistry"]=="cross") 1 else 0) };pages[0].addView(chemistry)
         val automatic=shell.note(pages[0],"当前顺序来自所选工艺。可直接编辑一浴；应用修改后转为自由组合。开启自由组合可增删或调整顺序。","This sequence comes from the selected process. Editing a bath creates a custom sequence when applied. Enable Custom bath sequence to add, remove or reorder baths.")
@@ -163,8 +156,8 @@ class ProcessProgramEditor(private val activity: ComponentActivity,private val s
         }
         editor.addView(stripScroll);editor.addView(detail)
         val fields=linkedMapOf<String,EditText>()
+        numericTools(pages[0],parameters.take(3),source,null,fields)
         val chemicals=baths(pages[1],source,false)
-        numericTools(pages[1],parameters.take(3),source,null,fields)
         numericTools(pages[2],parameters.slice(3..4),source,null,fields);agitation(pages[2],fields)
         shell.note(pages[2],"累计秒数不能超过浴时长；留空使用标准摇晃。","Active seconds cannot exceed bath duration; blank uses standard agitation.")
         numericTools(pages[3],parameters.drop(5),source,null,fields)
@@ -175,12 +168,13 @@ class ProcessProgramEditor(private val activity: ComponentActivity,private val s
         shell.note(pages[5],"显影、反转激活、漂白和定影各有作用；药液与材料的交互、耗竭、静置和相邻浴温差可以形成事故。主冲洗页的干净冲洗可关闭自动事故。","Development, reversal activation, bleaching and fixing act separately. Material interactions, exhaustion, still baths and temperature changes between baths can produce incidents. Clean processing on the preparation page disables automatic incidents.")
         shell.note(pages[5],"邻接只改变第一次显影，DIR只改变第一次彩显。设置在开始任务时冻结；已完成结果保持不变。","Adjacency affects the first development; DIR affects the first color development. A task freezes its settings; existing results stay unchanged.")
         fun processValues()=draft.build(collect(fields)+mapOf("developer_type" to chemical(chemicals.first),"fixer_type" to chemical(chemicals.second),"chemistry" to if(chemistry.selectedItemPosition==1) "cross" else "native"))
+        snapshot=::processValues
         fun rawControls(): Map<String,Any?> = fields.mapValues { it.value.text.toString() }+mapOf(
             "developer_type" to chemical(chemicals.first),"fixer_type" to chemical(chemicals.second),"chemistry" to chemistry.selectedItemPosition)
         val initialControls=rawControls()
         fun hasChanges()=draft.hasChanges(initialControls,rawControls())
         var refreshBathSummary: ()->Unit={}
-        refreshDraftStatus={ draftStatus.text=if(hasChanges()) c("已修改 · 尚未应用，返回时可选择应用或放弃","Modified · not applied. Back lets you apply or discard.") else c("草稿尚无修改","Draft unchanged") }
+        refreshDraftStatus={ sample?.refresh();draftStatus.text=if(hasChanges()) c("已修改 · 尚未应用，返回时可选择应用或放弃","Modified · not applied. Back lets you apply or discard.") else c("草稿尚无修改","Draft unchanged") }
         fields.values.forEach { input -> input.addTextChangedListener(object: android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?,start: Int,count: Int,after: Int)=Unit
             override fun onTextChanged(s: CharSequence?,start: Int,before: Int,count: Int) { refreshDraftStatus();refreshBathSummary() }
@@ -232,7 +226,13 @@ class ProcessProgramEditor(private val activity: ComponentActivity,private val s
                         if(invalid) c("共用条件有未完成输入，应用前需校验。","Shared conditions contain unfinished input; validate before applying.") else null).joinToString("\n")
                 };refreshBathSummary()
                 shell.shortcut(detail,"编辑这一浴","Edit this bath","药液、条件与作用比例","Chemistry, conditions and reaction fraction") {
-                    runCatching { collect(fields).filterValues { it!=null } }.onSuccess { inherited -> editStep(step,inherited) { edited ->
+                    runCatching { collect(fields).filterValues { it!=null } }.onSuccess { inherited -> editingBath=true
+                        editStep(step,inherited,dialog,::returnToSequence,{ candidate ->
+                            val values=processValues()
+                            val baths=if(com.filmfoundry.interchange.RecipeJson.equivalent(candidate,step)) values else values+mapOf("program_key" to "custom",
+                                "process_steps" to draft.steps.mapIndexed { i,row -> if(i==index) candidate else row })
+                            mapOf("film" to material,"develop" to baths)
+                        }) { edited ->
                         if(draft.edit(index,edited)) free.isChecked=draft.free
                         render()
                     } }
@@ -255,7 +255,7 @@ class ProcessProgramEditor(private val activity: ComponentActivity,private val s
         fun refreshNative() {
             if(!draft.free) {
                 val values=draft.build(mapOf("chemistry" to if(chemistry.selectedItemPosition==1) "cross" else "native"))
-                draft.refreshResolved(RecipeDrafts.inspectProcess(material,values).program)
+                draft.refreshResolved(RecipeDrafts.inspectProcess(material,values,formationProfile).program)
             }
         }
         var chemistryPosition=chemistry.selectedItemPosition
@@ -289,37 +289,49 @@ class ProcessProgramEditor(private val activity: ComponentActivity,private val s
         shell.action(footer,"返回","Back") { leave() }.layoutParams=LinearLayout.LayoutParams(0,-2,1f).apply { marginEnd=shell.dp(6) }
         shell.action(footer,"样张","Sample") { runCatching { onPreviewRecipe(mapOf("film" to material,"develop" to processValues())) }.onFailure { error.text=errorText(it) } }.layoutParams=LinearLayout.LayoutParams(0,-2,1f).apply { marginEnd=shell.dp(6) }
         shell.action(footer,if(applyToDevelopment) "应用到本次冲洗" else "应用配置",if(applyToDevelopment) "Apply to this development" else "Apply draft",true) { applyDraft() }.layoutParams=LinearLayout.LayoutParams(0,-2,1.5f)
-        pages.entrances?.let { links ->
-            // Keep the primary shared conditions close to the sequence; secondary settings stay below it.
-            val common=links.getChildAt(0);links.removeView(common);pages[0].addView(common,0);pages[0].addView(links)
-        }
-        dialog=show(root);hierarchicalBack(dialog,pages,::leave)
+        dialog=show(root)
+        handleBack(dialog) { if(editingBath) returnToSequence() else leave() }
     }
-    private fun editStep(source: Map<String,Any?>,inherit: Map<String,Any?>,apply: (Map<String,Any?>)->Unit) {
+    private fun editStep(source: Map<String,Any?>,inherit: Map<String,Any?>,dialog: AlertDialog,back: ()->Unit,preview: (Map<String,Any?>)->Map<String,Any?>,apply: (Map<String,Any?>)->Unit) {
         val root=column().apply { setPadding(shell.dp(12),shell.dp(12),shell.dp(12),shell.dp(8)) }
         shell.note(root,"当前药浴 · 完成后更新工作台草稿","Current bath · Done updates the workbench draft")
-        lateinit var dialog: AlertDialog
-        shell.resetSection(root,c("当前药浴草稿","Current bath draft")) { dialog.dismiss();editStep(source,inherit,apply) }
-        val pages=sections(root,listOf("药液" to "Chemistry","条件" to "Conditions","摇晃" to "Agitation","反应" to "Reaction"))
-        val action=Spinner(activity).apply { adapter=ArrayAdapter(activity,android.R.layout.simple_spinner_dropdown_item,actionNames);setSelection(ProcessSteps.actions.indexOf(source["action"])) };pages[0].addView(action)
-        val label=EditText(activity).apply { setText(source["label"]?.toString().orEmpty()) };shell.field(pages[0],label,c("药浴名称（可选）","Bath name (optional)"))
-        val chemicals=baths(pages[0],source,true);val fields=linkedMapOf<String,EditText>()
-        numericTools(pages[1],parameters.take(3),source,inherit,fields)
+        shell.resetSection(root,c("当前药浴草稿","Current bath draft")) { editStep(source,inherit,dialog,back,preview,apply) }
+        lateinit var candidate: SampleRecipe
+        val sample=samplePanel?.invoke { preview(candidate()) }
+        val pages=sections(root,listOf("条件" to "Conditions","药液" to "Chemistry","摇晃" to "Agitation","反应" to "Reaction"),sample)
+        val action=Spinner(activity).apply { adapter=ArrayAdapter(activity,android.R.layout.simple_spinner_dropdown_item,actionNames);setSelection(ProcessSteps.actions.indexOf(source["action"])) };pages[1].addView(action)
+        val label=EditText(activity).apply { setText(source["label"]?.toString().orEmpty()) };shell.field(pages[1],label,c("药浴名称（可选）","Bath name (optional)"))
+        val chemicals=baths(pages[1],source,true);val fields=linkedMapOf<String,EditText>()
+        numericTools(pages[0],parameters.take(3),source,inherit,fields)
         numericTools(pages[2],parameters.slice(3..4),source,inherit,fields);agitation(pages[2],fields,(inherit["time_min"] as? Number)?.toDouble() ?: 8.0)
         numericTools(pages[3],listOf(Parameter("strength","作用比例","Reaction fraction",0.0..1.0,.01,1.0))+parameters.drop(5),source,inherit,fields)
         val error=TextView(activity).apply { setTextColor(0xFFDD6860.toInt());maxLines=3 };root.addView(error)
         val footer=LinearLayout(activity);root.addView(footer)
-        shell.action(footer,"取消","Cancel") { dialog.dismiss() }.layoutParams=LinearLayout.LayoutParams(0,-2,1f).apply { marginEnd=shell.dp(6) }
-        shell.action(footer,"完成","Done",true) {
-            runCatching {
+        shell.action(footer,"取消","Cancel") { back() }.layoutParams=LinearLayout.LayoutParams(0,-2,1f).apply { marginEnd=shell.dp(6) }
+        candidate={
                 val value=source.toMutableMap();value.putAll(collect(fields).filterValues { it!=null });fields.keys.filter { fields.getValue(it).text.isBlank() }.forEach(value::remove)
                 value["action"]=ProcessSteps.actions[action.selectedItemPosition]
                 if(label.text.isBlank()) value.remove("label") else value["label"]=label.text.toString().trim()
                 chemical(chemicals.first)?.let { value["developer_type"]=it } ?: value.remove("developer_type")
                 chemical(chemicals.second)?.let { value["fixer_type"]=it } ?: value.remove("fixer_type")
                 ProcessSteps.validateConditions(inherit+value);ProcessSteps.read(listOf(value))!!.single()
-            }.onSuccess { apply(it);dialog.dismiss() }.onFailure { error.text=errorText(it) }
+        }
+        if(sample!=null) {
+            val watcher=object: android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?,start: Int,count: Int,after: Int)=Unit
+                override fun onTextChanged(s: CharSequence?,start: Int,before: Int,count: Int)=sample.refresh()
+                override fun afterTextChanged(s: android.text.Editable?)=Unit
+            }
+            (fields.values+label).forEach { it.addTextChangedListener(watcher) }
+            listOf(action,chemicals.first,chemicals.second).forEach { it.onItemSelectedListener=object: AdapterView.OnItemSelectedListener {
+                override fun onNothingSelected(parent: AdapterView<*>?)=Unit
+                override fun onItemSelected(parent: AdapterView<*>?,view: View?,position: Int,id: Long)=sample.refresh()
+            } }
+        }
+        shell.action(footer,"完成","Done",true) {
+            runCatching(candidate).onSuccess { apply(it);back() }.onFailure { error.text=errorText(it) }
         }.layoutParams=LinearLayout.LayoutParams(0,-2,1.5f)
-        dialog=show(root)
+        shell.decorate(root)
+        dialog.setContentView(root)
     }
 }

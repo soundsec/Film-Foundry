@@ -14,6 +14,7 @@ from film_foundry.model.config import DarkroomConfig
 
 
 def test_core_catalog_keeps_user_variants_and_old_lookup(tmp_path, monkeypatch):
+    monkeypatch.setenv("FILM_FOUNDRY_SEASONAL_STATE", str(tmp_path / "locked.json"))
     film_dir, scan_dir = tmp_path / "film", tmp_path / "scanner"
     film_dir.mkdir();scan_dir.mkdir()
     monkeypatch.setattr(workflow, "USER_FILM_PRESET_DIR", film_dir)
@@ -24,6 +25,18 @@ def test_core_catalog_keeps_user_variants_and_old_lookup(tmp_path, monkeypatch):
     assert "high_acutance_bw" in workflow.develop_preset_names(include_variants=True)
     assert "accident_kelp_light_leak" not in workflow.develop_preset_names(include_variants=True)
     assert "red_rich_negative" in workflow.film_preset_names()
+    assert "deep_shadow_negative" not in workflow.film_preset_names()
+    assert DarkroomConfig.from_json(workflow.film_preset_path("deep_shadow_negative")).film.name == "Deep Shadow Negative"
+    assert "color_restored_scan" in workflow.scanner_preset_names()
+    assert "color_restored_scan" not in workflow.scanner_preset_names(include_variants=False)
+    from film_foundry.app.preset_exchange import library_records
+    library = {item["path"].stem for item in library_records(root=tmp_path) if item["builtin"]}
+    assert {"high_contrast_push", "experimental_color_negative_clear_reversal", "color_restored_scan"} <= library
+    assert not {"deep_shadow_negative", "diagnostic_flat_scan", "accident_kelp_light_leak"} & library
+    from film_foundry.tools import run_film_material_editor, run_scanner_render_editor, run_develop_process_editor
+    assert "deep_shadow_negative" not in run_film_material_editor.film_preset_names()
+    assert "diagnostic_flat_scan" not in run_scanner_render_editor.scanner_preset_names()
+    assert "accident_kelp_light_leak" not in run_develop_process_editor.develop_preset_names()
     assert "reference_soft_tone_scan" in workflow.scanner_preset_names()
     old = DarkroomConfig.from_json(workflow.film_preset_path("red_rich_negative"))
     representative = DarkroomConfig.from_json(workflow.film_preset_path("warm_consumer_negative"))
@@ -61,6 +74,11 @@ def test_more_variants_preserve_recipe_and_current_legacy_selection(tmp_path, mo
             assert "reference_deep_tone_scan" in panel._scanner_display_key_map.values()
             assert "high_acutance_bw" in panel._develop_display_key_map.values()
         assert load_preferences()["show_preset_variants"] is False
+        panel.film_preset.set("deep_shadow_negative")
+        original = asdict(panel._config())
+        panel._refresh_all_preset_combos()
+        assert panel.film_preset.get() == "deep_shadow_negative"
+        assert asdict(panel._config()) == original
         assert not panel._preview_pending
     finally:
         panel.root.destroy()

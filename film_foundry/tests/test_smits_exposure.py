@@ -15,6 +15,24 @@ from film_foundry.core.latent_io import save_exposed_latent, load_exposed_latent
 from film_foundry.model.config import DarkroomConfig
 
 
+def test_stock_lift_preserves_matrix_and_imported_spectral_response():
+    from film_foundry.core.spectral_exposure import stock_lift_profile
+    film = DarkroomConfig().film
+    film.layer_sensitivity_matrix = ((.93,.05,.02),(.02,.84,.01),(.01,.01,1.24))
+    rgb = np.array([[1,1,1], *np.eye(3), *itertools.permutations((.02,.25,1.7))],np.float32)
+    target = map_layer_exposure(rgb, film)
+    calibrated = stock_lift_profile(film)
+    np.testing.assert_allclose(map_layer_exposure(rgb, replace(film,spectral_exposure_profile=calibrated)),
+                               target, atol=2e-7)
+    imported = SpectralExposureProfile("custom", calibrated.working_space,(400,520,690),
+        ((.1,.2,1),(.1,.7,.2),(.8,.1,.1)),((.1,.2,.9),(.1,.6,.1),(.78,.3,.05)),(.05,.12,.17))
+    film = replace(film,spectral_exposure_profile=imported)
+    lifted = stock_lift_profile(film)
+    assert lifted.layer_sensitivity == imported.layer_sensitivity and lifted.layer_gain == imported.layer_gain
+    np.testing.assert_allclose(map_layer_exposure(rgb,replace(film,spectral_exposure_profile=lifted)),
+                               map_layer_exposure(rgb,film),rtol=3e-7)
+
+
 def test_all_six_orders_ties_negative_and_hdr_match_explicit_spectrum():
     profile = make_smits_exposure_profile()
     film = DarkroomConfig().film
@@ -117,23 +135,17 @@ def test_independent_spectral_editor_keeps_cancelled_draft_and_validates_selecte
         material.close()
 
 
-def test_material_editor_applies_spectral_dialog_to_its_working_copy(monkeypatch):
+def test_material_editor_applies_spectral_dialog_to_its_working_copy():
     from film_foundry.tools.run_film_material_editor import FilmMaterialEditor
-    from film_foundry.ui.qt import _application, QtCore
-    from film_foundry.ui.spectral_editor import SpectralProfileDialog
+    from film_foundry.ui.qt import _application
     _application()
     config = DarkroomConfig()
     editor = FilmMaterialEditor(config=config)
-    original_exec = SpectralProfileDialog.exec
-    def edit_and_accept(dialog):
-        def apply():
-            dialog.profile_id.setText("edited_smits_material")
-            dialog.apply()
-        QtCore.QTimer.singleShot(0, apply)
-        return original_exec(dialog)
-    monkeypatch.setattr(SpectralProfileDialog, "exec", edit_and_accept)
     try:
         editor._edit_spectral_profile()
+        dialog = editor.root.qt._inline_editor_host.frames[-1][1]
+        dialog.profile_id.setText("edited_smits_material")
+        dialog.apply()
         updated = editor._config_from_controls()
         assert updated.film.spectral_exposure_profile.profile_id == "edited_smits_material"
         assert updated.film.spectral_exposure_profile.model == make_smits_exposure_profile().model

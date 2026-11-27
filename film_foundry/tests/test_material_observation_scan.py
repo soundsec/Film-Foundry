@@ -116,9 +116,13 @@ def test_gui_material_choice_shared_editor_and_jpeg_without_implicit_archive(tmp
     try:
         source=tmp_path/'source.png';Image.fromarray(np.full((24,36,3),160,np.uint8)).save(source)
         panel.open_library();library=panel.library_view;library.catalog.add([source]);library.refresh();library.grid.setCurrentRow(0)
-        library.family.setCurrentIndex(library.family.findData('paper'))
-        assert '相纸' in library.start.text()
-        library.open_selected();page=panel.workspace_host.currentWidget();wait(lambda:not page.busy)
+        library.open_selected()
+        chooser = panel._material_chooser
+        families = chooser.families
+        row = next(i for i in range(families.count()) if families.item(i).data(QtCore.Qt.ItemDataRole.UserRole) == 'paper')
+        families.setCurrentRow(row)
+        chooser.apply.click()
+        page=panel.workspace_host.currentWidget();wait(lambda:not page.busy)
         assert page.kind=='paper' and page.session.image.shape==(24,36,3)
         page.session.run_standard();page._sync();state=page.session.state
         page.open_scan_controls();dialog=page.centralWidget()._inline_editor_host.frames[-1][1]

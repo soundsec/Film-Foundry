@@ -6,7 +6,7 @@ material classes, identities, curve previews, and material-side controls.
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import copy
 import json
 from pathlib import Path
@@ -20,8 +20,6 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from film_foundry.core.atomic_io import atomic_write_json
-from film_foundry.core.sensitometry import hd_density_curve
-from film_foundry.core.film_process import shape_positive_density_fraction
 from film_foundry.ui.components import add_numeric_control
 from film_foundry.ui.qt import PhotoImage, message_box, text_dialog, ui
 from film_foundry.ui.widgets import VerticalScrolledFrame
@@ -213,9 +211,9 @@ def safe_preset_stem(name: str) -> str:
 
 
 def film_preset_names() -> list[str]:
-    names = {path.stem for path in FILM_PRESET_DIR.glob("*.json")}
+    from film_foundry.app.preset_catalog import public_builtin_preset_names
     from film_foundry.app.seasonal_collection import visible_builtin_names
-    names = visible_builtin_names(names, "film")
+    names = visible_builtin_names(public_builtin_preset_names(FILM_PRESET_DIR, "film"), "film")
     names.update(path.stem for path in USER_FILM_PRESET_DIR.glob("*.json"))
     supported: list[str] = []
     for name in sorted(names):
@@ -280,24 +278,22 @@ def material_identity_for_class(material_class: str) -> dict[str, str]:
 
 
 def material_preview_density(exposure: np.ndarray, config: DarkroomConfig) -> np.ndarray:
-    """Return the native material curve shown by the shared editor.
-
-    Negative stocks show their exposure-selective density curve. Reversal
-    stocks show the positive density formed from remaining material, including
-    the material-side positive curve controls.
-    """
-    negative_density = hd_density_curve(exposure, config.film, config.chemistry)
-    if material_class_for_config(config) not in {"color_reversal", "bw_reversal"}:
-        return negative_density.astype(np.float32)
-    d_min = np.asarray(config.film.density_min, dtype=np.float32).reshape(1, 3)
-    d_max = np.asarray(config.film.density_max, dtype=np.float32).reshape(1, 3)
-    normalized_negative = np.clip(
-        (negative_density - d_min) / np.maximum(d_max - d_min, 1e-6),
-        0.0,
-        1.0,
-    )
-    positive_fraction = shape_positive_density_fraction(1.0 - normalized_negative, config.film)
-    return (d_min + positive_fraction * (d_max - d_min)).astype(np.float32)
+    """Measure the native bath's RGB optical density for both material representations."""
+    from film_foundry.core.film_process import integration
+    programs = {
+        "bw_negative": integration.develop_bw_negative_reduced,
+        "bw_reversal": integration.develop_bw_reversal_reduced,
+        "color_negative": integration.develop_color_negative_reduced,
+        "color_reversal": integration.develop_color_reversal_reduced,
+    }
+    native = material_class_for_config(config)
+    if native == "chromogenic_mono":
+        native = "color_negative"
+    recipe = replace(config.chemistry, program_key=native, process_steps=None,
+                     bath_overrides=None, process_events=None)
+    result = programs[native](exposure.reshape(1,-1,3), config.formation_film(), recipe,
+                              retain_latent_fraction=False, retain_process_state=False)
+    return result.optical_density_rgb.reshape(exposure.shape)
 
 
 # Compatibility aliases for older callers.
@@ -311,6 +307,7 @@ class FilmMaterialEditor:
         USER_FILM_PRESET_DIR.mkdir(parents=True, exist_ok=True)
 
         self._base_config = None
+        self._paused_exposure_profile = None
         self._on_apply = on_apply
         self.root = ui.Application() if parent is None else ui.Window(parent,embedded=embedded)
         self.root.title(local_text("Film Foundry · 材料编辑组件", "Film Foundry · Material editor component"))
@@ -381,6 +378,9 @@ class FilmMaterialEditor:
         medium_row = ui.Frame(header)
         medium_row.grid(row=2, column=1, columnspan=3, sticky="ew", pady=3, padx=(8, 0))
         ui.Label(medium_row, textvariable=self.identity_summary).pack(side="left")
+        from film_foundry.ui.coating_editor import CoatingEditButton
+        self.coatings = CoatingEditButton(self._edit_coatings)
+        medium_row._ensure_pack_layout("left").addWidget(self.coatings)
         header.columnconfigure(1, weight=1)
         header.set_tooltip(local_text("编辑银盐负片与反转片；拍立得、撕拉片和银版从图库选择介质后进入。", "Edit silver-halide negatives and reversal film; choose instant, peel-apart or plate from the library."))
         add_apply_button(header, self, row=4)
@@ -405,6 +405,9 @@ class FilmMaterialEditor:
         spectrum.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QtWidgets.QMenu(spectrum)
         menu.addAction(local_text('开启七色升维', 'Enable seven-color lift'), self._enable_smits_exposure)
+        menu.addAction(local_text('按当前 RGB 感度重建光谱', 'Rebuild spectrum from current RGB sensitivity'),
+                       lambda: self._enable_smits_exposure(recalibrate=True))
+        menu.addAction(local_text('使用 RGB 感度（关闭升维）','Use RGB sensitivity (lift off)'), self._disable_spectral_exposure)
         menu.addAction(local_text('曝光感光谱…', 'Exposure sensitivity…'), lambda: self._edit_spectral_profile(False))
         menu.addAction(local_text('材料吸收谱…', 'Material absorbance…'), lambda: self._edit_spectral_profile(True))
         sensitivity = menu.addMenu(local_text('黑白感光类型', 'Monochrome sensitivity'))
@@ -804,6 +807,8 @@ class FilmMaterialEditor:
         self.medium_process.set(identity["medium_process"])
         self.image_polarity.set(identity["image_polarity"])
         self.color_process.set(identity["color_process"])
+        if self._base_config is not None:
+            self._show_coating_structure()
         color=local_text('彩色','Color') if identity['color_process']=='color' else local_text('染料黑白','Chromogenic B&W') if identity['color_process']=='chromogenic_monochrome' else local_text('银盐黑白','Silver B&W')
         polarity=local_text('正像','Positive') if identity['image_polarity']=='positive' else local_text('负像','Negative')
         self.identity_summary.set(color+' · '+polarity)
@@ -844,11 +849,34 @@ class FilmMaterialEditor:
             ))
         self._refresh_curve()
 
-    def _enable_smits_exposure(self):
-        from film_foundry.contracts.spectral_exposure import make_smits_exposure_profile
-        layers = 1 if self.material_class.get() in {"bw_negative", "bw_reversal"} else 3
-        self.exposure_profile_field.load(make_smits_exposure_profile(layers))
-        self.status.set(local_text("已开启七色升维。应用到当前任务后才会进入这次冲洗。", "Seven-color lift is on. Apply it to the current task before this development uses it."))
+    def _enable_smits_exposure(self, *, recalibrate=False):
+        from film_foundry.core.spectral_exposure import rgb_calibrated_lift_profile, stock_lift_profile
+        try:
+            film = self._config_from_controls().film
+            profile = (rgb_calibrated_lift_profile(film) if recalibrate else
+                       stock_lift_profile(film, self._paused_exposure_profile))
+        except ValueError as exc:
+            self.status.set(str(exc))
+            return
+        self.exposure_profile_field.load(profile)
+        self._refresh_curve()
+        self.status.set(local_text("七色升维沿用材料感色。应用到当前任务后，下次曝光生效。", "Seven-color lift retains the stock's sensitivity. Apply the material to use it on the next exposure."))
+
+    def _disable_spectral_exposure(self):
+        active = self.exposure_profile_field.profile
+        if active is not None:
+            self._paused_exposure_profile = active
+            if active.profile_id == "ff_stock_rgb_calibrated_v1":
+                from film_foundry.core.spectral_exposure import rgb_calibrated_lift_profile
+                film = self._config_from_controls().film
+                try:
+                    if active == rgb_calibrated_lift_profile(film):
+                        self._paused_exposure_profile = None
+                except ValueError:
+                    pass  # An edited matrix cannot reproduce the active response.
+        self.exposure_profile_field.load(None)
+        self._refresh_curve()
+        self.status.set(local_text("已切换 RGB 曝光，逐层光谱曲线保留。","Using RGB exposure; coating spectra are retained."))
 
     def _set_sensitivity_family(self):
         if self.material_class.get() not in {'bw_negative','bw_reversal'}:
@@ -861,7 +889,15 @@ class FilmMaterialEditor:
         from film_foundry.ui.spectral_editor import SpectralProfileDialog
         field = self.material_profile_field if material else self.exposure_profile_field
         layers = 1 if self.material_class.get() in {"bw_negative", "bw_reversal"} else 3
-        dialog = SpectralProfileDialog(field.profile, material=material, layers=layers, parent=self.root.qt)
+        profile = field.profile
+        if not material and profile is None:
+            from film_foundry.core.spectral_exposure import stock_lift_profile
+            try:
+                profile = stock_lift_profile(self._config_from_controls().film, self._paused_exposure_profile)
+            except ValueError as exc:
+                self.status.set(str(exc))
+                return
+        dialog = SpectralProfileDialog(profile, material=material, layers=layers, parent=self.root.qt)
         from film_foundry.ui.inline_editor import present_inline_editor
         present_inline_editor(self.root.qt,dialog,lambda:field.load(dialog.profile))
 
@@ -869,6 +905,7 @@ class FilmMaterialEditor:
     @batch_parameter_update('_refresh_curve')
     def _set_controls_from_config(self, config: DarkroomConfig) -> bool:
         self._base_config = copy.deepcopy(config)
+        self._paused_exposure_profile = config.film.spectral_exposure_profile
         self.set_execution_context(getattr(self, '_execution_config', config))
         self._process_response=copy.deepcopy(config.film.process_response)
         self._carbon_backing=copy.deepcopy(config.film.carbon_backing)
@@ -935,6 +972,27 @@ class FilmMaterialEditor:
         from film_foundry.ui.inline_editor import present_inline_editor
         present_inline_editor(self.root.qt,dialog,apply)
 
+    def _show_coating_structure(self):
+        film = self._base_config.film
+        if self.color_process.get() != film.color_process:
+            film = replace(film, color_process=self.color_process.get())
+        self.coatings.show_stock(film)
+
+    def _edit_coatings(self):
+        if not self.coatings.isEnabled():
+            return
+        from film_foundry.ui.coating_editor import CoatingEditor
+        from film_foundry.ui.inline_editor import present_inline_editor
+        config = self._config_from_controls()
+        dialog = CoatingEditor(config.film, self.root.qt)
+        def apply():
+            if self._base_config is None:
+                self._base_config = config
+            self._base_config.film.coating_stack = dialog.result_stack
+            self._show_coating_structure()
+            self._refresh_curve()
+        present_inline_editor(self.root.qt, dialog, apply)
+
     def _edit_time_history(self):
         from film_foundry.ui.film_time_editor import FilmTimeDialog
         config=self._config_from_controls();dialog=FilmTimeDialog(config,self.root.qt,material=True)
@@ -986,10 +1044,14 @@ class FilmMaterialEditor:
         return config
 
     def _film_payload(self, config: DarkroomConfig) -> dict:
+        film = asdict(config.film)
+        if film["coating_stack"] is not None:
+            film["coating_stack"].pop("mode", None)
+            film["coating_stack"].pop("independent_grain", None)
         return {
             "mode": str(config.mode),
             "medium": str(config.medium),
-            "film": asdict(config.film),
+            "film": film,
         }
 
     def _refresh_curve(self) -> None:

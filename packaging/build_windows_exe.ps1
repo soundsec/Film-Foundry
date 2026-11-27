@@ -82,6 +82,7 @@ try {
         "user_presets",
         "user_presets\film",
         "user_presets\develop",
+        "languages",
         "user_presets\scanner"
     ) | ForEach-Object {
         New-Item -ItemType Directory -Force -Path (Join-Path $PortableRoot $_) | Out-Null

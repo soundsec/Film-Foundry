@@ -10,9 +10,14 @@ from film_foundry.core.atomic_io import atomic_output_path, strict_json_loads
 MAX_SIZE=8*1024*1024
 
 
-def pack_directory():
+def shared_directory():
+    from film_foundry.app.paths import app_root
+    return app_root() / 'languages'
+
+
+def pack_directory(settings_path=None):
     from film_foundry.ui.preferences import preferences_path
-    path=preferences_path()
+    path=settings_path or preferences_path()
     return path.with_name(path.stem+'_languages')
 
 
@@ -22,7 +27,7 @@ def fields(value):
 
 def validate(value):
     from film_foundry.ui.i18n import _EN, _ZH
-    if not isinstance(value,dict) or value.get('format')!='film-foundry-language' or value.get('version')!=1:
+    if not isinstance(value,dict) or value.get('format')!='film-foundry-language' or type(value.get('version')) is not int or value['version']!=1:
         raise ValueError('Expected Film Foundry language pack version 1')
     code=value.get('code','')
     if not isinstance(code,str) or not re.fullmatch(r'[a-z]{2,3}(?:_[A-Za-z0-9]{2,8}){0,2}',code) or code in ('zh_CN','en_US','zh','en'):
@@ -51,15 +56,25 @@ def read_pack(path):
 @lru_cache(maxsize=4)
 def _installed(directory):
     packs={}
-    for path in sorted(directory.glob('*.json')):
-        try:
-            pack=read_pack(path)
-            if path.stem==pack['code']:packs[pack['code']]=pack
-        except (OSError,ValueError,TypeError,RecursionError):continue
+    for location in (shared_directory(), directory):
+        for path in sorted(location.glob('*.json')):
+            try:
+                pack=read_pack(path)
+                if path.stem==pack['code']:packs[pack['code']]=pack
+            except (OSError,ValueError,TypeError,RecursionError):continue
     return packs
 
 
-def installed():return _installed(pack_directory())
+def installed(settings_path=None):return _installed(pack_directory(settings_path))
+
+
+def refresh_packs():
+    from film_foundry.ui import i18n
+    _installed.cache_clear()
+    packs = installed()
+    if i18n.current_language() not in ('zh_CN', 'en_US', *packs):
+        i18n.set_language(i18n.DEFAULT_LANGUAGE)
+    return packs
 
 
 def import_pack(path):

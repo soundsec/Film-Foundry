@@ -16,6 +16,7 @@ from film_foundry.contracts.bath_solution import validate_solution
 from film_foundry.model.config import DarkroomConfig, DEVELOP_LOOK_FIELDS, SCAN_LOOK_FIELDS
 from film_foundry.core.atomic_io import atomic_write_json
 from film_foundry.app.paths import app_root, preset_root
+from film_foundry.app.preset_catalog import is_listed_builtin
 from film_foundry.core.file_cache import FileRevisionCache
 
 COLLECTION_KIND = 'film_foundry_preset_collection'
@@ -233,6 +234,8 @@ def library_records(*, root=None):
         if kind in ('film', 'develop', 'scanner'):folders.insert(0, (preset_root() / kind, True))
         for folder, builtin in folders:
             for path in sorted(folder.glob('*.json')):
+                if builtin and not is_listed_builtin(kind, path.stem):
+                    continue
                 try:entry = read_preset(path, kind)
                 except (OSError, ValueError, TypeError) as exc:
                     records.append({'kind':kind,'name':path.stem,'path':path,'builtin':builtin,'error':str(exc)});continue

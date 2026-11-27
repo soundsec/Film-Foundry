@@ -32,17 +32,18 @@ class StageButton(QtWidgets.QPushButton):
         self.state = "editable"
         self.trailing_width = 0
         self.stage_title = self.stage_status = ""
-        self.available = self.show_title = self.visited = False
+        self.available = self.show_title = self.visited = self.running = False
         self.setCheckable(True)
         self.setFixedHeight(32 if compact else 54)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
         self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
 
-    def set_stage(self, title, status, *, available=False, visited=False):
-        if (title, status, available, visited) == (self.stage_title, self.stage_status, self.available, self.visited):
+    def set_stage(self, title, status, *, available=False, visited=False, running=False):
+        if (title, status, available, visited, running) == (self.stage_title, self.stage_status, self.available, self.visited, self.running):
             return
         self.stage_title, self.stage_status, self.available = title, status, available
         self.visited=visited
+        self.running=running
         self.setText(f"{self.number}  {title}\n{status}")
         self.setAccessibleName(f"{self.number} · {title} · {status}")
         self.setToolTip(self.accessibleName())
@@ -100,14 +101,16 @@ class StageButton(QtWidgets.QPushButton):
         enabled = self.isEnabled()
         selected = self.isChecked()
         background = t.background if self.compact else t.surface
-        if enabled:
+        if self.running:
+            background = t.selected
+        elif enabled:
             if self.isDown() or self.underMouse():
                 background = t.hover
             elif selected:
                 background = t.selected
         painter.fillRect(self.rect(), QtGui.QColor(background))
 
-        ink = QtGui.QColor(text_on(background) if enabled else t.disabled)
+        ink = QtGui.QColor(text_on(background) if enabled or self.running else t.disabled)
         if self.compact:
             self._paint_compact(painter, ink)
         else:
@@ -115,7 +118,7 @@ class StageButton(QtWidgets.QPushButton):
 
         rule = 2 if selected else 1
         marker = selection_rule(t.accent, background)
-        rule_color = (marker if enabled else t.disabled) if selected else t.border
+        rule_color = (marker if enabled or self.running else t.disabled) if selected else t.border
         painter.fillRect(0, self.height() - rule, self.width(), rule, QtGui.QColor(rule_color))
         if self.hasFocus():
             painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)

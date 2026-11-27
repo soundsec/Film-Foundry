@@ -46,6 +46,15 @@ object RowObservationSession {
                     OpticalMaster(row.opticalDensityRgb,row.metadata,row.clearBaseOpticalDensityRgb,row.spectralComponentAmounts,row.spectralPostProcessDensityRgb)
                 }
             }
+            val masterMetadata = source.opticalRows(0,1).metadata
+            val apertures = if (mode == "viewer_light_table") null else ScanPerforations.from(masterMetadata,width,height) { y ->
+                readBlock(y,1).opticalDensityRgb.values
+            }
+            val lamp = apertures?.let { ScanPerforations.lamp(frozen) }
+            fun emit(start: Int, count: Int, rgb: FloatArray) {
+                if (lamp != null) apertures.show(rgb,start,count,lamp)
+                output.rows(start,count,rgb)
+            }
             if(!math.requiresNormalization) {
                 // Viewers and scans without normalization can stream without RGB disk scratch.
                 output.begin(width,height)
@@ -57,7 +66,7 @@ object RowObservationSession {
                     val linear=control.measured("scan","linear_compute") { math.linear(block) };metadata=linear.metadata
                     if(plan==null) plan=math.outputPlan(pixels) { error("No normalization should read scratch rows") }
                     control.measured("scan","tone_encode") { math.output(linear.outputRgb.values,plan!!) }
-                    control.measured("scan","image_rows") { output.rows(start,count,linear.outputRgb.values) }
+                    control.measured("scan","image_rows") { emit(start,count,linear.outputRgb.values) }
                 }
                 control.checkCancel()
                 return@use metadata+if(width==source.width && height==source.height) emptyMap() else mapOf("observation_grid" to mapOf(
@@ -70,14 +79,20 @@ object RowObservationSession {
                 val bytes=ByteArray(maxOf(width,16384)*3*4);val buffer=ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
                 val floats=buffer.asFloatBuffer()
                 var metadata: Map<String,Any?> = emptyMap()
-                val imageRows=FilmRebateGeometry.gateRows(source.opticalRows(0,1).metadata,height)
-                val measurement=math.outputMeasurement(width*imageRows.count())
+                val imageRows=FilmRebateGeometry.gateRows(masterMetadata,height)
+                val cols=FilmRebateGeometry.gateRows(masterMetadata,width,columns=true)
+                val measurement=math.outputMeasurement(cols.count()*imageRows.count())
+                fun spans(start: Int,count: Int,consume: (Int,Int)->Unit) {
+                    val a=maxOf(start,imageRows.first);val b=minOf(start+count,imageRows.last+1)
+                    if(a>=b) return
+                    if(cols.count()==width) consume((a-start)*width,(b-a)*width)
+                    else for(y in a until b) consume((y-start)*width+cols.first,cols.count())
+                }
                 for(start in 0 until height step step) {
                     control.checkCancel();val count=minOf(step,height-start)
                     val block=readBlock(start,count)
                     val linear=control.measured("scan","linear_compute") { math.linear(block) };metadata=linear.metadata
-                    val a=maxOf(start,imageRows.first);val b=minOf(start+count,imageRows.last+1)
-                    if(b>a) control.measured("scan","normalization_collect") { measurement.collect(linear.outputRgb.values,(a-start)*width,(b-a)*width) }
+                    control.measured("scan","normalization_collect") { spans(start,count) { offset,n -> measurement.collect(linear.outputRgb.values,offset,n) } }
                     floats.clear();floats.put(linear.outputRgb.values)
                     raw.write(bytes,0,linear.outputRgb.values.size*4)
                 }
@@ -89,11 +104,10 @@ object RowObservationSession {
                     }
                 }
                 val outputPlan=control.measured("scan","normalization") { measurement.finish { consume -> eachBlock { start,count,values ->
-                    val a=maxOf(start,imageRows.first);val b=minOf(start+count,imageRows.last+1)
-                    if(b>a) consume(if(a==start && b==start+count) values else values.copyOfRange((a-start)*width*3,(b-start)*width*3))
+                    spans(start,count) { offset,n -> consume(if(offset==0 && n*3==values.size) values else values.copyOfRange(offset*3,(offset+n)*3)) }
                 } } }
                 control.checkCancel();output.begin(width,height)
-                control.measured("scan","encode_output") { eachBlock { start,count,values -> control.measured("scan","tone_encode") { math.output(values,outputPlan) };control.measured("scan","image_rows") { output.rows(start,count,values) } } }
+                control.measured("scan","encode_output") { eachBlock { start,count,values -> control.measured("scan","tone_encode") { math.output(values,outputPlan) };control.measured("scan","image_rows") { emit(start,count,values) } } }
                 control.checkCancel()
                 metadata+if(width==source.width && height==source.height) emptyMap() else mapOf("observation_grid" to mapOf(
                     "model" to "scan_grid_v1","sampler" to if(source.width%width==0 && source.height%height==0) "box_average_v1" else "bilinear_v1",

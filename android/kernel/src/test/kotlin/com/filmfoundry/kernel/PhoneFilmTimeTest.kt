@@ -23,6 +23,9 @@ class PhoneFilmTimeTest {
         val aged=kernel.expose(rgb,r);val plain=kernel.expose(rgb,recipe())
         val a=aged.arrays.getValue("developability").values;val b=plain.arrays.getValue("developability").values
         assertTrue(a[0]>b[0]);assertTrue(a[3]<b[3]);assertNotNull(aged.metadata["phone_exposure_time"])
+        fun detailed(profile: String)=kernel.expose(rgb,r+(PhoneFormationProfile.OPTION to profile)).arrays.getValue("developability").values
+        assertArrayEquals(a,detailed(PhoneFormationProfile.STOCK_DETAILED),0f)
+        assertArrayEquals(b,detailed(PhoneFormationProfile.PREVIOUS_STOCK_DETAILED),0f)
         val old=r+(PhoneFormationProfile.OPTION to PhoneFormationProfile.PREVIOUS_LIGHTWEIGHT)
         assertArrayEquals(b,kernel.expose(rgb,old).arrays.getValue("developability").values,0f)
         val saved=NpzMediumArchive().let {it.readLatent(it.writeLatent(LatentArchive(aged.arrays,aged.metadata)))}

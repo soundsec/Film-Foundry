@@ -506,7 +506,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             MaterialConfiguration(activity,shell,builtin,storage,::readRecipe).apply { onPreviewRecipe=::previewRecipe }.open()
         }
         shortcut(configuration,"药液与冲洗工艺","Baths & processes","保存药液和工艺，冲洗时组合使用","Save baths and processes for development") {
-            ProcessConfiguration(activity,shell,storage,{ stages.development(readRecipe(),(developmentRoll ?: current)?.let { library.roll(it).developRecipe }.orEmpty()) }) { stages.reloadCatalog() }.apply { onPreviewRecipe=::previewRecipe }.open()
+            ProcessConfiguration(activity,shell,storage,{ stages.development(readRecipe(),(developmentRoll ?: current)?.let { library.roll(it).developRecipe }.orEmpty()) }) { stages.reloadCatalog() }.apply { samplePanel=::processSamplePanel;onPreviewRecipe=::expandProcessSample }.open()
         }
         shortcut(configuration,"扫描风格","Scan styles","设置光源、色彩与影调，不改变底片","Set light, color and tone while preserving the negative") {
             ScannerConfiguration(activity,shell,builtin,storage,{ stages.observation(readRecipe(),(scanResult?.sourceRollId ?: current)?.let { library.roll(it).scannerRecipe }.orEmpty()) }) { stages.reloadCatalog() }.apply { onPreviewRecipe=::previewRecipe }.open()
@@ -591,7 +591,11 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         stages.scanOutput.addView(scanBatchWithSettings,LinearLayout.LayoutParams(-1,-2))
         scanComparison.onHistogramChanged=stages::showScanHistogram
         stages.onOpenComputeSettings=::computeDialog
-        stages.onPreviewRecipe=::previewRecipe
+        stages.installSamples(::processSamplePanel) {
+            val result=requireNotNull(scanResult) { copy("请选择一格底片","Select a developed frame") }
+            result.developRecipe
+        }
+        stages.onPreviewRecipe=::expandProcessSample
         stages.onStyleReference={ scanResult?.let { references.stats(it.sourceRollId) } }
         stages.onStyleSamples={ recipes,deliver ->
             val source=scanResult
@@ -612,7 +616,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         stages.onResumeDevelopment=::resumeDevelopment
         stages.developmentQuickOptions.addView(autoFirstPreview,0)
         stages.onAutomaticOutputChanged=::updateDevelopmentHeader
-        stages.onOpenProcessCatalog={ ProcessConfiguration(activity,shell,storage,{ stages.development(readRecipe(),(developmentRoll ?: current)?.let { library.roll(it).developRecipe }.orEmpty()) }) { stages.reloadCatalog() }.apply { onPreviewRecipe=::previewRecipe }.open() }
+        stages.onOpenProcessCatalog={ ProcessConfiguration(activity,shell,storage,{ stages.development(readRecipe(),(developmentRoll ?: current)?.let { library.roll(it).developRecipe }.orEmpty()) }) { stages.reloadCatalog() }.apply { samplePanel=::processSamplePanel;onPreviewRecipe=::expandProcessSample }.open() }
         fun placeBefore(card: LinearLayout,anchor: LinearLayout) {
             val page=anchor.parent as LinearLayout;page.removeView(card);page.addView(card,page.indexOfChild(anchor))
         }
@@ -620,6 +624,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         (developPanel.parent as? android.view.ViewGroup)?.removeView(developPanel);stages.developmentExtras.addView(developPanel)
         (scanPanel.parent as? android.view.ViewGroup)?.removeView(scanPanel);stages.scanExtras.addView(scanPanel)
         stages.onObservationChanged={
+            stages.scanSample?.refresh()
             orientScanImage()
             scanPreview.invalidate();scanWork.cancel();pendingScanPreview=true;savePhoto.isEnabled=false
             stages.histogramNeedsRefresh()
@@ -814,11 +819,11 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
     private fun developmentExecutionInfo(id: String,recipe: Map<String,Any?>,photos: DevelopmentPhotoPlan): String {
         val develop=section(recipe,"develop")
         val roll=library.roll(id)
-        val inspection=runCatching { RecipeDrafts.inspectProcess(roll.filmRecipe,develop) }.getOrNull()
+        val inspection=runCatching { RecipeDrafts.inspectProcess(roll.filmRecipe,develop,roll.captureSettings[PhoneFormationProfile.ROLL_SETTING]) }.getOrNull()
         val process=ProcessPresentation.program(inspection?.program ?: develop["program_key"] as? String,copy("zh","en")=="en")
         return rollName(id)+copy(" · ${roll.exposedCount()} 格\n"," · ${roll.exposedCount()} frames\n")+materialLabel(roll)+"\n"+process+
             (inspection?.let { "\n"+copy("预期底片：","Expected film: ")+ProcessPresentation.result(it,copy("zh","en")=="en") } ?: "")+
-            copy("\n共用药浴时长：${develop["time_min"] ?: 8} 分钟","\nShared bath duration: ${develop["time_min"] ?: 8} minutes")+
+            copy("\n预设显影／自定义浴默认时长：${develop["time_min"] ?: 8} 分钟","\nTemplate development / custom bath duration: ${develop["time_min"] ?: 8} minutes")+
             (develop["temperature_c"]?.let { " · $it °C" } ?: "")+
             if(photos.enabled) "\n"+scanExecutionInfo(roll.exposedCount(),photos.recipe.orEmpty()) else copy("\n只保存冲洗底片，之后可另行扫描。","\nSave developed film only; scan later.")
     }
@@ -861,12 +866,16 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             }
         }
     }
+    private fun lightweightDescription()=copy("采用轻量颗粒。邻接效应和层间抑制按配方启用，药浴时间影响反差、颗粒与灰雾。装卷时固定形成方式。",
+        "Uses lightweight grain and recipe-controlled adjacency and interlayer inhibition. Bath duration affects contrast, grain and fog. The formation model is fixed when loading.")
     private fun showRollInformation(roll: Roll) {
         informationDialogs.show(copy("胶卷信息","Roll information")) {
             LibraryInfoDialog.Content(information.roll(roll),listOf(
                 LibraryInfoDialog.Section(copy("材料","Material"),roll.filmRecipe),
                 LibraryInfoDialog.Section(copy("形成方式","Formation"),description=
-                    if(PhoneFormationProfile.isLightweight(roll.captureSettings[PhoneFormationProfile.ROLL_SETTING]))
+                    if(roll.captureSettings[PhoneFormationProfile.ROLL_SETTING]==PhoneFormationProfile.LIGHTWEIGHT)
+                        lightweightDescription()
+                    else if(PhoneFormationProfile.isLightweight(roll.captureSettings[PhoneFormationProfile.ROLL_SETTING]))
                         copy("轻量形成：保留颗粒的明暗响应、材料与药浴差异；简化分层颗粒，省略邻接效应和 DIR 抑制。药痕、网纹采用参数触发的密度附加。像素尺寸与扫描流程不变。",
                             "Lightweight formation: preserves density-dependent grain, stock and bath differences. Simplifies layered grain and omits adjacency and DIR inhibition. Stains and reticulation use parameter-triggered density overlays. Pixel dimensions and scanning are unchanged.")
                     else copy("沿用原有手机形成：包含分层颗粒，以及配方开启的邻接效应和 DIR 抑制。装卷后形成方式固定。",
@@ -1229,7 +1238,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
     fun close() { sounds.cancelPending();stopMotion();hardwareSelfTestUi.close();stopScene();scanComparison.clear();scanFeedback.finish();displayObservation.clear();shell.closeQuickControls();viewerRevision++;viewerWork.cancel();scanWork.cancel();viewerWorker.shutdownNow();styleSampleWork.cancel();sampleWorker.shutdownNow();sampleCache.clear();catalogSerial.incrementAndGet();pendingCatalog.set(null);photoGrid.close();negativeGrid.close();batchGrid.close();thumbnails.clear();image.dispose();previewHandler.removeCallbacksAndMessages(null);previewCache.clear();clearViewerImage() }
     fun trimMemory(critical: Boolean) {
         thumbnails.trim(critical);listOf(photoGrid,negativeGrid,batchGrid).forEach { it.trim() }
-        if(critical) { previewCache.clear();displayObservation.clear() }
+        if(critical) { scanComparison.trim();previewCache.clear();displayObservation.clear() }
     }
     private fun scheduleScanPreview() {
         previewHandler.removeCallbacks(refreshScanPreview)
@@ -1299,6 +1308,26 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         "hair" to preferences.getBoolean("hair",false),"insect" to preferences.getBoolean("insect",false),
         "imprint" to preferences.getString("imprint",""))
     }
+    private fun processSampleRequest(active: Map<String,Any?>): CameraEffectsPreview.Request {
+        val scanning=shell.selected==MobileShell.Page.SCAN
+        val rollId=if(scanning) scanResult?.sourceRollId else developmentRoll.takeIf { shell.selected==MobileShell.Page.DEVELOP } ?: current
+        val roll=rollId?.let(library::roll)
+        val base=readRecipe()
+        val film=section(active,"film").ifEmpty { roll?.filmRecipe.orEmpty().ifEmpty { section(base,"film").ifEmpty { section(builtin.materials.first().recipe,"film") } } }
+        val capture=roll?.captureSettings ?: mapOf(PhoneFormationProfile.ROLL_SETTING to defaultFormationProfile())
+        return stages.sampleRequest(active,film,capture,roll?.scannerRecipe.orEmpty(),rollId?.let(references::stats),scanning)
+    }
+
+    private fun processSamplePanel(draft: SampleRecipe) = ProcessSampleView(shell,sampleWorker,sampleCache) {
+        processSampleRequest(draft())
+    }
+
+    private fun expandProcessSample(value: Map<String,Any?>) {
+        val sample=processSampleRequest(value)
+        CameraEffectsDialog(activity,shell,sampleWorker,sampleCache).open(emptyMap(),sample.film,sample.capture,
+            selected=sample.selected,previewOnly=true) {}
+    }
+
     private fun previewRecipe(value: Map<String,Any?>) {
         runCatching {
             val active=(when(shell.selected) { MobileShell.Page.DEVELOP->developmentRoll ?: current;MobileShell.Page.SCAN,MobileShell.Page.VIEWER->scanResult?.sourceRollId ?: current;else->current })?.let(library::roll)
@@ -1336,8 +1365,8 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         }.onFailure { status(it.message.orEmpty()) }
     }
     private fun newFilmBorder(format: String,materialLabel: String)=com.filmfoundry.workflow.FilmEdgeSettings.create(format,
-        preferences.getBoolean("film_rebate",true),materialLabel,preferences.getString("film_edge_text","").orEmpty(),preferences.getBoolean("film_factory_marks",true),
-        RecipeJson.objectMap(preferences.getString("film_factory_pattern_v1","{}").orEmpty()))
+        preferences.getBoolean("film_rebate",true),preferences.getString("film_edge_text","").orEmpty().ifBlank { materialLabel },marks=preferences.getBoolean("film_factory_marks",true),
+        patternSettings=RecipeJson.objectMap(preferences.getString("film_factory_pattern_v1","{}").orEmpty()))
     private fun exposureDialog() {
         if(!available() || running || captureInProgress()) return
         val panel=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL;setPadding(shell.dp(20),shell.dp(8),shell.dp(20),shell.dp(12)) }
@@ -1459,7 +1488,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             } else newRollDialog(animateLoading=!preferences.getBoolean("skip_loading",false))
         }.show()
     }
-    private fun defaultFormationProfile()=if(preferences.getBoolean("load_lightweight_formation",true)) PhoneFormationProfile.LIGHTWEIGHT else PhoneFormationProfile.DETAILED
+    private fun defaultFormationProfile()=if(preferences.getBoolean("load_lightweight_formation",true)) PhoneFormationProfile.LIGHTWEIGHT else PhoneFormationProfile.STOCK_DETAILED
     private fun newRollDialog(animateLoading: Boolean=false) {
         val pairings=this.pairings
         val catalog=runCatching { RecipeCatalog(PrivateRecipeCatalogStore(storage)).films() }.getOrElse { status(it.message.orEmpty());return }
@@ -1488,13 +1517,12 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         val lightweight=CheckBox(activity).apply {
             text=copy("轻量形成（推荐）","Lightweight formation (recommended)")
             isChecked=defaultFormationProfile()==PhoneFormationProfile.LIGHTWEIGHT
-            val explanation=copy("简化分层颗粒，省略邻接效应与 DIR 抑制。保留颗粒的明暗响应及基础事故，尺寸与扫描不变；装卷后固定。",
-                "Simplifies layered grain and omits adjacency and DIR inhibition. Keeps density-dependent grain and basic incidents; dimensions and scanning stay unchanged. Fixed when loading.")
+            val explanation=lightweightDescription()
             tooltipText=explanation
             setOnLongClickListener { Toast.makeText(activity,explanation,Toast.LENGTH_LONG).show();true }
         }
         panel.addView(lightweight)
-        fun selectedFormationProfile()=if(lightweight.isChecked) PhoneFormationProfile.LIGHTWEIGHT else PhoneFormationProfile.DETAILED
+        fun selectedFormationProfile()=if(lightweight.isChecked) PhoneFormationProfile.LIGHTWEIGHT else PhoneFormationProfile.STOCK_DETAILED
         val pairing=choice(copy("材料／冲洗／扫描搭配","Material / process / scan pairing"),listOf(copy("自行选择","Choose independently"))+pairings.map { copy(it.labelZh,it.labelEn) },details)
         val pairingInfo=TextView(activity);details.addView(pairingInfo)
         pairing.onItemSelectedListener=object: AdapterView.OnItemSelectedListener {
@@ -1529,13 +1557,14 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         val selectedCamera=nativeLens()
         if(selectedCamera==null) { nativeCameraSettings();status(copy("先选择可用镜头，再装填胶卷","Select an available camera before loading film"));return }
         val captureFormat=nativeFormat()
-        val imageFormat=when(captureFormat) { "raw"->android.graphics.ImageFormat.RAW_SENSOR;"ultra_hdr"->android.graphics.ImageFormat.JPEG_R;else->android.graphics.ImageFormat.JPEG }
+        val imageFormat=CameraOutputCatalog.streamFormat(captureFormat)
         val sizes=runCatching { CameraOutputCatalog.jpegSizes(activity,selectedCamera,imageFormat) }.getOrDefault(emptyList())
         val ranges=runCatching { CameraOutputCatalog.fpsRanges(activity,selectedCamera) }.getOrDefault(emptyList())
-        val motionSize=ShootingBudget.motion(sizes)
+        val motionSizes=selectedCamera.sizes(CameraOutputCatalog.streamFormat(captureFormat,motion=true))
+        val motionSize=ShootingBudget.motion(motionSizes)
         val motionRange=ShootingBudget.motionFps(ranges)
         val stillSizes=sizes.filter { it.first>0 && it.second>0 }.distinct()
-        val motionLabel=if(sizes.isEmpty()) copy("过片 · 长边不超过 ${ShootingBudget.MOTION_MAX_LONG_EDGE}（未读到相机尺寸）","Motion · long edge at most ${ShootingBudget.MOTION_MAX_LONG_EDGE} (camera sizes unread)")
+        val motionLabel=if(motionSizes.isEmpty()) copy("过片 · 长边不超过 ${ShootingBudget.MOTION_MAX_LONG_EDGE}（未读到相机尺寸）","Motion · long edge at most ${ShootingBudget.MOTION_MAX_LONG_EDGE} (camera sizes unread)")
             else copy("过片 ${motionSize.first}×${motionSize.second} · 请求 ${if(motionRange.second==0) "设备帧率" else "${motionRange.first}–${motionRange.second} fps"}","Motion ${motionSize.first}×${motionSize.second} · request ${if(motionRange.second==0) "device rate" else "${motionRange.first}–${motionRange.second} fps"}")
         val precision=choice(copy("采集精度（原片 → 有效片门）","Capture precision (source → film aperture)"),listOf(motionLabel),details)
         val precisionInfo=TextView(activity).apply { setPadding(0,shell.dp(6),0,shell.dp(8)) };details.addView(precisionInfo)
@@ -1569,14 +1598,70 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             }
             materialCaption()
         }
+        val baseForward = CheckBox(activity).apply {
+            text=copy("反装胶片 · 片基朝镜头","Reverse loading · base toward lens")
+            isChecked=runCatching { (readRecipe()["exposure"] as? Map<*,*>)?.get("film_side")=="base" }.getOrDefault(false)
+        }
+        details.addView(baseForward)
+        val rearPanel=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL }
+        details.addView(rearPanel)
+        val storedRear=((runCatching { readRecipe()["exposure"] }.getOrNull() as? Map<*,*>)?.get("rear_optics") as? Map<*,*>).orEmpty()
+        val profiles=listOf("generic","harman_red_125")
+        val mirrors=listOf("horizontal","vertical","none")
+        val profile=choice(copy("彩色反装响应","Color response"),listOf(copy("通用","Generic"),copy("HARMAN RED 125 曲线参考","HARMAN RED 125 wedge reference")),rearPanel)
+        val mirror=choice(copy("反装画面方向","Scene orientation"),listOf(copy("左右翻转","Mirror horizontally"),copy("上下翻转","Mirror vertically"),copy("关闭镜像（保持相机构图）","Off (camera orientation)")),rearPanel)
+        profile.setSelection(profiles.indexOf(storedRear["profile"]).coerceAtLeast(0))
+        mirror.setSelection(mirrors.indexOf(storedRear["mirror"]).coerceAtLeast(0))
+        fun rearField(key: String,label: String,default: Double): EditText = EditText(activity).apply {
+            inputType=android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or
+                android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
+            setSingleLine()
+            setText((storedRear[key] ?: default).toString())
+            shell.field(rearPanel,this,label,resettable=false)
+        }
+        val aperture=rearField("f_number",copy("拍摄光圈 f/","Taking aperture f/"),5.6)
+        val thickness=rearField("thickness_um",copy("片基厚度 / µm","Support thickness / µm"),125.0)
+        val refraction=rearField("index",copy("折射率","Refractive index"),1.48)
+        val refocus=rearField("focus_shift_um",copy("调焦补偿 / µm","Refocus / µm"),0.0)
+        val autoFocus=CheckBox(activity).apply {
+            isChecked=storedRear["auto_refocus"]==true
+            refocus.isEnabled=!isChecked
+            setOnCheckedChangeListener { _,checked -> refocus.isEnabled=!checked }
+        }
+        rearPanel.addView(autoFocus)
+        fun showRefocus() {
+            val t=thickness.text.toString().replace(',','.').toDoubleOrNull()
+            val n=refraction.text.toString().replace(',','.').toDoubleOrNull()
+            val reading=if(t!=null && t in 10.0..350.0 && n!=null && n in 1.0..2.0) " · %.2f µm".format(t/n) else ""
+            autoFocus.text=copy("自动补偿焦面偏移","Automatically compensate focus shift")+reading
+        }
+        val watch=object: android.text.TextWatcher {
+            override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int) {}
+            override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int) { showRefocus() }
+            override fun afterTextChanged(s:android.text.Editable?) {}
+        }
+        thickness.addTextChangedListener(watch);refraction.addTextChangedListener(watch);showRefocus()
+        fun reverseSettings(): Map<String,Any> {
+            fun read(v: EditText,range: ClosedFloatingPointRange<Double>): Double =
+                v.text.toString().replace(',','.').toDoubleOrNull()?.takeIf { it in range }
+                    ?: throw IllegalArgumentException("${shell.fieldLabel(v)} ($range)")
+            return mapOf("mirror" to mirrors[mirror.selectedItemPosition],"profile" to profiles[profile.selectedItemPosition],
+                "thickness_um" to read(thickness,10.0..350.0),"index" to read(refraction,1.0..2.0),
+                "f_number" to read(aperture,.7..128.0),"focus_shift_um" to read(refocus,-500.0..500.0),"auto_refocus" to autoFocus.isChecked)
+        }
+        fun showReverse() { rearPanel.visibility=if(baseForward.isChecked) android.view.View.VISIBLE else android.view.View.GONE }
+        showReverse()
+        baseForward.setOnCheckedChangeListener { _,_->showReverse() }
         shell.action(panel,"预览所选材料与搭配…","Preview material & pairing…") {
             runCatching {
                 val base=readRecipe();val selected=pairings.getOrNull(pairing.selectedItemPosition-1)?.recipe ?: base
+                val conditions=(selected["exposure"] as? Map<*,*>).orEmpty()+("film_side" to if (baseForward.isChecked) "base" else "emulsion")+
+                    (if(baseForward.isChecked) mapOf("rear_optics" to reverseSettings()) else emptyMap())
                 val f=formats[format.selectedItemPosition]
                 val capture=mapOf("format" to f,"spatial_effects_revision" to PhoneMaterialDefaults.REVISION,PhoneGrainModels.ROLL_SETTING to PhoneGrainModels.LAYERED,"material_model" to PhoneProcessModels.CURRENT,
                     PhoneMaterialPhenomena.ROLL_SETTING to PhoneMaterialPhenomena.CURRENT,PhoneFormationProfile.ROLL_SETTING to selectedFormationProfile())
                 val border=newFilmBorder(f,material.selected?.let { it.id.removePrefix("builtin:") } ?: "FILM FOUNDRY")
-                CameraEffectsDialog(activity,shell,sampleWorker,sampleCache).open(cameraSettings(),configuredStock(base),capture,selected=selected+("film_border" to border),previewOnly=true) { }
+                CameraEffectsDialog(activity,shell,sampleWorker,sampleCache).open(cameraSettings(),configuredStock(base),capture,selected=selected+mapOf("film_border" to border,"exposure" to conditions),previewOnly=true) { }
             }.onFailure { Toast.makeText(activity,it.message,Toast.LENGTH_LONG).show() }
         }
         materialCaption()
@@ -1628,6 +1713,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         refreshDetails={
             val size=selectedSize()?.let { "${it.first}×${it.second}" } ?: copy("相机默认","Camera default")
             detailsSummary.text=(if(timeName.isChecked) copy("时间编号","Time-based name") else copy("自定义名称","Custom name"))+" · "+size+" · "+rewind.selectedItem.toString()+
+                (if (baseForward.isChecked) copy(" · 片基朝镜头"," · Base toward lens") else "")+
                 (pairings.getOrNull(pairing.selectedItemPosition-1)?.let { "\n"+copy("搭配：","Pairing: ")+copy(it.labelZh,it.labelEn) } ?: "")
         }
         refreshDetails();panel.addView(detailsSummary)
@@ -1653,6 +1739,13 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
             settings[PhoneGrainModels.ROLL_SETTING]=PhoneGrainModels.LAYERED
             settings[PhoneFormationProfile.ROLL_SETTING]=selectedFormationProfile()
             settings["gate_revision"]=StillFrameFormat.MODEL
+            if (baseForward.isChecked) {
+                settings["film_side"]="base"
+                settings["rear_optics"]=runCatching { reverseSettings() }.getOrElse {
+                    Toast.makeText(activity,it.message,Toast.LENGTH_LONG).show()
+                    return@setOnClickListener
+                }
+            }
             settings["film_border"]=newFilmBorder(f,selectedMaterial.id.takeIf { it.startsWith("builtin:") }?.removePrefix("builtin:") ?: selectedMaterial.name)
             settings["material_model"]=com.filmfoundry.interchange.PhoneProcessModels.CURRENT
             settings[com.filmfoundry.interchange.PhoneMaterialPhenomena.ROLL_SETTING]=com.filmfoundry.interchange.PhoneMaterialPhenomena.CURRENT
@@ -2588,6 +2681,7 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         if(scanResult?.resultId != result.resultId) {
             val old=(scanImage.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap;scanImage.setImageDrawable(null);old?.recycle()
         }
+        stages.scanSample?.refresh()
         if(!resumeSession || scanResult?.resultId!=result.resultId) { scanComparison.clear();shell.scanResultBar.visibility=android.view.View.GONE }
         scanComparison.bind(result.resultId+":"+result.opticalPath)
         stages.beginScanSession(result.resultId,result.opticalPath,library.roll(result.sourceRollId).scannerRecipe,savedRecipe,savedId,resumeSession,negativeRotation(result.resultId))
@@ -2852,8 +2946,9 @@ class RollActions(private val activity: ComponentActivity, private val shell: Mo
         multiple.text=if(holdFirst) copy("多曝 ✓","Multi ✓") else copy("多曝","Multi")
         multiple.isActivated=holdFirst
         multiple.contentDescription=if(open != null) copy("当前格多曝上弦","Cock this frame for multiple exposure") else copy("准备多重曝光","Prepare multiple exposure")
-        panorama.isEnabled=enabled && roll?.captureSettings?.get("format") == "135"
-        if(roll?.captureSettings?.get("format") != "135" && panorama.isChecked) panorama.isChecked=false
+        val fullWidthGate=(roll?.captureSettings?.get("film_border") as? Map<*,*>)?.let { it["enabled"]==true && it["formation_mode"]=="sprocket_panorama" } == true
+        panorama.isEnabled=enabled && roll?.captureSettings?.get("format") == "135" && !fullWidthGate
+        if((roll?.captureSettings?.get("format") != "135" || fullWidthGate) && panorama.isChecked) panorama.isChecked=false
         baffles(panorama.isChecked)
         frameFormat(roll?.captureSettings?.get("format")?.toString() ?: "135",roll?.captureSettings?.get("gate_revision")?.toString() ?: StillFrameFormat.LEGACY_MODEL)
         val applied=(camera() as? CameraXCameraAdapter)?.nativeRequests()

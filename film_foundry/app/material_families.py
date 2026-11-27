@@ -7,7 +7,8 @@ from film_foundry.core.material_structure import from_record
 from dataclasses import asdict,replace
 import json
 import numpy as np
-from film_foundry.core.material_family import MediumBody, ProductGroup, ViewingConditions,frame_observation
+from film_foundry.core.material_family import MediumBody, ProductGroup, frame_observation
+from film_foundry.app.material_reference import reference_view
 from film_foundry.core.peel_apart import FAMILY, PeelApartFamily, PeelMaterial, PeelState
 from film_foundry.core import peel_apart, integral_instant, silver_plate
 from film_foundry.core import photographic_paper, wet_plate, cyanotype, platinum_palladium
@@ -66,10 +67,11 @@ def _checked_observation(image):
     return image
 
 
-def observe(body, conditions=ViewingConditions(),*,chunk_pixels=OBSERVATION_CHUNK_PIXELS,workers=None):
+def observe(body, conditions=None,*,chunk_pixels=OBSERVATION_CHUNK_PIXELS,workers=None):
     """Full-resolution linear RGB; bounded pointwise temporaries, no resampling."""
     if type(chunk_pixels) is not int or chunk_pixels<0:raise ValueError('Observation chunk size must be a nonnegative integer')
     observer=family(body.family).observe
+    if conditions is None:conditions=reference_view(body.family)
     height,width=next(iter(body.fields.values())).shape[:2]
     if not chunk_pixels or body.family not in _ROW_OBSERVERS or not (body.schema_version in (1,2,3) or (body.family==peel_apart.FAMILY and body.schema_version in (4,5)) or (body.family in (integral_instant.FAMILY,wet_plate.FAMILY,silver_plate.FAMILY) and body.schema_version==4)) or height*width<=chunk_pixels:
         return _checked_observation(observer(body,conditions))

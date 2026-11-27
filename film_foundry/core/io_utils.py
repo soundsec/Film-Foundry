@@ -513,14 +513,10 @@ def load_image_with_color(
     suffix = path.suffix.lower()
     policy = _normalize_input_icc_policy(input_icc_policy)
     if suffix == ".dng":
-        from .source_image import load_formation_image, exposure_preview
-        pixels, record = load_formation_image(path)
-        return exposure_preview(pixels, "linear_rgb"), {**record, "encoding": "srgb", "preview_only": True}
+        from .source_image import dng_display_image
+        return dng_display_image(path)
     if suffix in RAW_EXTENSIONS:
-        raise ValueError(
-            f"Only DNG RAW input is supported: {path}. "
-            "Please export a display-referred TIFF/PNG/JPEG first. Vendor-private RAW formats are not supported."
-        )
+        raise ValueError(f"Only DNG RAW input is supported: {path}.")
     if suffix not in SUPPORTED_EXTENSIONS:
         raise ValueError(
             f"Unsupported input format: {path.suffix or '(no extension)'}. "
@@ -602,10 +598,7 @@ def probe_image_dimensions(path: str | Path) -> tuple[int, int]:
         from .source_image import dng_dimensions
         return dng_dimensions(path)
     if suffix in RAW_EXTENSIONS:
-        raise ValueError(
-            f"Only DNG RAW input is supported: {path}. "
-            "Please export a display-referred TIFF/PNG/JPEG first."
-        )
+        raise ValueError(f"Only DNG RAW input is supported: {path}.")
     if suffix not in SUPPORTED_EXTENSIONS:
         raise ValueError(
             f"Unsupported input format: {path.suffix or '(no extension)'}. "

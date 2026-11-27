@@ -2,7 +2,7 @@
 from pathlib import Path
 from dataclasses import asdict
 import numpy as np
-from film_foundry.core.material_family import ViewingConditions
+from film_foundry.app.material_reference import reference_view
 
 
 def body_components(body,view=None,output_shape=None):
@@ -51,7 +51,7 @@ def load_print_source(asset, *, film_config=None, view=None):
                    if not asset.get('body_id') or body.body_id == asset['body_id']]
         if len(matches) != 1:raise ValueError('Select an individual material body for printing')
         index = matches[0];body = session.group.bodies[index]
-        view = view or ViewingConditions()
+        if view is None:view = reference_view(body.family)
         image = session.preview(view, index)
         components = body_components(body,view,image.shape)
         provenance.update(group_id=body.group_id, body_id=body.body_id, view=asdict(view))

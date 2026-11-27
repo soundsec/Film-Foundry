@@ -51,13 +51,14 @@ from film_foundry.core.io_utils import (
     save_image_bundle,
     scan_output_stem,
 )
-from film_foundry.core.negative_io import load_developed_medium_for_scan
+from film_foundry.core.negative_io import has_formed_film_rebate, load_developed_medium_for_scan
 from film_foundry.core.latent_io import (
     LATENT_SUFFIX,
     latent_identity_from_film,
     load_exposed_latent,
     save_exposed_latent,
 )
+from film_foundry.core.incident_identity import bind_incident_frame
 from film_foundry.core.frame_identity import (
     attach_frame_identity,
     frame_identity_from_mapping,
@@ -80,7 +81,7 @@ from film_foundry.core.states import DevelopedNegative
 from film_foundry.contracts.config_share import decode_config_share, encode_config_share
 from film_foundry.contracts.data_kernel import CONFIG_SHARE_FIELDS
 from film_foundry.core.atomic_io import atomic_write_json
-from film_foundry.model.config import SCAN_LOOK_FIELDS, DarkroomConfig, merge_config_presets
+from film_foundry.model.config import SCAN_LOOK_FIELDS, DarkroomConfig, merge_config_presets, portable_film_parameters
 from film_foundry.model.session import (
     load_session,
     preset_reference as _session_preset_reference,
@@ -89,7 +90,10 @@ from film_foundry.model.session import (
     session_payload,
 )
 from film_foundry.app.paths import app_root, resource_root
-from film_foundry.app.preset_catalog import CORE_DEVELOP_PRESETS, CORE_FILM_PRESETS, CORE_SCANNER_PRESETS
+from film_foundry.app.preset_catalog import (
+    CORE_DEVELOP_PRESETS, CORE_FILM_PRESETS, CORE_SCANNER_PRESETS,
+    is_internal_preset_name, public_builtin_preset_names,
+)
 from film_foundry.app.seasonal_collection import collection_ids, visible_builtin_names
 
 PROJECT_ROOT = app_root()
@@ -103,7 +107,6 @@ USER_PRESET_DIR = PROJECT_ROOT / "user_presets"
 USER_FILM_PRESET_DIR = USER_PRESET_DIR / "film"
 USER_DEVELOP_PRESET_DIR = USER_PRESET_DIR / "develop"
 USER_SCANNER_PRESET_DIR = USER_PRESET_DIR / "scanner"
-INTERNAL_PRESET_PREFIXES = ("diagnostic_", "accident_", "experimental_")
 MAIN_GUI_BUILTIN_DEVELOP_PRESETS = CORE_DEVELOP_PRESETS
 DEFAULT_INPUT_DIR = PROJECT_ROOT / "input_images"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
@@ -502,6 +505,7 @@ def develop_image_file(
 ) -> tuple[DevelopedNegative, Path, dict[str, str]]:
     """Develop one input image and write the polarity-aware medium bundle."""
     identity = normalize_frame_identity(frame_identity)
+    config=bind_incident_frame(config, identity=identity, path=input_path, source_offset=path_seed_offset)
     runtime_config, execution_axes = prepare_develop_runtime_config(
         config,
         scaled_override=scaled_override,
@@ -553,6 +557,7 @@ def expose_image_file(
 ) -> Path:
     """Expose one input image to an undeveloped latent archive."""
     identity_overlay = normalize_frame_identity(frame_identity)
+    config=bind_incident_frame(config, identity=identity_overlay, path=input_path, source_offset=path_seed_offset)
     runtime_config, execution_axes = prepare_develop_runtime_config(
         config,
         scaled_override=scaled_override,
@@ -603,6 +608,8 @@ def develop_latent_file(
     _workflow_stage(control, "develop_latent", "loading")
     state, metadata = load_exposed_latent(input_path)
     inherited = frame_identity_from_mapping(metadata)
+    runtime_config=bind_incident_frame(runtime_config, identity=override or inherited,
+        stored_seed=state.incident_frame_seed, path=input_path, source_offset=path_seed_offset)
     develop_rng, resolved_seed = rng_and_resolved_seed_for_develop(
         input_path, runtime_config, path_seed_offset=path_seed_offset
     )
@@ -642,24 +649,19 @@ def process_image_file(
     path_seed_offset: int | None = None,
 ) -> Path:
     """Run the full develop-and-scan file pipeline through the application layer."""
-    _workflow_stage(control, "full", "developing")
+    from contextlib import nullcontext
     from film_foundry.app.source_seed import source_seed_override
+    from film_foundry.core.computation_control import cancellation_scope
+
+    config=bind_incident_frame(config, path=input_path, source_offset=path_seed_offset)
     seed = source_seed_override(config, path_seed_offset)
-    seed_options = {'resolved_seed_override': seed} if seed is not None else {}
-    return process_file(input_path, output_path, config, preview=scaled_override,artifact_paths=artifact_paths, **seed_options)
-
-
-def is_internal_preset_name(name: str) -> bool:
-    normalized = name.lower()
-    return normalized.startswith(INTERNAL_PRESET_PREFIXES)
-
-
-def public_builtin_preset_names(directory: Path) -> set[str]:
-    return {
-        path.stem
-        for path in directory.glob("*.json")
-        if not is_internal_preset_name(path.stem)
-    }
+    process_options = {'resolved_seed_override': seed} if seed is not None else {}
+    scope = cancellation_scope(control.check_cancel) if control is not None else nullcontext()
+    if control is not None:
+        process_options['on_stage'] = lambda stage: control.report("full", stage)
+    with scope:
+        return process_file(input_path, output_path, config, preview=scaled_override,
+                            artifact_paths=artifact_paths, **process_options)
 
 
 def develop_preset_names(*, include_variants: bool = False) -> list[str]:
@@ -667,12 +669,9 @@ def develop_preset_names(*, include_variants: bool = False) -> list[str]:
     # the process editor and CLI, while user presets are always shown. The one
     # experimental clear-base reversal recipe is intentionally exposed because
     # it represents a distinct, user-selectable color-negative reversal path.
-    names = {
-        path.stem
-        for path in DEVELOP_PRESET_DIR.glob("*.json")
-        if path.stem in CORE_DEVELOP_PRESETS
-        or (include_variants and not is_internal_preset_name(path.stem))
-    }
+    names = public_builtin_preset_names(DEVELOP_PRESET_DIR, "develop")
+    if not include_variants:
+        names.intersection_update(CORE_DEVELOP_PRESETS)
     names.update(path.stem for path in USER_DEVELOP_PRESET_DIR.glob("*.json"))
     return sorted(names)
 
@@ -688,7 +687,7 @@ def develop_preset_path(name: str) -> Path:
 
 
 def film_preset_names(*, include_variants: bool = True) -> list[str]:
-    names = visible_builtin_names(public_builtin_preset_names(FILM_PRESET_DIR), "film")
+    names = visible_builtin_names(public_builtin_preset_names(FILM_PRESET_DIR, "film"), "film")
     if not include_variants:
         names.intersection_update(CORE_FILM_PRESETS | collection_ids("film"))
     names.update(path.stem for path in USER_FILM_PRESET_DIR.glob("*.json"))
@@ -779,7 +778,7 @@ def scanner_preset_catalog(polarity: str | None = None, *, include_variants: boo
 
 
 def scanner_preset_names(*, include_variants: bool = True) -> list[str]:
-    names = visible_builtin_names(public_builtin_preset_names(SCANNER_PRESET_DIR), "scanner")
+    names = visible_builtin_names(public_builtin_preset_names(SCANNER_PRESET_DIR, "scanner"), "scanner")
     if not include_variants:
         names.intersection_update(CORE_SCANNER_PRESETS | collection_ids("scanner"))
     names.update(path.stem for path in USER_SCANNER_PRESET_DIR.glob("*.json"))
@@ -822,12 +821,28 @@ def recipe_share_payload(config: DarkroomConfig) -> dict[str, object]:
         from film_foundry.core.process_controls import condition_driven_config
         config=condition_driven_config(config)
     data = asdict(config)
+    data["film"] = portable_film_parameters(data["film"])
+    if data["film"].get("coating_stack") is not None:
+        # Retain the FFC2 wire placement used by existing readers. The recipe
+        # loader migrates these switches to processing, outside the material.
+        stack = data["film"]["coating_stack"]
+        stack["mode"] = "ordered" if config.processing.layered_response else "reduced"
+        if config.processing.independent_coating_grain:
+            stack["independent_grain"] = True
     payload: dict[str, object] = {}
     for field in CONFIG_SHARE_FIELDS:
         # Older frontends reject unknown top-level sections. Do not introduce
         # a capture-clock extension into recipes that do not use it.
-        if field == 'exposure' and config.exposure.duration_seconds is None:
-            continue
+        if field == 'exposure':
+            capture = data['exposure']
+            if capture['rear_optics'] is None:
+                capture.pop('rear_optics')
+            if config.exposure.film_side == 'emulsion':
+                capture.pop('film_side')
+            if config.exposure.lens_filter is None:
+                capture.pop('lens_filter')
+                if config.exposure.duration_seconds is None and not capture.get('film_side') and 'rear_optics' not in capture:
+                    continue
         source = _SHARE_PAYLOAD_SOURCES[field]
         payload[field] = data[source]
     return payload
@@ -978,7 +993,11 @@ def observe_medium_file(
         preview=linear_to_srgb(pixels) if input_color['encoding']=='linear_rgb' else pixels
         return scanned,'image_rgb',path,preview
     scanner_raw_path = transmission_raw_path_for_medium(path)
-    if scanner_raw_path.exists() and config.scanner.spectral_observation_profile is None:
+    use_companion = scanner_raw_path.exists() and config.scanner.spectral_observation_profile is None
+    if use_companion and path.suffix.lower() == ".npz" and path.is_file():
+        # A captured raster cannot relight the holes or meter the photographed gate.
+        use_companion = not has_formed_film_rebate(path)
+    if use_companion:
         sidecar=load_scanner_raw_sidecar(scanner_raw_path)
         reference=scanner_raw_base_reference(sidecar)
         # A bare companion TIFF cannot supply the selected archive's known

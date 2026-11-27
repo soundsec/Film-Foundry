@@ -7,6 +7,7 @@ internal fun capabilityText(shell: MobileShell,report: PhoneRecipeCapabilities.R
     if(warnings.isEmpty()) return ""
     val labels=mapOf(
         "duration_seconds" to ("曝光时长与互易律" to "Exposure duration and reciprocity"),
+        "lens_filter" to ("镜前可见光滤镜" to "Visible-light lens filter"),
         "carbon_backing" to ("碳背层状态" to "Carbon backing state"),
         "time_response" to ("材料时效响应" to "Material time response"),
         "process_steps" to ("逐浴工艺步骤" to "Ordered process steps"),

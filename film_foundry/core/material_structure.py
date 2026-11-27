@@ -4,6 +4,7 @@ import math
 import cv2
 import numpy as np
 from film_foundry.core.material_geometry import MaterialGeometry
+from film_foundry.core.execution_topology import reference_execution_enabled
 
 LEGACY='relative_v1'
 CURRENT='millimetres_v1'
@@ -29,6 +30,8 @@ def from_record(definition,record):
     """Missing generator identity in an archived material means the old model."""
     values=dict(record)
     if issubclass(definition,StructureMaterial):values.setdefault('structure_model',LEGACY)
+    for key, value in getattr(definition, 'ARCHIVED_DEFAULTS', {}).items():
+        values.setdefault(key, value)
     return definition(**values)
 
 
@@ -57,15 +60,46 @@ class Grid:
             x=self.x*c+self.y*s-min(0,width*c)-min(0,height*s)
             y=-self.x*s+self.y*c-min(0,-width*s)-min(0,height*c)
             width,height=abs(width*c)+abs(height*s),abs(width*s)+abs(height*c)
+        def weights(coord,spacing):
+            grid=coord/spacing
+            index=grid.astype(np.int32)
+            fraction=grid-index
+            return index,fraction*fraction*(3-2*fraction)
+
+        reference=reference_execution_enabled()
         for octave,weight in enumerate((.6,.28,.12)):
             requested=scale_mm/(2**octave)
             sy=max(requested,2*self.pitch);sx=max(requested*aspect,2*self.pitch)
             attenuation=math.exp(-(.5*self.pitch/min(requested,requested*aspect))**2)
             values=self.rng(stream+octave).random((math.ceil(height/sy)+2,math.ceil(width/sx)+2),dtype=np.float32)
-            gx=x/sx;gy=y/sy;ix=gx.astype(np.int32);iy=gy.astype(np.int32)
-            fx=gx-ix;fy=gy-iy;fx=fx*fx*(3-2*fx);fy=fy*fy*(3-2*fy)
-            value=(values[iy,ix]*(1-fx)+values[iy,ix+1]*fx)*(1-fy)+(values[iy+1,ix]*(1-fx)+values[iy+1,ix+1]*fx)*fy
-            result+=weight*(.5+attenuation*(value-.5))
+            if reference:
+                ix,fx=weights(x,sx);iy,fy=weights(y,sy)
+                value=(values[iy,ix]*(1-fx)+values[iy,ix+1]*fx)*(1-fy)+(values[iy+1,ix]*(1-fx)+values[iy+1,ix+1]*fx)*fy
+                result+=weight*(.5+attenuation*(value-.5))
+                continue
+            if not angle_degrees:
+                # The horizontal interpolation is identical for every output
+                # row in the same lattice cell. Evaluate that axis only once.
+                ix,fx=weights(x.ravel(),sx)
+                horizontal=values[:,ix]*(1-fx)+values[:,ix+1]*fx
+                iy,fy=weights(y,sy)
+            for start in range(0,self.shape[0],32):
+                rows=slice(start,start+32)
+                if angle_degrees:
+                    ix,fx=weights(x[rows],sx);iy,fy=weights(y[rows],sy)
+                    # Flatten lattice indices so each corner is a single gather.
+                    top=iy*values.shape[1]+ix
+                    bottom=top+values.shape[1]
+                    lattice=values.ravel()
+                    upper=lattice[top]*(1-fx)+lattice[top+1]*fx
+                    lower=lattice[bottom]*(1-fx)+lattice[bottom+1]*fx
+                    vertical=fy
+                else:
+                    upper=horizontal[iy[rows,0]]
+                    lower=horizontal[iy[rows,0]+1]
+                    vertical=fy[rows]
+                value=upper*(1-vertical)+lower*vertical
+                result[rows]+=weight*(.5+attenuation*(value-.5))
         return result
 
     def axes(self,direction):

@@ -22,6 +22,8 @@ class ProcessChoiceDialog(private val activity: ComponentActivity,private val sh
             shell.selectEditorTab(buttons,index)
             rows.removeAllViews()
             val items=entries.filter { it.group==index }
+            if(index==4) shell.note(rows,"这些工艺会漂去本卷的银像。仍可选用，观察处理后的片基。",
+                "These processes bleach away this roll’s silver image. Select one to observe the processed base.")
             if(items.isEmpty()) shell.note(rows,"暂无保存的配方，可在设置中创建。","No saved recipes. Create one in Settings.")
             items.forEach { entry -> shell.action(rows,entry.label,entry.label) { dialog.dismiss();choose(entry.index) }.apply {
                 isSelected=entry.index==selected;textAlignment=android.view.View.TEXT_ALIGNMENT_VIEW_START
@@ -29,7 +31,9 @@ class ProcessChoiceDialog(private val activity: ComponentActivity,private val sh
             } }
             scroll.scrollTo(0,0);shell.decorate(rows)
         }
-        listOf("推荐" to "Recommended","工艺" to "Processes","药液风格" to "Bath styles","我的配方" to "My recipes").forEachIndexed { i,label ->
+        val groups=mutableListOf("推荐" to "Recommended","工艺" to "Processes","药液风格" to "Bath styles","我的配方" to "My recipes")
+        if(entries.any { it.group==4 }) groups.add("本卷无影像" to "No image on this roll")
+        groups.forEachIndexed { i,label ->
             buttons+=shell.editorTab(tabs,label.first,label.second) { group(i) }
         }
         scroll.turnPage = { delta -> group(currentGroup + delta) }
